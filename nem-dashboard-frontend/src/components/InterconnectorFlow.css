@@ -1,0 +1,41 @@
+.interconnector-flow {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.flow-line {
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  animation: flow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes flow-pulse {
+  0%, 100% { opacity: 0.7; transform: scaleY(1); }
+  50% { opacity: 1; transform: scaleY(1.2); }
+}
+
+.flow-arrow {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+  animation: arrow-glow 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes arrow-glow {
+  0% { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)); }
+  100% { filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.4)) drop-shadow(0 0 8px currentColor); }
+}
+
+.flow-label {
+  pointer-events: auto;
+  cursor: default;
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+  letter-spacing: 0.5px;
+}
+
+.flow-label:hover {
+  transform: translate(-50%, -50%) scale(1.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}

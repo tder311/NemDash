@@ -1,0 +1,81 @@
+.region-card {
+  width: 160px;
+  height: 120px;
+  border-radius: 18px;
+  padding: 1.25rem;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  border: 3px solid var(--region-color);
+  backdrop-filter: blur(20px);
+  cursor: pointer;
+  transform-origin: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.region-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  transition: left 0.5s;
+}
+
+.region-card:hover::before {
+  left: 100%;
+}
+
+.region-card:hover {
+  transform: scale(1.08) translateY(-8px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+
+.region-card.light {
+  background: rgba(255, 255, 255, 0.95);
+  color: #2d3748;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1), 
+              0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+.region-card.dark {
+  background: rgba(26, 32, 44, 0.95);
+  color: #f7fafc;
+  border-color: var(--region-color);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3), 
+              0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.region-name {
+  font-size: 1.5rem;
+  font-weight: 800;
+  margin-bottom: 0.5rem;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  letter-spacing: 0.5px;
+}
+
+.region-price {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+  color: #1a202c;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.region-demand {
+  font-size: 0.95rem;
+  opacity: 0.9;
+  font-weight: 600;
+  color: #4a5568;
+}
+
+.dark .region-price {
+  color: #e2e8f0;
+}
+
+.dark .region-demand {
+  color: #cbd5e0;
+}
