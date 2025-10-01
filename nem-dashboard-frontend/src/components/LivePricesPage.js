@@ -42,11 +42,11 @@ function LivePricesPage({ darkMode }) {
       console.error('Error fetching data:', error);
       // Set sample data on error
       setPrices([
-        { region: 'NSW', price: 65.50, totaldemand: 8500 },
-        { region: 'VIC', price: 72.30, totaldemand: 7200 },
-        { region: 'QLD', price: 58.90, totaldemand: 6800 },
-        { region: 'SA', price: 95.20, totaldemand: 2100 },
-        { region: 'TAS', price: 45.70, totaldemand: 1300 }
+        { region: 'NSW', price: 0.00, totaldemand: 0 },
+        { region: 'VIC', price: 0.00, totaldemand: 0 },
+        { region: 'QLD', price: 0.00, totaldemand: 0 },
+        { region: 'SA', price: 0.00, totaldemand: 0 },
+        { region: 'TAS', price: 0.00, totaldemand: 0 }
       ]);
       setLastUpdated(new Date().toLocaleTimeString());
       setLoading(false);
@@ -61,18 +61,9 @@ function LivePricesPage({ darkMode }) {
 
   const handleRegionHover = (regionCode) => {
     setHoveredRegion(regionCode);
-    // Highlight the corresponding state on the map
-    const stateElement = document.querySelector(`#state-${regionCode}`);
-    if (stateElement) {
-      stateElement.classList.add('highlighted');
-    }
   };
 
   const handleRegionLeave = () => {
-    // Remove highlighting from all states
-    document.querySelectorAll('.state-path.highlighted').forEach(el => {
-      el.classList.remove('highlighted');
-    });
     setHoveredRegion(null);
   };
 

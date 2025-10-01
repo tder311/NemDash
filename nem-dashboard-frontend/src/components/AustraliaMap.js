@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 
 const AustraliaMap = ({ darkMode, hoveredRegion }) => {
   const [svgContent, setSvgContent] = useState('');
+  const containerRef = useRef(null);
 
   useEffect(() => {
     // Load the SVG content
@@ -11,12 +12,36 @@ const AustraliaMap = ({ darkMode, hoveredRegion }) => {
       .catch(error => console.error('Error loading SVG:', error));
   }, []);
 
+  useEffect(() => {
+    if (!containerRef.current || !svgContent) return;
+
+    // Clear any existing highlighting
+    const allPaths = containerRef.current.querySelectorAll('.state-path');
+    allPaths.forEach(path => {
+      path.classList.remove('highlighted');
+    });
+
+    // Highlight the hovered region if there is one
+    if (hoveredRegion) {
+      const stateId = `state-${hoveredRegion}`;
+      const statePath = containerRef.current.querySelector(`#${stateId}`);
+
+      if (statePath) {
+        statePath.classList.add('highlighted');
+        console.log(`Highlighted region: ${hoveredRegion} (${stateId})`);
+      } else {
+        console.warn(`Could not find state path for region: ${hoveredRegion} (${stateId})`);
+      }
+    }
+  }, [hoveredRegion, svgContent]);
+
   const containerStyle = {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    width: '100%',
-    height: '100%',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: '90%',
+    height: '90%',
     zIndex: 1,
     opacity: 0.4,
     filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none',
@@ -24,7 +49,8 @@ const AustraliaMap = ({ darkMode, hoveredRegion }) => {
   };
 
   return (
-    <div 
+    <div
+      ref={containerRef}
       style={containerStyle}
       dangerouslySetInnerHTML={{ __html: svgContent }}
     />
