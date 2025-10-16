@@ -11,11 +11,15 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: all 0.3s ease;
+  overflow: hidden;
 }
 
 .app {
-  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   transition: all 0.3s ease;
+  overflow: hidden;
 }
 
 .app.light {
@@ -34,7 +38,8 @@ body {
   align-items: center;
   padding: 1rem 2rem;
   border-bottom: 2px solid #007bff;
-  margin-bottom: 2rem;
+  margin-bottom: 0;
+  flex-shrink: 0;
 }
 
 .title {
@@ -80,8 +85,9 @@ body {
 
 .tabs {
   display: flex;
-  margin: 0 2rem 2rem 2rem;
+  margin: 0 2rem 0 2rem;
   border-bottom: 1px solid #ddd;
+  flex-shrink: 0;
 }
 
 .tab {
@@ -102,7 +108,12 @@ body {
 }
 
 .content {
-  padding: 0 2rem;
+  padding: 1.5rem 2rem;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .last-updated {
