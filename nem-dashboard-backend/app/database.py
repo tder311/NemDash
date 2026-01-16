@@ -508,15 +508,25 @@ class NEMDatabase:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
-            # Get latest price
+            # Get latest price from TRADING
             cursor = await db.execute("""
-                SELECT price, totaldemand, settlementdate
+                SELECT price, settlementdate
                 FROM price_data
                 WHERE region = ? AND price_type = 'TRADING'
                 ORDER BY settlementdate DESC
                 LIMIT 1
             """, (region,))
             price_row = await cursor.fetchone()
+
+            # Get demand from DISPATCH (TRADING doesn't have REGIONSUM records)
+            cursor = await db.execute("""
+                SELECT totaldemand
+                FROM price_data
+                WHERE region = ? AND price_type = 'DISPATCH'
+                ORDER BY settlementdate DESC
+                LIMIT 1
+            """, (region,))
+            demand_row = await cursor.fetchone()
 
             # Get total generation for the region
             cursor = await db.execute("""
@@ -541,7 +551,7 @@ class NEMDatabase:
             return {
                 'region': region,
                 'latest_price': price_row['price'] if price_row else None,
-                'total_demand': price_row['totaldemand'] if price_row else None,
+                'total_demand': demand_row['totaldemand'] if demand_row else None,
                 'price_timestamp': price_row['settlementdate'] if price_row else None,
                 'total_generation': gen_row['total_generation'] if gen_row else None,
                 'generator_count': count_row['generator_count'] if count_row else 0

@@ -43,7 +43,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
     try {
       // Fetch all data in parallel
       const [priceResponse, fuelResponse, summaryResponse] = await Promise.all([
-        axios.get(`/api/region/${region}/prices/history?hours=${timeRange}&price_type=DISPATCH`),
+        axios.get(`/api/region/${region}/prices/history?hours=${timeRange}&price_type=PUBLIC`),
         axios.get(`/api/region/${region}/generation/current`),
         axios.get(`/api/region/${region}/summary`)
       ]);
