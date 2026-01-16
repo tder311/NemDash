@@ -32,7 +32,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('fetches price history data on mount', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -51,7 +51,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('requests 24 hours of data', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -68,7 +68,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('renders Plotly chart after data loads', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -91,7 +91,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('applies dark mode class', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={true} />);
 
@@ -101,7 +101,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('applies light mode class when darkMode is false', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -111,7 +111,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('handles empty API response', async () => {
-    axios.get.mockResolvedValueOnce({ data: [] });
+    axios.get.mockResolvedValueOnce({ data: { data: [] } });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -123,7 +123,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('handles missing data property in response', async () => {
-    axios.get.mockResolvedValueOnce({});
+    axios.get.mockResolvedValueOnce({ data: {} });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -135,7 +135,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('passes dark mode colors to chart layout', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={true} />);
 
@@ -148,7 +148,7 @@ describe('PriceHistoryPage', () => {
   });
 
   test('passes light mode colors to chart layout', async () => {
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
 
     render(<PriceHistoryPage darkMode={false} />);
 
@@ -164,7 +164,7 @@ describe('PriceHistoryPage', () => {
 describe('PriceHistoryPage REGION_COLORS', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    axios.get.mockResolvedValueOnce(mockPriceData);
+    axios.get.mockResolvedValueOnce({ data: mockPriceData });
   });
 
   test('creates separate traces for each region', async () => {

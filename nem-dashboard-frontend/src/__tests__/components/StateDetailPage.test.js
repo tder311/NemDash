@@ -51,9 +51,9 @@ describe('StateDetailPage', () => {
 
   test('fetches all data in parallel on mount', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -69,24 +69,25 @@ describe('StateDetailPage', () => {
 
   test('displays region name and code', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/New South Wales/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    expect(screen.getByText('(NSW)')).toBeInTheDocument();
+    // Region name and code are rendered together as "New South Wales (NSW)"
+    expect(screen.getByText(/New South Wales \(NSW\)/i)).toBeInTheDocument();
   });
 
   test('displays summary cards with correct values', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -102,9 +103,9 @@ describe('StateDetailPage', () => {
 
   test('displays fuel breakdown table', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -122,9 +123,9 @@ describe('StateDetailPage', () => {
 
   test('back button calls onBack prop', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -139,18 +140,18 @@ describe('StateDetailPage', () => {
 
   test('time range selector changes state', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary)
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary })
       // Re-fetch after time range change
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Time Range:')).toBeInTheDocument();
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
     const select = screen.getByRole('combobox');
@@ -166,9 +167,9 @@ describe('StateDetailPage', () => {
 
   test('renders Plotly charts', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -179,12 +180,12 @@ describe('StateDetailPage', () => {
 
   test('auto-refreshes every 60 seconds', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary)
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -220,9 +221,9 @@ describe('StateDetailPage', () => {
 
   test('displays Last Updated timestamp', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -233,9 +234,9 @@ describe('StateDetailPage', () => {
 
   test('applies dark mode class', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={true} onBack={mockOnBack} />);
 
@@ -246,9 +247,9 @@ describe('StateDetailPage', () => {
 
   test('applies light mode class when darkMode is false', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -259,17 +260,18 @@ describe('StateDetailPage', () => {
 
   test('displays correct region for VIC', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce({ ...mockSummary, region: 'VIC' });
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } });
 
     render(<StateDetailPage region="VIC" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Victoria/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    expect(screen.getByText('(VIC)')).toBeInTheDocument();
+    // Region name and code are rendered together as "Victoria (VIC)"
+    expect(screen.getByText(/Victoria \(VIC\)/i)).toBeInTheDocument();
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/prices/history?hours=24&price_type=PUBLIC');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/current');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/summary');
@@ -277,12 +279,12 @@ describe('StateDetailPage', () => {
 
   test('re-fetches data when region prop changes', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary)
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce({ ...mockSummary, region: 'VIC' });
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } });
 
     const { rerender } = render(
       <StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />
@@ -312,9 +314,9 @@ describe('StateDetailPage', () => {
     };
 
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(summaryWithNulls);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: summaryWithNulls });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -328,9 +330,9 @@ describe('StateDetailPage', () => {
 
   test('handles empty fuel mix', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce({ fuel_mix: [] })
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: { fuel_mix: [] } })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -345,9 +347,9 @@ describe('StateDetailPage', () => {
 
   test('handles empty price history', async () => {
     axios.get
-      .mockResolvedValueOnce({ data: [] })
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -361,9 +363,9 @@ describe('StateDetailPage', () => {
 
   test('clears interval on unmount', async () => {
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
 
     const { unmount } = render(
       <StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />
@@ -388,9 +390,9 @@ describe('StateDetailPage REGION_NAMES mapping', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
   });
 
   test.each([
@@ -414,9 +416,9 @@ describe('StateDetailPage time range options', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     axios.get
-      .mockResolvedValueOnce(mockPriceHistory)
-      .mockResolvedValueOnce(mockFuelMix)
-      .mockResolvedValueOnce(mockSummary);
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary });
   });
 
   test('has all time range options', async () => {

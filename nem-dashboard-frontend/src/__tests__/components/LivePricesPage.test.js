@@ -88,8 +88,8 @@ describe('LivePricesPage', () => {
 
   test('fetches and displays data on mount', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)  // trading prices
-      .mockResolvedValueOnce(mockDispatchData); // dispatch data
+      .mockResolvedValueOnce({ data: mockTradingData })  // trading prices
+      .mockResolvedValueOnce({ data: mockDispatchData }); // dispatch data
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -103,8 +103,8 @@ describe('LivePricesPage', () => {
 
   test('merges trading prices with dispatch demand data', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -118,8 +118,8 @@ describe('LivePricesPage', () => {
 
   test('displays Last Updated timestamp', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -143,10 +143,10 @@ describe('LivePricesPage', () => {
 
   test('polls for data every 30 seconds', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData)
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData })
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -169,8 +169,8 @@ describe('LivePricesPage', () => {
 
   test('clears interval on unmount', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     const { unmount } = render(<LivePricesPage darkMode={false} />);
 
@@ -188,8 +188,8 @@ describe('LivePricesPage', () => {
 
   test('handles region hover events', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -205,13 +205,16 @@ describe('LivePricesPage', () => {
 
     // Leave
     fireEvent.mouseLeave(screen.getByTestId('sidebar-region-NSW'));
-    expect(screen.getByTestId('australia-map')).toHaveAttribute('data-hovered', '');
+    // hoveredRegion becomes null after mouse leave, which renders as no attribute or null
+    const mapAfterLeave = screen.getByTestId('australia-map');
+    const hoveredAfter = mapAfterLeave.getAttribute('data-hovered');
+    expect(hoveredAfter === null || hoveredAfter === '').toBe(true);
   });
 
   test('navigates to StateDetailPage when region is clicked', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -232,8 +235,8 @@ describe('LivePricesPage', () => {
 
   test('returns to overview when back is clicked', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -260,8 +263,8 @@ describe('LivePricesPage', () => {
 
   test('clicking map region navigates to StateDetailPage', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -281,8 +284,8 @@ describe('LivePricesPage', () => {
 
   test('applies dark mode class', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={true} />);
 
@@ -293,8 +296,8 @@ describe('LivePricesPage', () => {
 
   test('applies light mode class when darkMode is false', async () => {
     axios.get
-      .mockResolvedValueOnce(mockTradingData)
-      .mockResolvedValueOnce(mockDispatchData);
+      .mockResolvedValueOnce({ data: mockTradingData })
+      .mockResolvedValueOnce({ data: mockDispatchData });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -305,8 +308,8 @@ describe('LivePricesPage', () => {
 
   test('handles empty API response gracefully', async () => {
     axios.get
-      .mockResolvedValueOnce({ data: [] })
-      .mockResolvedValueOnce({ data: [] });
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: { data: [] } });
 
     render(<LivePricesPage darkMode={false} />);
 
@@ -325,8 +328,8 @@ describe('LivePricesPage', () => {
     };
 
     axios.get
-      .mockResolvedValueOnce(tradingDataOnly)
-      .mockResolvedValueOnce({ data: [] }); // No dispatch data
+      .mockResolvedValueOnce({ data: tradingDataOnly })
+      .mockResolvedValueOnce({ data: { data: [] } }); // No dispatch data
 
     render(<LivePricesPage darkMode={false} />);
 
