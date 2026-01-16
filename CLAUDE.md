@@ -98,13 +98,35 @@ The NEMWEB CSV format is non-standard:
 
 ### API Endpoint Patterns
 
-**General Endpoints:**
+**Health & Status:**
+- `/` - Root endpoint (returns API name and version)
+- `/health` - Health check (returns status, database connection, timestamp)
+
+**Dispatch Data:**
 - `/api/dispatch/latest` - Latest SCADA data (limit parameter)
+- `/api/dispatch/range?start_date=...&end_date=...&duid=...` - Dispatch data for date range
+
+**Price Data:**
 - `/api/prices/latest?price_type=DISPATCH|TRADING|PUBLIC` - Latest prices by type
-- `/api/prices/history?start_date=...&end_date=...&price_type=...` - Historical range queries
+- `/api/prices/history?start_date=...&end_date=...&region=...&price_type=...` - Historical range queries
+
+**Interconnector Data:**
 - `/api/interconnectors/latest` - Current interconnector flows
+- `/api/interconnectors/history?start_date=...&end_date=...&interconnector=...` - Interconnector flow history
+
+**Generator Data:**
 - `/api/generators/filter?region=NSW&fuel_source=Coal` - Filtered generator data
+- `/api/duids` - List of all unique generator DUIDs
+
+**Analysis & Summary:**
+- `/api/generation/by-fuel?start_date=...&end_date=...` - Aggregated generation by fuel type
+- `/api/summary` - Database summary statistics
 - `/api/data/coverage?table=price_data` - Data coverage for backfill planning
+
+**Data Ingestion (Manual Triggers):**
+- `POST /api/ingest/current` - Trigger current data ingestion
+- `POST /api/ingest/historical?start_date=...&end_date=...` - Trigger historical dispatch ingestion
+- `POST /api/ingest/historical-prices?start_date=...&end_date=...` - Trigger historical price ingestion
 
 **Region-Specific Endpoints (State Drilldown):**
 - `/api/region/{region}/generation/current` - Current fuel mix breakdown for a region
@@ -129,6 +151,7 @@ The NEMWEB CSV format is non-standard:
   - Back button to return to overview
 - **PriceHistoryPage.js** - Historical price charts
 - **RegionSidebar.js** - Regional price cards with hover and click effects
+- **RegionCard.js** - Individual region card component (price display, styling)
 - **AustraliaMap.js** - SVG map with region highlighting and click navigation
 - **InterconnectorFlow.js** - Power flow visualization
 

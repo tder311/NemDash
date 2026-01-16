@@ -21,12 +21,12 @@ Complete API documentation for the NEM Dashboard backend.
 ## Health & Status
 
 ### GET /
-Root endpoint - health check.
+Root endpoint.
 
 **Response**
 ```json
 {
-  "message": "NEM Dispatch Dashboard API",
+  "message": "NEM Dispatch Data API",
   "version": "1.0.0"
 }
 ```
@@ -38,7 +38,8 @@ Detailed health check.
 ```json
 {
   "status": "healthy",
-  "database": "connected"
+  "database": "connected",
+  "timestamp": "2025-01-15T10:30:00.123456"
 }
 ```
 
