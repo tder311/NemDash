@@ -33,13 +33,31 @@ beforeEach(() => {
   );
 });
 
-// Mock axios
+// Mock axios with default resolved values
 jest.mock('axios', () => ({
-  get: jest.fn(),
-  post: jest.fn(),
-  put: jest.fn(),
-  delete: jest.fn(),
+  __esModule: true,
+  default: {
+    get: jest.fn(() => Promise.resolve({ data: { data: [] } })),
+    post: jest.fn(() => Promise.resolve({ data: {} })),
+    put: jest.fn(() => Promise.resolve({ data: {} })),
+    delete: jest.fn(() => Promise.resolve({ data: {} })),
+  },
+  get: jest.fn(() => Promise.resolve({ data: { data: [] } })),
+  post: jest.fn(() => Promise.resolve({ data: {} })),
+  put: jest.fn(() => Promise.resolve({ data: {} })),
+  delete: jest.fn(() => Promise.resolve({ data: {} })),
 }));
+
+// Get reference to the mocked axios for resetting
+const axios = require('axios');
+
+// Reset axios mocks before each test - restore default implementation after clearAllMocks
+beforeEach(() => {
+  // Only reset if the mock doesn't have an implementation set by the test
+  if (!axios.get.getMockImplementation || !axios.get.getMockImplementation()) {
+    axios.get.mockImplementation(() => Promise.resolve({ data: { data: [] } }));
+  }
+});
 
 // Mock Plotly - it doesn't work well in test environment
 jest.mock('react-plotly.js', () => {

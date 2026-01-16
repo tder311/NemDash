@@ -414,9 +414,9 @@ describe('StateDetailPage time range options', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     axios.get
-      .mockResolvedValue(mockPriceHistory)
-      .mockResolvedValue(mockFuelMix)
-      .mockResolvedValue(mockSummary);
+      .mockResolvedValueOnce(mockPriceHistory)
+      .mockResolvedValueOnce(mockFuelMix)
+      .mockResolvedValueOnce(mockSummary);
   });
 
   test('has all time range options', async () => {

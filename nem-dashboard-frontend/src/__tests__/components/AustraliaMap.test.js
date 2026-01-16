@@ -28,7 +28,8 @@ describe('AustraliaMap', () => {
   });
 
   afterEach(() => {
-    delete global.fetch;
+    // Restore default fetch mock - don't delete global.fetch as it affects other tests
+    global.fetch.mockClear();
   });
 
   test('fetches SVG content on mount', async () => {
@@ -308,7 +309,8 @@ describe('AustraliaMap edge cases', () => {
   });
 
   afterEach(() => {
-    delete global.fetch;
+    // Restore default fetch mock - don't delete global.fetch as it affects other tests
+    global.fetch.mockClear();
   });
 
   test('handles invalid hoveredRegion gracefully', async () => {
