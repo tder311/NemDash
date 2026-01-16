@@ -11,12 +11,17 @@ import asyncio
 from .database import NEMDatabase
 from .data_ingester import DataIngester, update_sample_generator_info
 from .models import (
-    DispatchDataResponse, 
-    GenerationByFuelResponse, 
+    DispatchDataResponse,
+    GenerationByFuelResponse,
     DataSummaryResponse,
     DUIDListResponse,
     PriceDataResponse,
-    InterconnectorDataResponse
+    InterconnectorDataResponse,
+    FuelMixRecord,
+    RegionFuelMixResponse,
+    RegionPriceHistoryResponse,
+    RegionSummaryResponse,
+    DataCoverageResponse
 )
 
 # Configure logging
@@ -406,6 +411,154 @@ async def get_generators_by_region_fuel(
     except Exception as e:
         logger.error(f"Error getting filtered generators: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Region-specific endpoints for state drilldown
+@app.get("/api/region/{region}/generation/current", response_model=RegionFuelMixResponse)
+async def get_region_current_generation(region: str):
+    """Get current generation breakdown by fuel type for a specific region"""
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+
+    try:
+        df = await db.get_region_fuel_mix(region)
+
+        if df.empty:
+            return RegionFuelMixResponse(
+                region=region,
+                settlementdate=None,
+                total_generation=0,
+                fuel_mix=[],
+                message=f"No generation data available for {region}"
+            )
+
+        # Convert to response format
+        fuel_mix = []
+        for _, row in df.iterrows():
+            fuel_mix.append(FuelMixRecord(
+                fuel_source=row['fuel_source'],
+                generation_mw=round(row['generation_mw'], 2) if row['generation_mw'] else 0,
+                percentage=round(row['percentage'], 1) if row['percentage'] else 0,
+                unit_count=int(row['unit_count'])
+            ))
+
+        total_generation = df['generation_mw'].sum()
+        settlementdate = df['settlementdate'].iloc[0] if not df.empty else None
+
+        return RegionFuelMixResponse(
+            region=region,
+            settlementdate=str(settlementdate) if settlementdate else None,
+            total_generation=round(total_generation, 2),
+            fuel_mix=fuel_mix,
+            message=f"Retrieved fuel mix for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting region fuel mix for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/region/{region}/prices/history", response_model=RegionPriceHistoryResponse)
+async def get_region_price_history(
+    region: str,
+    hours: int = Query(default=24, ge=1, le=168, description="Hours of history (1-168)"),
+    price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, or PUBLIC")
+):
+    """Get price history for a specific region over the last N hours"""
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+
+    try:
+        df = await db.get_region_price_history(region, hours, price_type)
+
+        if df.empty:
+            return RegionPriceHistoryResponse(
+                region=region,
+                data=[],
+                count=0,
+                hours=hours,
+                price_type=price_type,
+                message=f"No price history available for {region}"
+            )
+
+        records = df.to_dict('records')
+        for record in records:
+            if 'settlementdate' in record:
+                record['settlementdate'] = record['settlementdate'].isoformat()
+
+        return RegionPriceHistoryResponse(
+            region=region,
+            data=records,
+            count=len(records),
+            hours=hours,
+            price_type=price_type,
+            message=f"Retrieved {len(records)} price records for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting price history for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/region/{region}/summary", response_model=RegionSummaryResponse)
+async def get_region_summary(region: str):
+    """Get summary statistics for a specific region"""
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+
+    try:
+        summary = await db.get_region_summary(region)
+
+        return RegionSummaryResponse(
+            region=summary['region'],
+            latest_price=summary['latest_price'],
+            total_demand=summary['total_demand'],
+            price_timestamp=summary['price_timestamp'],
+            total_generation=summary['total_generation'],
+            generator_count=summary['generator_count'],
+            message=f"Retrieved summary for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting summary for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/data/coverage", response_model=DataCoverageResponse)
+async def get_data_coverage(
+    table: str = Query(default="price_data", description="Table to check: price_data, dispatch_data, interconnector_data")
+):
+    """Get data coverage information for backfill planning"""
+    valid_tables = ['price_data', 'dispatch_data', 'interconnector_data']
+
+    if table not in valid_tables:
+        raise HTTPException(status_code=400, detail=f"Invalid table. Must be one of: {', '.join(valid_tables)}")
+
+    try:
+        coverage = await db.get_data_coverage(table)
+
+        return DataCoverageResponse(
+            table=table,
+            earliest_date=coverage['earliest_date'],
+            latest_date=coverage['latest_date'],
+            total_records=coverage['total_records'],
+            days_with_data=coverage['days_with_data'],
+            message=f"Data coverage for {table}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting data coverage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn

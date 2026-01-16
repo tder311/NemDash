@@ -84,3 +84,46 @@ class InterconnectorDataResponse(BaseModel):
     data: List[Dict[str, Any]]
     count: int
     message: str
+
+
+class FuelMixRecord(BaseModel):
+    fuel_source: str
+    generation_mw: float
+    percentage: float
+    unit_count: int
+
+
+class RegionFuelMixResponse(BaseModel):
+    region: str
+    settlementdate: Optional[str] = None
+    total_generation: float
+    fuel_mix: List[FuelMixRecord]
+    message: str
+
+
+class RegionPriceHistoryResponse(BaseModel):
+    region: str
+    data: List[Dict[str, Any]]
+    count: int
+    hours: int
+    price_type: str
+    message: str
+
+
+class RegionSummaryResponse(BaseModel):
+    region: str
+    latest_price: Optional[float] = None
+    total_demand: Optional[float] = None
+    price_timestamp: Optional[str] = None
+    total_generation: Optional[float] = None
+    generator_count: int
+    message: str
+
+
+class DataCoverageResponse(BaseModel):
+    table: str
+    earliest_date: Optional[str] = None
+    latest_date: Optional[str] = None
+    total_records: int
+    days_with_data: int
+    message: str

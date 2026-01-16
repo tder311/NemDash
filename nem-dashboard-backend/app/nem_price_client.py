@@ -159,10 +159,23 @@ class NEMPriceClient:
     
     def _parse_latest_irsr_file(self, html_content: str) -> Optional[str]:
         """Parse directory listing for latest IRSR file"""
-        # Pattern for IRSR files - correct pattern
-        pattern = r'PUBLIC_DISPATCHIS_\d{12}_\d{16}\.zip'
-        matches = re.findall(pattern, html_content)
-        return sorted(matches)[-1] if matches else None
+        # Try multiple patterns as IRSR files may have different naming conventions
+        patterns = [
+            r'PUBLIC_IRSR_\d{12}_\d{16}\.zip',
+            r'PUBLIC_DISPATCH_IRSR_\d{12}_\d{16}\.zip',
+            r'PUBLIC_DISPATCHIRSR_\d{12}_\d{16}\.zip',
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, html_content)
+            if matches:
+                return sorted(matches)[-1]
+
+        # Log available files for debugging if no match found
+        all_zips = re.findall(r'PUBLIC_[A-Z_]+_\d{12}_\d{16}\.zip', html_content)
+        if all_zips:
+            logger.debug(f"Available ZIP files in IRSR directory: {set(f.split('_')[1] for f in all_zips[:5])}")
+
+        return None
     
     def _parse_dispatch_price_zip(self, zip_content: bytes) -> Optional[pd.DataFrame]:
         """Parse dispatch price ZIP file"""

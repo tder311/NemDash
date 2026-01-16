@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 
-const AustraliaMap = ({ darkMode, hoveredRegion }) => {
+const AustraliaMap = ({ darkMode, hoveredRegion, onRegionClick }) => {
   const [svgContent, setSvgContent] = useState('');
   const containerRef = useRef(null);
 
@@ -11,6 +11,39 @@ const AustraliaMap = ({ darkMode, hoveredRegion }) => {
       .then(content => setSvgContent(content))
       .catch(error => console.error('Error loading SVG:', error));
   }, []);
+
+  // Handle click events on state paths
+  const handleStateClick = useCallback((event) => {
+    const target = event.target;
+    if (target.classList.contains('state-path') && onRegionClick) {
+      const stateId = target.id;
+      const regionCode = stateId.replace('state-', '');
+      if (['NSW', 'VIC', 'QLD', 'SA', 'TAS'].includes(regionCode)) {
+        onRegionClick(regionCode);
+      }
+    }
+  }, [onRegionClick]);
+
+  useEffect(() => {
+    if (!containerRef.current || !svgContent) return;
+
+    // Add click event listener to container
+    const container = containerRef.current;
+    container.addEventListener('click', handleStateClick);
+
+    // Add pointer cursor to clickable state paths
+    const allPaths = container.querySelectorAll('.state-path');
+    allPaths.forEach(path => {
+      const regionCode = path.id.replace('state-', '');
+      if (['NSW', 'VIC', 'QLD', 'SA', 'TAS'].includes(regionCode)) {
+        path.style.cursor = 'pointer';
+      }
+    });
+
+    return () => {
+      container.removeEventListener('click', handleStateClick);
+    };
+  }, [svgContent, handleStateClick]);
 
   useEffect(() => {
     if (!containerRef.current || !svgContent) return;
@@ -28,9 +61,6 @@ const AustraliaMap = ({ darkMode, hoveredRegion }) => {
 
       if (statePath) {
         statePath.classList.add('highlighted');
-        console.log(`Highlighted region: ${hoveredRegion} (${stateId})`);
-      } else {
-        console.warn(`Could not find state path for region: ${hoveredRegion} (${stateId})`);
       }
     }
   }, [hoveredRegion, svgContent]);

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import RegionSidebar from './RegionSidebar';
 import AustraliaMap from './AustraliaMap';
+import StateDetailPage from './StateDetailPage';
 import './LivePricesPage.css';
 
 
@@ -10,6 +11,7 @@ function LivePricesPage({ darkMode }) {
   const [lastUpdated, setLastUpdated] = useState('');
   const [loading, setLoading] = useState(true);
   const [hoveredRegion, setHoveredRegion] = useState(null);
+  const [selectedRegion, setSelectedRegion] = useState(null);
 
   const fetchData = async () => {
     try {
@@ -67,6 +69,25 @@ function LivePricesPage({ darkMode }) {
     setHoveredRegion(null);
   };
 
+  const handleRegionClick = (regionCode) => {
+    setSelectedRegion(regionCode);
+  };
+
+  const handleBackToOverview = () => {
+    setSelectedRegion(null);
+  };
+
+  // Show state detail page if a region is selected
+  if (selectedRegion) {
+    return (
+      <StateDetailPage
+        region={selectedRegion}
+        darkMode={darkMode}
+        onBack={handleBackToOverview}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div className="loading">
@@ -88,11 +109,16 @@ function LivePricesPage({ darkMode }) {
         darkMode={darkMode}
         onRegionHover={handleRegionHover}
         onRegionLeave={handleRegionLeave}
+        onRegionClick={handleRegionClick}
       />
-      
+
       {/* Australian Map */}
       <div className="map-container">
-        <AustraliaMap darkMode={darkMode} hoveredRegion={hoveredRegion} />
+        <AustraliaMap
+          darkMode={darkMode}
+          hoveredRegion={hoveredRegion}
+          onRegionClick={handleRegionClick}
+        />
       </div>
     </div>
   );

@@ -93,14 +93,23 @@ The NEMWEB CSV format is non-standard:
 - `lifespan` context manager in main.py handles startup/shutdown
 - `DataIngester.run_continuous_ingestion()` runs as asyncio background task
 - Default 5-minute update interval (configurable via UPDATE_INTERVAL_MINUTES env var)
+- **Automatic backfill on startup**: Fills missing price data for the last 30 days (configurable via BACKFILL_DAYS_ON_STARTUP)
 - Fetches: dispatch data, dispatch prices, trading prices, interconnector flows, and daily public prices
 
 ### API Endpoint Patterns
+
+**General Endpoints:**
 - `/api/dispatch/latest` - Latest SCADA data (limit parameter)
 - `/api/prices/latest?price_type=DISPATCH|TRADING|PUBLIC` - Latest prices by type
 - `/api/prices/history?start_date=...&end_date=...&price_type=...` - Historical range queries
 - `/api/interconnectors/latest` - Current interconnector flows
 - `/api/generators/filter?region=NSW&fuel_source=Coal` - Filtered generator data
+- `/api/data/coverage?table=price_data` - Data coverage for backfill planning
+
+**Region-Specific Endpoints (State Drilldown):**
+- `/api/region/{region}/generation/current` - Current fuel mix breakdown for a region
+- `/api/region/{region}/prices/history?hours=24&price_type=DISPATCH` - Price history for a region
+- `/api/region/{region}/summary` - Summary statistics for a region (price, demand, generation)
 
 ## Frontend Architecture
 
@@ -110,9 +119,17 @@ The NEMWEB CSV format is non-standard:
   - Fetches trading prices for display
   - Polls every 30 seconds
   - Falls back to empty data on error
+  - **Supports state drilldown**: Click on a region to navigate to StateDetailPage
+- **StateDetailPage.js** - Detailed view for a specific NEM region
+  - Price history chart (Plotly, configurable time range: 6h-7d)
+  - Fuel mix donut chart (current generation by fuel type)
+  - Summary cards (price, demand, generation, generator count)
+  - Fuel breakdown table
+  - Auto-refresh every 60 seconds
+  - Back button to return to overview
 - **PriceHistoryPage.js** - Historical price charts
-- **RegionSidebar.js** - Regional price cards with hover effects
-- **AustraliaMap.js** - SVG map with region highlighting
+- **RegionSidebar.js** - Regional price cards with hover and click effects
+- **AustraliaMap.js** - SVG map with region highlighting and click navigation
 - **InterconnectorFlow.js** - Power flow visualization
 
 ### State Management
@@ -157,6 +174,7 @@ LOG_LEVEL=info
 DATABASE_PATH=./data/nem_dispatch.db
 NEM_API_BASE_URL=https://www.nemweb.com.au
 UPDATE_INTERVAL_MINUTES=5
+BACKFILL_DAYS_ON_STARTUP=30
 ```
 
 ### Frontend
@@ -227,11 +245,11 @@ This imports from `data/GenInfo.csv` which should contain columns: duid, station
 
 ## Known Limitations
 
-1. Historical data ingestion is manual via API POST endpoints - not automatic
-2. Generator info sample data is limited to 10 common units
-3. Frontend has no authentication/authorization
-4. SQLite database not suitable for high-concurrency production use
-5. No data retention policy - database grows indefinitely
+1. Generator info sample data is limited to 10 common units (run `import_geninfo_csv.py` for full dataset)
+2. Frontend has no authentication/authorization
+3. SQLite database not suitable for high-concurrency production use (designed for easy migration to PostgreSQL)
+4. No data retention policy - database grows indefinitely
+5. Interconnector data parsing may fail if NEMWEB changes file naming conventions
 
 ## Deployment Considerations
 

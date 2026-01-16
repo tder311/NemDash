@@ -1,13 +1,19 @@
 import React from 'react';
 import './RegionSidebar.css';
 
-const RegionSidebar = ({ regions, darkMode, onRegionHover, onRegionLeave }) => {
+const RegionSidebar = ({ regions, darkMode, onRegionHover, onRegionLeave, onRegionClick }) => {
   const handleMouseEnter = (regionCode) => {
     onRegionHover(regionCode);
   };
 
   const handleMouseLeave = () => {
     onRegionLeave();
+  };
+
+  const handleClick = (regionCode) => {
+    if (onRegionClick) {
+      onRegionClick(regionCode);
+    }
   };
 
   const formatPrice = (price) => {
@@ -31,6 +37,7 @@ const RegionSidebar = ({ regions, darkMode, onRegionHover, onRegionLeave }) => {
             style={{ '--region-color': getRegionColor(region.region) }}
             onMouseEnter={() => handleMouseEnter(region.region)}
             onMouseLeave={handleMouseLeave}
+            onClick={() => handleClick(region.region)}
           >
             <div className="region-header">
               <span className="region-code">{region.region}</span>

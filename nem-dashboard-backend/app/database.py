@@ -435,12 +435,164 @@ class NEMDatabase:
             
             cursor = await db.execute(base_query, params)
             rows = await cursor.fetchall()
-            
+
             if not rows:
                 return pd.DataFrame()
-            
+
             data = [dict(row) for row in rows]
             df = pd.DataFrame(data)
             df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
+
             return df
+
+    async def get_region_fuel_mix(self, region: str) -> pd.DataFrame:
+        """Get current generation breakdown by fuel source for a specific region"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            cursor = await db.execute("""
+                SELECT
+                    COALESCE(g.fuel_source, 'Unknown') as fuel_source,
+                    SUM(d.scadavalue) as generation_mw,
+                    COUNT(*) as unit_count,
+                    MAX(d.settlementdate) as settlementdate
+                FROM dispatch_data d
+                LEFT JOIN generator_info g ON d.duid = g.duid
+                WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
+                AND g.region = ?
+                GROUP BY g.fuel_source
+                ORDER BY generation_mw DESC
+            """, (region,))
+
+            rows = await cursor.fetchall()
+
+            if not rows:
+                return pd.DataFrame()
+
+            data = [dict(row) for row in rows]
+            df = pd.DataFrame(data)
+
+            # Calculate percentage
+            total = df['generation_mw'].sum()
+            df['percentage'] = (df['generation_mw'] / total * 100).round(1) if total > 0 else 0
+
+            return df
+
+    async def get_region_price_history(self, region: str, hours: int = 24, price_type: str = 'DISPATCH') -> pd.DataFrame:
+        """Get price history for a specific region over the last N hours"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            cursor = await db.execute("""
+                SELECT settlementdate, region, price, totaldemand, price_type
+                FROM price_data
+                WHERE region = ?
+                AND price_type = ?
+                AND settlementdate >= datetime('now', ? || ' hours')
+                ORDER BY settlementdate ASC
+            """, (region, price_type, f'-{hours}'))
+
+            rows = await cursor.fetchall()
+
+            if not rows:
+                return pd.DataFrame()
+
+            data = [dict(row) for row in rows]
+            df = pd.DataFrame(data)
+            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+
+            return df
+
+    async def get_region_summary(self, region: str) -> Dict[str, Any]:
+        """Get summary statistics for a specific region"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            # Get latest price
+            cursor = await db.execute("""
+                SELECT price, totaldemand, settlementdate
+                FROM price_data
+                WHERE region = ? AND price_type = 'TRADING'
+                ORDER BY settlementdate DESC
+                LIMIT 1
+            """, (region,))
+            price_row = await cursor.fetchone()
+
+            # Get total generation for the region
+            cursor = await db.execute("""
+                SELECT SUM(d.scadavalue) as total_generation
+                FROM dispatch_data d
+                LEFT JOIN generator_info g ON d.duid = g.duid
+                WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
+                AND g.region = ?
+            """, (region,))
+            gen_row = await cursor.fetchone()
+
+            # Get generator count by fuel type
+            cursor = await db.execute("""
+                SELECT COUNT(DISTINCT d.duid) as generator_count
+                FROM dispatch_data d
+                LEFT JOIN generator_info g ON d.duid = g.duid
+                WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
+                AND g.region = ?
+            """, (region,))
+            count_row = await cursor.fetchone()
+
+            return {
+                'region': region,
+                'latest_price': price_row['price'] if price_row else None,
+                'total_demand': price_row['totaldemand'] if price_row else None,
+                'price_timestamp': price_row['settlementdate'] if price_row else None,
+                'total_generation': gen_row['total_generation'] if gen_row else None,
+                'generator_count': count_row['generator_count'] if count_row else 0
+            }
+
+    async def get_data_coverage(self, table: str = 'price_data') -> Dict[str, Any]:
+        """Get data coverage information for backfill planning"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            cursor = await db.execute(f"""
+                SELECT
+                    MIN(settlementdate) as earliest_date,
+                    MAX(settlementdate) as latest_date,
+                    COUNT(*) as total_records,
+                    COUNT(DISTINCT date(settlementdate)) as days_with_data
+                FROM {table}
+            """)
+            row = await cursor.fetchone()
+
+            return {
+                'earliest_date': row['earliest_date'],
+                'latest_date': row['latest_date'],
+                'total_records': row['total_records'],
+                'days_with_data': row['days_with_data']
+            }
+
+    async def get_missing_dates(self, start_date: datetime, end_date: datetime, price_type: str = 'PUBLIC') -> List[datetime]:
+        """Find dates with no price data in the specified range"""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Get dates that have data
+            cursor = await db.execute("""
+                SELECT DISTINCT date(settlementdate) as data_date
+                FROM price_data
+                WHERE price_type = ?
+                AND date(settlementdate) BETWEEN date(?) AND date(?)
+            """, (price_type, start_date, end_date))
+
+            rows = await cursor.fetchall()
+            existing_dates = {row[0] for row in rows}
+
+            # Generate all dates in range
+            missing = []
+            current = start_date.date() if hasattr(start_date, 'date') else start_date
+            end = end_date.date() if hasattr(end_date, 'date') else end_date
+
+            from datetime import timedelta
+            while current <= end:
+                date_str = current.strftime('%Y-%m-%d')
+                if date_str not in existing_dates:
+                    missing.append(datetime.combine(current, datetime.min.time()))
+                current += timedelta(days=1)
+
+            return missing
