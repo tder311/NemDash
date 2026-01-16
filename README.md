@@ -49,68 +49,89 @@ The National Electricity Market (NEM) Dashboard provides real-time monitoring an
 - Python 3.8+ with pip
 - Node.js 14+ with npm
 - Git
+- macOS (for `make dev` command; other platforms use manual start)
 
 ### Installation
 
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd san-juan
+   cd edinburgh
    ```
 
-2. **Set up the backend**
+2. **Verify environment and install dependencies**
    ```bash
-   cd nem-dashboard-backend
+   make check      # Verify Python and Node.js are installed
+   make install    # Install all dependencies (backend + frontend)
+   ```
 
-   # Create virtual environment (recommended)
+   Or install manually:
+   ```bash
+   # Backend
+   cd nem-dashboard-backend
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-   # Install dependencies
    pip install -r requirements.txt
-
-   # Configure environment (optional - defaults work for development)
    cp .env.example .env
-   ```
 
-3. **Set up the frontend**
-   ```bash
-   cd nem-dashboard-frontend
+   # Frontend
+   cd ../nem-dashboard-frontend
    npm install
    ```
 
 ### Running the Application
 
-**Terminal 1 - Start Backend**
+**One-Command Start (macOS):**
 ```bash
-cd nem-dashboard-backend
-python run.py
+make dev
 ```
-The backend will start at http://localhost:8000 and begin fetching data from NEMWEB automatically.
+This opens two Terminal windows - one for backend (localhost:8000) and one for frontend (localhost:3000).
 
-**Terminal 2 - Start Frontend**
+**Manual Start (any platform):**
+
+Terminal 1 - Backend:
 ```bash
-cd nem-dashboard-frontend
-npm start
+make run-backend
+# Or: cd nem-dashboard-backend && python run.py
 ```
-The frontend will start at http://localhost:3000 and open in your browser.
+
+Terminal 2 - Frontend:
+```bash
+make run-frontend
+# Or: cd nem-dashboard-frontend && npm start
+```
 
 ### Verify Installation
 
 ```bash
-# Check backend health
-curl http://localhost:8000/health
+# Check if servers are running
+make health
 
-# Check data summary
+# Or manually:
+curl http://localhost:8000/health
 curl http://localhost:8000/api/summary
+```
+
+### All Available Commands
+
+Run `make help` to see all available commands:
+
+```
+Setup:      make install, make install-backend, make install-frontend
+Development: make dev, make run-backend, make run-frontend
+Verification: make check, make check-deps, make health
+Build:      make build, make test, make clean
 ```
 
 ## Project Structure
 
 ```
-san-juan/
+edinburgh/
 ├── README.md                      # This file
 ├── CLAUDE.md                      # Claude Code development guidance
+├── Makefile                       # Development commands (make dev, make install, etc.)
+├── scripts/
+│   └── dev.sh                     # macOS script to open two Terminal windows
 ├── docs/
 │   ├── API.md                     # Complete API reference
 │   └── ARCHITECTURE.md            # System architecture details
