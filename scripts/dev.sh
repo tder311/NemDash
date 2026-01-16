@@ -24,6 +24,27 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
     exit 1
 fi
 
+# Function to kill process on a port
+kill_port() {
+    local port=$1
+    local pid=$(lsof -ti :$port 2>/dev/null)
+    if [ -n "$pid" ]; then
+        echo "Killing existing process on port $port (PID: $pid)..."
+        kill $pid 2>/dev/null
+        sleep 1
+        # Force kill if still running
+        if lsof -ti :$port > /dev/null 2>&1; then
+            kill -9 $(lsof -ti :$port) 2>/dev/null
+        fi
+    fi
+}
+
+# Kill any existing instances
+echo "Checking for existing instances..."
+kill_port 8000  # Backend
+kill_port 3000  # Frontend
+echo ""
+
 # Setup .env if needed
 if [ ! -f "$BACKEND_DIR/.env" ]; then
     echo "Creating .env from .env.example..."
