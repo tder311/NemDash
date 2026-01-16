@@ -33,48 +33,42 @@ beforeEach(() => {
   );
 });
 
-// Smart default mock implementation for axios.get that handles all common API patterns
-const defaultAxiosGetImplementation = (url) => {
-  // Return appropriate empty/default data based on URL pattern
-  if (url && typeof url === 'string') {
-    if (url.includes('/prices/history') || url.includes('/region/') && url.includes('/prices/')) {
-      return Promise.resolve({ data: { data: [], count: 0, message: 'No data' } });
+// Mock axios module - define everything inline to avoid hoisting issues
+jest.mock('axios', () => {
+  // Smart default mock implementation for axios.get
+  const defaultGet = jest.fn((url) => {
+    if (url && typeof url === 'string') {
+      if (url.includes('/prices/history') || (url.includes('/region/') && url.includes('/prices/'))) {
+        return Promise.resolve({ data: { data: [], count: 0, message: 'No data' } });
+      }
+      if (url.includes('/generation/current')) {
+        return Promise.resolve({ data: { fuel_mix: [], total_generation: 0, region: 'NSW' } });
+      }
+      if (url.includes('/summary')) {
+        return Promise.resolve({ data: { region: 'NSW', latest_price: 0, total_demand: 0, total_generation: 0, generator_count: 0 } });
+      }
     }
-    if (url.includes('/generation/current')) {
-      return Promise.resolve({ data: { fuel_mix: [], total_generation: 0, region: 'NSW' } });
-    }
-    if (url.includes('/summary')) {
-      return Promise.resolve({ data: { region: 'NSW', latest_price: 0, total_demand: 0, total_generation: 0, generator_count: 0 } });
-    }
-  }
-  // Default response for any other URL
-  return Promise.resolve({ data: { data: [] } });
-};
+    return Promise.resolve({ data: { data: [] } });
+  });
 
-// Create mock functions for axios - these will be reused
-const mockAxiosGet = jest.fn(defaultAxiosGetImplementation);
-const mockAxiosPost = jest.fn(() => Promise.resolve({ data: {} }));
-const mockAxiosPut = jest.fn(() => Promise.resolve({ data: {} }));
-const mockAxiosDelete = jest.fn(() => Promise.resolve({ data: {} }));
+  const defaultPost = jest.fn(() => Promise.resolve({ data: {} }));
+  const defaultPut = jest.fn(() => Promise.resolve({ data: {} }));
+  const defaultDelete = jest.fn(() => Promise.resolve({ data: {} }));
 
-// Mock axios module
-jest.mock('axios', () => ({
-  __esModule: true,
-  default: {
-    get: mockAxiosGet,
-    post: mockAxiosPost,
-    put: mockAxiosPut,
-    delete: mockAxiosDelete,
-  },
-  get: mockAxiosGet,
-  post: mockAxiosPost,
-  put: mockAxiosPut,
-  delete: mockAxiosDelete,
-}));
-
-// Note: Test files may call jest.clearAllMocks() in their beforeEach, but this only clears
-// call history, not implementations. So the default implementation will remain active unless
-// the test explicitly overrides it with mockResolvedValueOnce() or mockImplementation().
+  return {
+    __esModule: true,
+    default: {
+      get: defaultGet,
+      post: defaultPost,
+      put: defaultPut,
+      delete: defaultDelete,
+    },
+    get: defaultGet,
+    post: defaultPost,
+    put: defaultPut,
+    delete: defaultDelete,
+  };
+});
 
 // Mock Plotly - it doesn't work well in test environment
 jest.mock('react-plotly.js', () => {
