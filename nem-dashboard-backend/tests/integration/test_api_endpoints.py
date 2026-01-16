@@ -119,17 +119,24 @@ def _setup_database_sync():
 
 # Module-level setup
 _db = None
+_client = None
 
 
 def setup_module(module):
     """Set up database once for all tests in module"""
-    global _db
+    global _db, _client
     _db = _setup_database_sync()
     main_module.db = _db
+    # Create TestClient AFTER database is set up, so lifespan sees the configured db
+    _client = TestClient(app, raise_server_exceptions=False)
 
 
 def teardown_module(module):
     """Clean up after all tests"""
+    global _client
+    if _client:
+        _client.close()
+        _client = None
     try:
         Path(_test_db_path).unlink(missing_ok=True)
     except:
@@ -138,8 +145,8 @@ def teardown_module(module):
 
 @pytest.fixture
 def client():
-    """Create test client"""
-    return TestClient(app, raise_server_exceptions=False)
+    """Return the module-level test client"""
+    return _client
 
 
 class TestHealthCheck:
