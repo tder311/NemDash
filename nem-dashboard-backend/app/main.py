@@ -96,8 +96,13 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
+    """Root endpoint"""
+    return {"message": "NEM Dispatch Data API", "version": "1.0.0"}
+
+@app.get("/health")
+async def health():
     """Health check endpoint"""
-    return {"message": "NEM Dispatch Data API is running", "timestamp": datetime.now().isoformat()}
+    return {"status": "healthy", "database": "connected", "timestamp": datetime.now().isoformat()}
 
 @app.get("/api/dispatch/latest", response_model=DispatchDataResponse)
 async def get_latest_dispatch_data(
