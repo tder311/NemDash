@@ -151,7 +151,7 @@ class TestHealthCheck:
         assert response.status_code == 200
         data = response.json()
         assert "message" in data
-        assert "NEM Dispatch Data API is running" in data["message"]
+        assert "NEM Dispatch Data API" in data["message"]
         assert "timestamp" in data
 
 

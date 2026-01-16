@@ -33,31 +33,48 @@ beforeEach(() => {
   );
 });
 
-// Mock axios with default resolved values
+// Smart default mock implementation for axios.get that handles all common API patterns
+const defaultAxiosGetImplementation = (url) => {
+  // Return appropriate empty/default data based on URL pattern
+  if (url && typeof url === 'string') {
+    if (url.includes('/prices/history') || url.includes('/region/') && url.includes('/prices/')) {
+      return Promise.resolve({ data: { data: [], count: 0, message: 'No data' } });
+    }
+    if (url.includes('/generation/current')) {
+      return Promise.resolve({ data: { fuel_mix: [], total_generation: 0, region: 'NSW' } });
+    }
+    if (url.includes('/summary')) {
+      return Promise.resolve({ data: { region: 'NSW', latest_price: 0, total_demand: 0, total_generation: 0, generator_count: 0 } });
+    }
+  }
+  // Default response for any other URL
+  return Promise.resolve({ data: { data: [] } });
+};
+
+// Create mock functions for axios - these will be reused
+const mockAxiosGet = jest.fn(defaultAxiosGetImplementation);
+const mockAxiosPost = jest.fn(() => Promise.resolve({ data: {} }));
+const mockAxiosPut = jest.fn(() => Promise.resolve({ data: {} }));
+const mockAxiosDelete = jest.fn(() => Promise.resolve({ data: {} }));
+
+// Mock axios module
 jest.mock('axios', () => ({
   __esModule: true,
   default: {
-    get: jest.fn(() => Promise.resolve({ data: { data: [] } })),
-    post: jest.fn(() => Promise.resolve({ data: {} })),
-    put: jest.fn(() => Promise.resolve({ data: {} })),
-    delete: jest.fn(() => Promise.resolve({ data: {} })),
+    get: mockAxiosGet,
+    post: mockAxiosPost,
+    put: mockAxiosPut,
+    delete: mockAxiosDelete,
   },
-  get: jest.fn(() => Promise.resolve({ data: { data: [] } })),
-  post: jest.fn(() => Promise.resolve({ data: {} })),
-  put: jest.fn(() => Promise.resolve({ data: {} })),
-  delete: jest.fn(() => Promise.resolve({ data: {} })),
+  get: mockAxiosGet,
+  post: mockAxiosPost,
+  put: mockAxiosPut,
+  delete: mockAxiosDelete,
 }));
 
-// Get reference to the mocked axios for resetting
-const axios = require('axios');
-
-// Reset axios mocks before each test - restore default implementation after clearAllMocks
-beforeEach(() => {
-  // Only reset if the mock doesn't have an implementation set by the test
-  if (!axios.get.getMockImplementation || !axios.get.getMockImplementation()) {
-    axios.get.mockImplementation(() => Promise.resolve({ data: { data: [] } }));
-  }
-});
+// Note: Test files may call jest.clearAllMocks() in their beforeEach, but this only clears
+// call history, not implementations. So the default implementation will remain active unless
+// the test explicitly overrides it with mockResolvedValueOnce() or mockImplementation().
 
 // Mock Plotly - it doesn't work well in test environment
 jest.mock('react-plotly.js', () => {

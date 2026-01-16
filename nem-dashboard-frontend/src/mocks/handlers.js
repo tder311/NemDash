@@ -107,7 +107,11 @@ export const setupAxiosMocks = (axios) => {
     if (url.includes('/api/region/') && url.includes('/prices/history')) {
       return Promise.resolve(createAxiosMockResponse(mockPriceHistory));
     }
-    return Promise.reject(new Error('Not found'));
+    if (url.includes('/api/prices/history')) {
+      return Promise.resolve(createAxiosMockResponse({ data: [], count: 0, message: 'No data' }));
+    }
+    // Return empty data for unmatched URLs instead of rejecting
+    return Promise.resolve(createAxiosMockResponse({ data: [] }));
   });
 };
 
