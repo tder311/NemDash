@@ -159,10 +159,23 @@ class NEMPriceClient:
     
     def _parse_latest_irsr_file(self, html_content: str) -> Optional[str]:
         """Parse directory listing for latest IRSR file"""
-        # Pattern for IRSR files - correct pattern
-        pattern = r'PUBLIC_DISPATCHIS_\d{12}_\d{16}\.zip'
-        matches = re.findall(pattern, html_content)
-        return sorted(matches)[-1] if matches else None
+        # Try multiple patterns as IRSR files may have different naming conventions
+        patterns = [
+            r'PUBLIC_IRSR_\d{12}_\d{16}\.zip',
+            r'PUBLIC_DISPATCH_IRSR_\d{12}_\d{16}\.zip',
+            r'PUBLIC_DISPATCHIRSR_\d{12}_\d{16}\.zip',
+        ]
+        for pattern in patterns:
+            matches = re.findall(pattern, html_content)
+            if matches:
+                return sorted(matches)[-1]
+
+        # Log available files for debugging if no match found
+        all_zips = re.findall(r'PUBLIC_[A-Z_]+_\d{12}_\d{16}\.zip', html_content)
+        if all_zips:
+            logger.debug(f"Available ZIP files in IRSR directory: {set(f.split('_')[1] for f in all_zips[:5])}")
+
+        return None
     
     def _parse_dispatch_price_zip(self, zip_content: bytes) -> Optional[pd.DataFrame]:
         """Parse dispatch price ZIP file"""
@@ -229,29 +242,49 @@ class NEMPriceClient:
         try:
             csv_text = csv_content.decode('utf-8')
             lines = csv_text.split('\n')
-            
+
             # Look for price records - different types have different patterns
             price_lines = []
+            regionsum_lines = []  # For demand data
+
             if price_type == 'DISPATCH':
                 # For dispatch, look for PRICE records which contain actual RRP values
                 pattern = 'D,DISPATCH,PRICE'
+                regionsum_pattern = 'D,DISPATCH,REGIONSUM'
             elif price_type == 'TRADING':
                 # Trading has actual price records with RRP
-                pattern = 'D,TRADING,PRICE'  
+                pattern = 'D,TRADING,PRICE'
+                regionsum_pattern = 'D,TRADING,REGIONSUM'
             else:  # PUBLIC - uses DREGION records
                 pattern = 'D,DREGION,'
-            
+                regionsum_pattern = None
+
             for line in lines:
                 if pattern in line:
                     price_lines.append(line)
-            
+                if regionsum_pattern and regionsum_pattern in line:
+                    regionsum_lines.append(line)
+
             if not price_lines:
                 logger.warning(f"No {price_type} price records found")
                 return None
-            
+
+            # Parse REGIONSUM for demand data (DISPATCH and TRADING)
+            demand_by_region = {}
+            for line in regionsum_lines:
+                parts = line.split(',')
+                if len(parts) >= 10:
+                    try:
+                        region_id = parts[6].strip('"')
+                        region = REGION_MAPPING.get(region_id, region_id)
+                        demand = self._safe_float(parts[9])  # Column 9 is TOTALDEMAND
+                        demand_by_region[region] = demand
+                    except Exception as e:
+                        logger.warning(f"Error parsing regionsum line: {e}")
+
             # Parse price data - format varies by type
             data = []
-            
+
             if price_type == 'TRADING':
                 # Trading price format: D,TRADING,PRICE,3,"2025/08/29 13:55:00",1,SA1,167,-98.93,0,0,"2025/08/29 13:50:12",-98.93,...
                 # Columns: 0=D, 1=TRADING, 2=PRICE, 3=version, 4=settlementdate, 5=runno, 6=regionid, 7=periodid, 8=RRP, ...
@@ -263,20 +296,20 @@ class NEMPriceClient:
                             region_id = parts[6].strip('"')  # Column 6 is REGIONID (NSW1, VIC1, etc.)
                             region = REGION_MAPPING.get(region_id, region_id)  # Map to display names
                             rrp_value = self._safe_float(parts[8])  # Column 8 is RRP (Regional Reference Price)
-                            
-                            # Trading prices don't include demand, so set to 0
+
+                            # Get demand from REGIONSUM if available
                             data.append({
                                 'settlementdate': settlement_date,
                                 'region': region,
                                 'price': rrp_value,
-                                'totaldemand': 0.0,  # Trading data doesn't include demand
+                                'totaldemand': demand_by_region.get(region, 0.0),
                                 'price_type': price_type
                             })
-                            
+
                         except Exception as e:
                             logger.warning(f"Error parsing trading price line: {e}")
                             continue
-                            
+
             elif price_type == 'DISPATCH':
                 # Dispatch PRICE format: D,DISPATCH,PRICE,3,"2025/08/29 13:55:00",1,NSW1,0,12.5,1,...
                 # Columns: 0=D, 1=DISPATCH, 2=PRICE, 3=version, 4=settlementdate, 5=runno, 6=regionid, 7=dispatchinterval, 8=RRP, 9=EEP,...
@@ -288,20 +321,20 @@ class NEMPriceClient:
                             region_id = parts[6].strip('"')  # Column 6 is REGIONID (NSW1, VIC1, etc.)
                             region = REGION_MAPPING.get(region_id, region_id)  # Map to display names
                             rrp_value = self._safe_float(parts[8])  # Column 8 is RRP (Regional Reference Price)
-                            
-                            # Dispatch prices don't include demand in PRICE records
+
+                            # Get demand from REGIONSUM if available
                             data.append({
                                 'settlementdate': settlement_date,
                                 'region': region,
                                 'price': rrp_value,
-                                'totaldemand': 0.0,  # Dispatch PRICE records don't include demand
+                                'totaldemand': demand_by_region.get(region, 0.0),
                                 'price_type': price_type
                             })
-                            
+
                         except Exception as e:
                             logger.warning(f"Error parsing dispatch price line: {e}")
                             continue
-                            
+
             else:  # PUBLIC prices
                 # Public price format: D,DREGION,,2,"2025/09/01 03:00:00",1,NSW1,0,107.84888,0,107.84888,0,0,7136.43,...
                 # Columns: 0=D, 1=DREGION, 2=blank, 3=version, 4=settlementdate, 5=runno, 6=regionid, 7=intervention, 8=RRP, 9=EEP, 10=ROP, 11=APCFLAG, 12=MARKETSUSPENDEDFLAG, 13=TOTALDEMAND,...

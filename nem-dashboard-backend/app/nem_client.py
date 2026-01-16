@@ -46,7 +46,7 @@ class NEMDispatchClient:
             date_str = date.strftime("%Y%m%d")
             archive_url = f"{self.base_url}/Reports/Archive/Dispatch_SCADA/{date.year}/DISPATCH_SCADA_{date_str}.zip"
             
-            async with self.client as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(archive_url)
                 response.raise_for_status()
                 

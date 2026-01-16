@@ -111,7 +111,7 @@ body {
   padding: 1.5rem 2rem;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   display: flex;
   flex-direction: column;
 }

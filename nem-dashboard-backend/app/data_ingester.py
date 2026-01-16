@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 import time
@@ -135,38 +136,89 @@ class DataIngester:
         """Fetch and ingest historical price data (PUBLIC_PRICES) for a date range"""
         if end_date is None:
             end_date = start_date
-            
+
         total_records = 0
         current_date = start_date
-        
+
         while current_date <= end_date:
             try:
                 logger.info(f"Fetching historical prices for {current_date.strftime('%Y-%m-%d')}")
                 price_df = await self.price_client.get_daily_prices(current_date)
-                
+
                 if price_df is not None and not price_df.empty:
                     records_inserted = await self.db.insert_price_data(price_df)
                     total_records += records_inserted
                     logger.info(f"Inserted {records_inserted} price records for {current_date.strftime('%Y-%m-%d')}")
                 else:
                     logger.warning(f"No price data available for {current_date.strftime('%Y-%m-%d')}")
-                
+
                 # Small delay to avoid overwhelming the API
                 await asyncio.sleep(1)
-                
+
             except Exception as e:
                 logger.error(f"Error ingesting price data for {current_date}: {e}")
-            
+
             current_date += timedelta(days=1)
-        
+
         logger.info(f"Historical price ingestion complete. Total records: {total_records}")
         return total_records
-    
+
+    async def backfill_missing_data(self, days_back: int = 30, max_gaps_per_run: int = 10) -> int:
+        """Automatically backfill missing historical price data on startup"""
+        logger.info(f"Starting automatic backfill check for last {days_back} days...")
+
+        try:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days_back)
+
+            # Find missing dates
+            missing_dates = await self.db.get_missing_dates(start_date, end_date, price_type='PUBLIC')
+
+            if not missing_dates:
+                logger.info("No missing dates found - data is complete")
+                return 0
+
+            logger.info(f"Found {len(missing_dates)} missing dates in the last {days_back} days")
+
+            # Limit the number of gaps to fill per run to avoid long startup times
+            dates_to_fill = missing_dates[:max_gaps_per_run]
+            if len(missing_dates) > max_gaps_per_run:
+                logger.info(f"Limiting backfill to {max_gaps_per_run} dates per run")
+
+            total_records = 0
+            for date in dates_to_fill:
+                try:
+                    logger.info(f"Backfilling prices for {date.strftime('%Y-%m-%d')}")
+                    price_df = await self.price_client.get_daily_prices(date)
+
+                    if price_df is not None and not price_df.empty:
+                        records = await self.db.insert_price_data(price_df)
+                        total_records += records
+                        logger.info(f"Backfilled {records} price records for {date.strftime('%Y-%m-%d')}")
+
+                    # Delay between requests to respect NEMWEB rate limits
+                    await asyncio.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"Error backfilling {date.strftime('%Y-%m-%d')}: {e}")
+                    continue
+
+            logger.info(f"Backfill complete. Total records added: {total_records}")
+            return total_records
+
+        except Exception as e:
+            logger.error(f"Error during backfill: {e}")
+            return 0
+
     async def run_continuous_ingestion(self, interval_minutes: int = 5):
         """Run continuous data ingestion"""
         self.is_running = True
         logger.info(f"Starting continuous ingestion with {interval_minutes} minute intervals")
-        
+
+        # Backfill missing historical data on startup
+        backfill_days = int(os.getenv('BACKFILL_DAYS_ON_STARTUP', '30'))
+        await self.backfill_missing_data(days_back=backfill_days)
+
         # Initial data fetch
         await self.ingest_current_data()
         
