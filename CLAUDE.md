@@ -30,6 +30,37 @@ npm test                                # Run tests
 2. Start frontend: `cd nem-dashboard-frontend && npm start`
 3. Frontend proxies API requests to backend via `proxy` setting in package.json
 
+## Quick Development Start
+
+### One-Command Start (macOS)
+```bash
+make dev                    # Opens two Terminal windows for backend and frontend
+```
+
+### First-Time Setup
+```bash
+make check                  # Verify Python and Node.js are installed
+make install                # Install all dependencies
+make dev                    # Start development servers
+```
+
+### Available Make Commands
+Run `make help` to see all commands. Key targets:
+
+| Command | Description |
+|---------|-------------|
+| `make dev` | Start both servers in separate Terminal windows (macOS) |
+| `make install` | Install all dependencies |
+| `make run-backend` | Start backend only (blocking) |
+| `make run-frontend` | Start frontend only (blocking) |
+| `make check` | Verify Python and Node.js installed |
+| `make check-deps` | Verify all dependencies installed |
+| `make health` | Check if servers are running |
+| `make build` | Build frontend for production |
+| `make test` | Run frontend tests |
+| `make clean` | Remove build artifacts |
+| `make import-generators` | Import generator metadata from CSV |
+
 ## Backend Architecture
 
 ### Data Flow Pipeline
