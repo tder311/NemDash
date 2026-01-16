@@ -40,30 +40,36 @@ background_task: Optional[asyncio.Task] = None
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     global db, data_ingester, background_task
-    
+
+    # Skip initialization if database is already set (e.g., in tests)
+    if db is not None:
+        logger.info("Database already initialized (test mode), skipping lifespan startup")
+        yield
+        return
+
     # Startup
     db_path = os.getenv('DATABASE_PATH', './data/nem_dispatch.db')
     nem_base_url = os.getenv('NEM_API_BASE_URL', 'https://www.nemweb.com.au')
     update_interval = int(os.getenv('UPDATE_INTERVAL_MINUTES', '5'))
-    
+
     db = NEMDatabase(db_path)
     data_ingester = DataIngester(db_path, nem_base_url)
-    
+
     # Initialize database
     await data_ingester.initialize()
-    
+
     # Update sample generator info
     await update_sample_generator_info(db)
-    
+
     # Start background data ingestion
     background_task = asyncio.create_task(
         data_ingester.run_continuous_ingestion(update_interval)
     )
-    
+
     logger.info("NEM Dashboard API started")
-    
+
     yield
-    
+
     # Shutdown
     if background_task:
         data_ingester.stop_continuous_ingestion()
@@ -72,10 +78,10 @@ async def lifespan(app: FastAPI):
             await background_task
         except asyncio.CancelledError:
             pass
-    
+
     if data_ingester:
         await data_ingester.cleanup()
-    
+
     logger.info("NEM Dashboard API stopped")
 
 app = FastAPI(
