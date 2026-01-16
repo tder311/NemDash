@@ -14,8 +14,8 @@ NPM := npm
 .PHONY: help install install-backend install-frontend \
         run-backend run-frontend dev \
         check check-python check-node check-deps \
-        setup-env build clean test \
-        health import-generators
+        setup-env build clean test test-backend test-frontend test-e2e test-all \
+        test-coverage health import-generators install-test-deps install-playwright
 
 ##@ General
 
@@ -89,9 +89,41 @@ build: ## Build frontend for production
 	@echo "Building frontend for production..."
 	cd $(FRONTEND_DIR) && $(NPM) run build
 
-test: ## Run frontend tests
+test: test-frontend ## Run frontend tests (alias for test-frontend)
+
+test-backend: ## Run backend Python tests with coverage
+	@echo "Running backend tests..."
+	cd $(BACKEND_DIR) && pytest --cov=app --cov-report=term-missing -v
+
+test-frontend: ## Run frontend React tests with coverage
 	@echo "Running frontend tests..."
-	cd $(FRONTEND_DIR) && $(NPM) test -- --watchAll=false
+	cd $(FRONTEND_DIR) && $(NPM) test -- --watchAll=false --coverage
+
+test-e2e: ## Run end-to-end Playwright tests
+	@echo "Running E2E tests..."
+	cd $(FRONTEND_DIR) && npx playwright test
+
+test-all: test-backend test-frontend test-e2e ## Run all tests (backend, frontend, E2E)
+	@echo "All tests complete!"
+
+test-coverage: ## Run all unit tests with detailed coverage reports
+	@echo "Running backend tests with coverage report..."
+	cd $(BACKEND_DIR) && pytest --cov=app --cov-report=html --cov-report=term-missing -v
+	@echo "Backend coverage report: $(BACKEND_DIR)/htmlcov/index.html"
+	@echo ""
+	@echo "Running frontend tests with coverage report..."
+	cd $(FRONTEND_DIR) && $(NPM) test -- --watchAll=false --coverage
+	@echo "Frontend coverage report: $(FRONTEND_DIR)/coverage/lcov-report/index.html"
+
+install-test-deps: ## Install test dependencies
+	@echo "Installing backend test dependencies..."
+	cd $(BACKEND_DIR) && pip install -r requirements-test.txt
+	@echo "Installing Playwright..."
+	cd $(FRONTEND_DIR) && npx playwright install chromium
+
+install-playwright: ## Install Playwright browsers
+	@echo "Installing Playwright browsers..."
+	cd $(FRONTEND_DIR) && npx playwright install --with-deps chromium
 
 ##@ Cleanup
 
