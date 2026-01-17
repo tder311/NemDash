@@ -35,7 +35,7 @@ describe('App', () => {
 
     await waitFor(() => {
       const appElement = document.querySelector('.app');
-      expect(appElement).toHaveClass('light');
+      expect(appElement).toHaveClass('dark');
     });
 
     const toggle = document.querySelector('.toggle-switch');
@@ -43,22 +43,22 @@ describe('App', () => {
 
     await waitFor(() => {
       const appElement = document.querySelector('.app');
-      expect(appElement).toHaveClass('dark');
+      expect(appElement).toHaveClass('light');
     });
   });
 
-  test('applies dark class to body when dark mode enabled', async () => {
+  test('applies light class to body when dark mode disabled', async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(document.body).toHaveClass('light');
+      expect(document.body).toHaveClass('dark');
     });
 
     const toggle = document.querySelector('.toggle-switch');
     fireEvent.click(toggle);
 
     await waitFor(() => {
-      expect(document.body).toHaveClass('dark');
+      expect(document.body).toHaveClass('light');
     });
   });
 
@@ -66,12 +66,12 @@ describe('App', () => {
     render(<App />);
 
     const toggle = document.querySelector('.toggle-switch');
-    expect(toggle).not.toHaveClass('active');
+    expect(toggle).toHaveClass('active');
 
     fireEvent.click(toggle);
 
     await waitFor(() => {
-      expect(toggle).toHaveClass('active');
+      expect(toggle).not.toHaveClass('active');
     });
   });
 });
