@@ -117,7 +117,6 @@ jobs:
         run: |
           cd nem-dashboard-backend
           python run.py &
-          sleep 10
         env:
           DATABASE_PATH: ./data/test_nem.db
 
@@ -125,20 +124,19 @@ jobs:
         run: |
           cd nem-dashboard-frontend
           npm start &
-          sleep 15
         env:
           CI: true
           BROWSER: none
 
       - name: Wait for servers
         run: |
-          # Wait for backend
-          for i in {1..30}; do
-            curl -s http://localhost:8000/ && break || sleep 2
+          # Wait for backend (poll every 1s instead of sleeping upfront)
+          for i in {1..60}; do
+            curl -s http://localhost:8000/ && break || sleep 1
           done
-          # Wait for frontend
-          for i in {1..30}; do
-            curl -s http://localhost:3000/ && break || sleep 2
+          # Wait for frontend (poll every 1s instead of sleeping upfront)
+          for i in {1..60}; do
+            curl -s http://localhost:3000/ && break || sleep 1
           done
 
       - name: Run E2E tests
