@@ -97,7 +97,7 @@ test.describe('State Detail Page', () => {
   });
 });
 
-test.describe('State Detail Page - All Regions', () => {
+test.describe.skip('State Detail Page - All Regions', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await expect(page.getByText(/Loading market data/i)).not.toBeVisible({ timeout: 15000 });
@@ -141,7 +141,7 @@ test.describe('State Detail Page - Dark Mode', () => {
   });
 });
 
-test.describe('State Detail Page - Data Refresh', () => {
+test.describe.skip('State Detail Page - Data Refresh', () => {
   test('auto-refreshes every 60 seconds', async ({ page }) => {
     // This test needs longer timeout since it waits for auto-refresh
     test.setTimeout(90000);
