@@ -68,8 +68,11 @@ describe('AustraliaMap', () => {
       <AustraliaMap darkMode={false} onRegionClick={mockOnRegionClick} />
     );
 
+    // Wait for the useEffect that attaches click handlers (also sets cursor style)
     await waitFor(() => {
-      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+      const nswPath = container.querySelector('#state-NSW');
+      expect(nswPath).toBeInTheDocument();
+      expect(nswPath.style.cursor).toBe('pointer');
     });
 
     const nswPath = container.querySelector('#state-NSW');
@@ -83,8 +86,11 @@ describe('AustraliaMap', () => {
       <AustraliaMap darkMode={false} onRegionClick={mockOnRegionClick} />
     );
 
+    // Wait for the useEffect that attaches click handlers (also sets cursor style)
     await waitFor(() => {
-      expect(container.querySelector('svg')).toBeInTheDocument();
+      const nswPath = container.querySelector('#state-NSW');
+      expect(nswPath).toBeInTheDocument();
+      expect(nswPath.style.cursor).toBe('pointer');
     });
 
     const nemRegions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS'];
@@ -188,18 +194,21 @@ describe('AustraliaMap', () => {
       <AustraliaMap darkMode={false} hoveredRegion="NSW" onRegionClick={mockOnRegionClick} />
     );
 
+    // Wait for the useEffect that applies highlighting
     await waitFor(() => {
-      expect(container.querySelector('svg')).toBeInTheDocument();
+      const nswPath = container.querySelector('#state-NSW');
+      expect(nswPath).toBeInTheDocument();
+      expect(nswPath.classList.contains('highlighted')).toBe(true);
     });
-
-    expect(container.querySelector('#state-NSW').classList.contains('highlighted')).toBe(true);
 
     // Clear hoveredRegion
     rerender(
       <AustraliaMap darkMode={false} hoveredRegion={null} onRegionClick={mockOnRegionClick} />
     );
 
-    expect(container.querySelector('#state-NSW').classList.contains('highlighted')).toBe(false);
+    await waitFor(() => {
+      expect(container.querySelector('#state-NSW').classList.contains('highlighted')).toBe(false);
+    });
   });
 
   test('only highlights one region at a time', async () => {
