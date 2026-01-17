@@ -290,3 +290,125 @@ describe('RegionSidebar color mapping', () => {
     expect(cards.length).toBe(5);
   });
 });
+
+describe('RegionSidebar highlighting', () => {
+  const mockHover = jest.fn();
+  const mockLeave = jest.fn();
+  const mockClick = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('applies highlighted class when hoveredRegion matches', () => {
+    render(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        hoveredRegion="NSW"
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    const nswCard = screen.getByText('NSW').closest('.sidebar-region-card');
+    expect(nswCard).toHaveClass('highlighted');
+  });
+
+  test('does not apply highlighted class to non-matching regions', () => {
+    render(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        hoveredRegion="NSW"
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    const vicCard = screen.getByText('VIC').closest('.sidebar-region-card');
+    expect(vicCard).not.toHaveClass('highlighted');
+  });
+
+  test('removes highlighted class when hoveredRegion is null', () => {
+    const { rerender } = render(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        hoveredRegion="NSW"
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    let nswCard = screen.getByText('NSW').closest('.sidebar-region-card');
+    expect(nswCard).toHaveClass('highlighted');
+
+    rerender(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        hoveredRegion={null}
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    nswCard = screen.getByText('NSW').closest('.sidebar-region-card');
+    expect(nswCard).not.toHaveClass('highlighted');
+  });
+
+  test('switches highlighted region correctly', () => {
+    const { rerender } = render(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        hoveredRegion="NSW"
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    let nswCard = screen.getByText('NSW').closest('.sidebar-region-card');
+    let vicCard = screen.getByText('VIC').closest('.sidebar-region-card');
+    expect(nswCard).toHaveClass('highlighted');
+    expect(vicCard).not.toHaveClass('highlighted');
+
+    rerender(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        hoveredRegion="VIC"
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    nswCard = screen.getByText('NSW').closest('.sidebar-region-card');
+    vicCard = screen.getByText('VIC').closest('.sidebar-region-card');
+    expect(nswCard).not.toHaveClass('highlighted');
+    expect(vicCard).toHaveClass('highlighted');
+  });
+
+  test('handles undefined hoveredRegion prop', () => {
+    render(
+      <RegionSidebar
+        regions={mockRegions}
+        darkMode={false}
+        onRegionHover={mockHover}
+        onRegionLeave={mockLeave}
+        onRegionClick={mockClick}
+      />
+    );
+
+    // No cards should be highlighted
+    const highlightedCards = document.querySelectorAll('.sidebar-region-card.highlighted');
+    expect(highlightedCards.length).toBe(0);
+  });
+});

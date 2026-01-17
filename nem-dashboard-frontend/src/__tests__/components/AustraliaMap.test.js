@@ -299,6 +299,170 @@ describe('AustraliaMap', () => {
   });
 });
 
+describe('AustraliaMap hover events', () => {
+  const mockOnRegionClick = jest.fn();
+  const mockOnRegionHover = jest.fn();
+  const mockOnRegionLeave = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        text: () => Promise.resolve(mockSvgContent),
+      })
+    );
+  });
+
+  test('calls onRegionHover when mouse enters NEM region', async () => {
+    const { container } = render(
+      <AustraliaMap
+        darkMode={false}
+        onRegionClick={mockOnRegionClick}
+        onRegionHover={mockOnRegionHover}
+        onRegionLeave={mockOnRegionLeave}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+    });
+
+    const nswPath = container.querySelector('#state-NSW');
+    fireEvent.mouseOver(nswPath);
+
+    expect(mockOnRegionHover).toHaveBeenCalledWith('NSW');
+  });
+
+  test('calls onRegionLeave when mouse leaves NEM region', async () => {
+    const { container } = render(
+      <AustraliaMap
+        darkMode={false}
+        onRegionClick={mockOnRegionClick}
+        onRegionHover={mockOnRegionHover}
+        onRegionLeave={mockOnRegionLeave}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+    });
+
+    const nswPath = container.querySelector('#state-NSW');
+    fireEvent.mouseOut(nswPath);
+
+    expect(mockOnRegionLeave).toHaveBeenCalled();
+  });
+
+  test('does not call onRegionHover for non-NEM regions', async () => {
+    const { container } = render(
+      <AustraliaMap
+        darkMode={false}
+        onRegionClick={mockOnRegionClick}
+        onRegionHover={mockOnRegionHover}
+        onRegionLeave={mockOnRegionLeave}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('#state-WA')).toBeInTheDocument();
+    });
+
+    const waPath = container.querySelector('#state-WA');
+    fireEvent.mouseOver(waPath);
+
+    expect(mockOnRegionHover).not.toHaveBeenCalled();
+  });
+
+  test('applies region-colored stroke when highlighting', async () => {
+    const { container, rerender } = render(
+      <AustraliaMap
+        darkMode={false}
+        hoveredRegion={null}
+        onRegionClick={mockOnRegionClick}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+    });
+
+    // Rerender with NSW hovered
+    rerender(
+      <AustraliaMap
+        darkMode={false}
+        hoveredRegion="NSW"
+        onRegionClick={mockOnRegionClick}
+      />
+    );
+
+    const nswPath = container.querySelector('#state-NSW');
+    expect(nswPath.style.stroke).toBe('#1f77b4');
+    expect(nswPath.style.strokeWidth).toBe('3px');
+  });
+
+  test('clears stroke when highlighting is removed', async () => {
+    const { container, rerender } = render(
+      <AustraliaMap
+        darkMode={false}
+        hoveredRegion="NSW"
+        onRegionClick={mockOnRegionClick}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+    });
+
+    // Clear hoveredRegion
+    rerender(
+      <AustraliaMap
+        darkMode={false}
+        hoveredRegion={null}
+        onRegionClick={mockOnRegionClick}
+      />
+    );
+
+    const nswPath = container.querySelector('#state-NSW');
+    expect(nswPath.style.stroke).toBe('');
+    expect(nswPath.style.strokeWidth).toBe('');
+  });
+
+  test('each region gets its correct color on hover', async () => {
+    const regionColors = {
+      'NSW': '#1f77b4',
+      'VIC': '#ff7f0e',
+      'QLD': '#2ca02c',
+      'SA': '#d62728',
+      'TAS': '#9467bd',
+    };
+
+    const { container, rerender } = render(
+      <AustraliaMap
+        darkMode={false}
+        hoveredRegion={null}
+        onRegionClick={mockOnRegionClick}
+      />
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+    });
+
+    for (const [region, expectedColor] of Object.entries(regionColors)) {
+      rerender(
+        <AustraliaMap
+          darkMode={false}
+          hoveredRegion={region}
+          onRegionClick={mockOnRegionClick}
+        />
+      );
+
+      const path = container.querySelector(`#state-${region}`);
+      expect(path.style.stroke).toBe(expectedColor);
+    }
+  });
+});
+
 describe('AustraliaMap edge cases', () => {
   beforeEach(() => {
     global.fetch = jest.fn(() =>
