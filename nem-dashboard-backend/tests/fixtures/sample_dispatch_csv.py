@@ -84,3 +84,24 @@ def create_zip_with_multiple_csvs() -> bytes:
         zf.writestr('PUBLIC_DISPATCHSCADA_202501151030_1.CSV', SAMPLE_DISPATCH_CSV)
         zf.writestr('PUBLIC_DISPATCHSCADA_202501151030_2.CSV', b'other content')
     return buffer.getvalue()
+
+
+def create_nested_archive_zip(csv_content: bytes = SAMPLE_DISPATCH_CSV, num_intervals: int = 2) -> bytes:
+    """Create a nested ZIP archive (ZIP of ZIPs) like NEMWEB historical archives.
+
+    NEMWEB daily dispatch archives contain inner ZIPs for each 5-minute interval,
+    and each inner ZIP contains a CSV file.
+    """
+    outer_buffer = io.BytesIO()
+    with zipfile.ZipFile(outer_buffer, 'w', zipfile.ZIP_DEFLATED) as outer_zf:
+        for i in range(num_intervals):
+            # Create inner ZIP with CSV
+            inner_buffer = io.BytesIO()
+            with zipfile.ZipFile(inner_buffer, 'w', zipfile.ZIP_DEFLATED) as inner_zf:
+                inner_zf.writestr(f'PUBLIC_DISPATCHSCADA_20250115{1030+i*5:04d}.CSV', csv_content)
+
+            # Add inner ZIP to outer ZIP
+            inner_zip_name = f'PUBLIC_DISPATCHSCADA_20250115{1030+i*5:04d}_0000000123456{789+i}.zip'
+            outer_zf.writestr(inner_zip_name, inner_buffer.getvalue())
+
+    return outer_buffer.getvalue()
