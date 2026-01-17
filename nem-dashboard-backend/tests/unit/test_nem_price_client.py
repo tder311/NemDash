@@ -415,14 +415,26 @@ class TestAsyncMethods:
 
     @pytest.mark.asyncio
     async def test_get_daily_prices_success(self, client, httpx_mock):
-        """Test successful daily price fetch"""
+        """Test successful daily price fetch with market day boundary handling.
+
+        get_daily_prices now fetches TWO files to get complete calendar day data:
+        - Previous day's file (for 00:00-04:00 of target date)
+        - Target day's file (for 04:05-23:55 of target date)
+        """
         from datetime import datetime
 
         test_date = datetime(2025, 1, 15)
 
+        # Mock directory listing with both files (prev day and target day)
         httpx_mock.add_response(
             url="https://www.nemweb.com.au/Reports/Current/Public_Prices/",
-            html='<a href="PUBLIC_PRICES_202501150000_00000000000001.zip">file</a>'
+            html='<a href="PUBLIC_PRICES_202501140000_00000000000001.zip">file1</a>'
+                 '<a href="PUBLIC_PRICES_202501150000_00000000000001.zip">file2</a>'
+        )
+        # Mock both file downloads
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/Public_Prices/PUBLIC_PRICES_202501140000_00000000000001.zip",
+            content=create_price_zip(SAMPLE_PUBLIC_PRICE_CSV, 'PUBLIC')
         )
         httpx_mock.add_response(
             url="https://www.nemweb.com.au/Reports/Current/Public_Prices/PUBLIC_PRICES_202501150000_00000000000001.zip",

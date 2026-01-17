@@ -603,7 +603,7 @@ class NEMDatabase:
         """Get price history merging PUBLIC and DISPATCH prices.
 
         Uses PUBLIC prices where available, fills gaps with DISPATCH prices
-        for times after the latest PUBLIC timestamp.
+        for any timestamps where PUBLIC data is missing.
 
         Args:
             region: NEM region (NSW, VIC, QLD, SA, TAS)
@@ -630,16 +630,17 @@ class NEMDatabase:
             public_df['source_type'] = 'PUBLIC'
             return public_df.sort_values('settlementdate').reset_index(drop=True)
 
-        # 3. Find latest PUBLIC timestamp
-        latest_public = public_df['settlementdate'].max()
-
-        # 4. Filter DISPATCH to only include times after latest PUBLIC
-        dispatch_fill = dispatch_df[dispatch_df['settlementdate'] > latest_public].copy()
-
-        # 5. Add source_type and merge
+        # 3. Add source_type columns
         public_df['source_type'] = 'PUBLIC'
-        dispatch_fill['source_type'] = 'DISPATCH'
+        dispatch_df['source_type'] = 'DISPATCH'
 
+        # 4. Find timestamps that exist in PUBLIC
+        public_timestamps = set(public_df['settlementdate'])
+
+        # 5. Filter DISPATCH to only include timestamps NOT in PUBLIC (fill gaps anywhere)
+        dispatch_fill = dispatch_df[~dispatch_df['settlementdate'].isin(public_timestamps)].copy()
+
+        # 6. Merge and sort
         merged = pd.concat([public_df, dispatch_fill], ignore_index=True)
         return merged.sort_values('settlementdate').reset_index(drop=True)
 
