@@ -3,7 +3,6 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
-import time
 from pathlib import Path
 
 import pandas as pd
