@@ -8,7 +8,7 @@ import pandas as pd
 import tempfile
 from pathlib import Path
 
-from app.data_ingester import DataIngester, update_sample_generator_info, SAMPLE_GENERATOR_INFO
+from app.data_ingester import DataIngester, update_sample_generator_info, import_generator_info_from_csv, SAMPLE_GENERATOR_INFO
 
 
 class TestDataIngesterInit:
@@ -242,6 +242,41 @@ class TestSampleGeneratorInfo:
         duids = await test_db.get_unique_duids()
         # Note: get_unique_duids gets from dispatch_data, not generator_info
         # So we need to check generator_info directly
+        import aiosqlite
+        async with aiosqlite.connect(test_db.db_path) as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM generator_info")
+            count = (await cursor.fetchone())[0]
+
+        assert count >= len(SAMPLE_GENERATOR_INFO)
+
+    @pytest.mark.asyncio
+    async def test_import_generator_info_from_csv_with_valid_csv(self, test_db, tmp_path):
+        """Test importing generator info from a CSV file"""
+        # Create a temporary CSV file
+        csv_content = """DUID,Site Name,Region,Fuel Type,Technology Type,Asset Type,Nameplate Capacity (MW)
+TEST1,Test Station 1,NSW1,Coal,Steam Turbine,Existing,500
+TEST2,Test Station 2,VIC1,Wind,Wind Turbine,Existing,200
+TEST3,Test Station 3,QLD1,Solar,Solar PV,Existing,150
+"""
+        csv_file = tmp_path / "GenInfo.csv"
+        csv_file.write_text(csv_content)
+
+        await import_generator_info_from_csv(test_db, str(csv_file))
+
+        # Verify data was imported
+        import aiosqlite
+        async with aiosqlite.connect(test_db.db_path) as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM generator_info WHERE duid IN ('TEST1', 'TEST2', 'TEST3')")
+            count = (await cursor.fetchone())[0]
+
+        assert count == 3
+
+    @pytest.mark.asyncio
+    async def test_import_generator_info_from_csv_fallback_to_sample(self, test_db):
+        """Test that missing CSV falls back to sample generator info"""
+        await import_generator_info_from_csv(test_db, "/nonexistent/path/GenInfo.csv")
+
+        # Should have fallen back to sample data
         import aiosqlite
         async with aiosqlite.connect(test_db.db_path) as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM generator_info")

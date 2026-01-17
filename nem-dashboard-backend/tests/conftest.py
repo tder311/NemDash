@@ -100,7 +100,7 @@ async def populated_db(test_db):
             'lower1sec': 0.0
         },
         {
-            'settlementdate': datetime(2025, 1, 15, 10, 35),
+            'settlementdate': datetime(2025, 1, 15, 10, 30),  # Same as other records
             'duid': 'ARWF1',
             'scadavalue': 185.0,
             'uigf': 0.0,
