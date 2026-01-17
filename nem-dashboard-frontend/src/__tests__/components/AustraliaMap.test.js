@@ -144,8 +144,11 @@ describe('AustraliaMap', () => {
       <AustraliaMap darkMode={false} onRegionClick={mockOnRegionClick} />
     );
 
+    // Wait for the useEffect that sets cursor style
     await waitFor(() => {
-      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
+      const nswPath = container.querySelector('#state-NSW');
+      expect(nswPath).toBeInTheDocument();
+      expect(nswPath.style.cursor).toBe('pointer');
     });
 
     const nemRegions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS'];
