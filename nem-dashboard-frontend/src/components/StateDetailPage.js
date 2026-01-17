@@ -92,33 +92,32 @@ function StateDetailPage({ region, darkMode, onBack }) {
         y: priceHistory.map(d => d.price),
         type: 'scatter',
         mode: 'lines',
-        name: 'Price',
+        name: 'Price ($/MWh)',
         line: {
           color: REGION_COLORS[region],
-          width: 2
+          width: 2.5,
+          shape: 'spline',
+          smoothing: 0.8
         },
         fill: 'tozeroy',
-        fillcolor: `${REGION_COLORS[region]}20`,
+        fillcolor: `${REGION_COLORS[region]}15`,
         yaxis: 'y',
-        hovertemplate: '<b>%{x}</b><br>' +
-                      'Price: $%{y:.2f}/MWh<br>' +
-                      '<extra></extra>'
+        hovertemplate: '$%{y:.2f}/MWh<extra></extra>'
       },
       {
         x: priceHistory.map(d => new Date(d.settlementdate)),
         y: priceHistory.map(d => d.totaldemand),
         type: 'scatter',
         mode: 'lines',
-        name: 'Demand',
+        name: 'Demand (MW)',
         line: {
-          color: '#888888',
-          width: 2,
-          dash: 'dot'
+          color: darkMode ? '#6b7280' : '#9ca3af',
+          width: 1.5,
+          shape: 'spline',
+          smoothing: 0.8
         },
         yaxis: 'y2',
-        hovertemplate: '<b>%{x}</b><br>' +
-                      'Demand: %{y:.0f} MW<br>' +
-                      '<extra></extra>'
+        hovertemplate: '%{y:,.0f} MW<extra></extra>'
       }
     ];
   };
@@ -157,43 +156,71 @@ function StateDetailPage({ region, darkMode, onBack }) {
 
   const priceChartLayout = {
     title: {
-      text: `${region} Price & Demand - Last ${timeRange} Hours`,
+      text: `Price & Demand`,
       font: {
-        size: 18,
-        color: darkMode ? '#f5f5f5' : '#333'
-      }
+        size: 16,
+        color: darkMode ? '#e5e7eb' : '#374151',
+        family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      },
+      x: 0.02,
+      xanchor: 'left'
     },
     xaxis: {
-      title: 'Time',
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
-      tickformat: '%H:%M'
+      gridcolor: darkMode ? '#374151' : '#f3f4f6',
+      color: darkMode ? '#9ca3af' : '#6b7280',
+      tickformat: timeRange <= 24 ? '%H:%M' : '%d %b %H:%M',
+      tickfont: { size: 11 },
+      linecolor: darkMode ? '#374151' : '#e5e7eb',
+      showline: true,
+      zeroline: false
     },
     yaxis: {
-      title: 'Price ($/MWh)',
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
-      side: 'left'
+      title: {
+        text: '$/MWh',
+        font: { size: 11, color: REGION_COLORS[region] },
+        standoff: 10
+      },
+      gridcolor: darkMode ? '#374151' : '#f3f4f6',
+      color: darkMode ? '#9ca3af' : '#6b7280',
+      side: 'left',
+      tickfont: { size: 11, color: REGION_COLORS[region] },
+      zeroline: false
     },
     yaxis2: {
-      title: 'Demand (MW)',
-      color: '#888888',
+      title: {
+        text: 'MW',
+        font: { size: 11, color: darkMode ? '#6b7280' : '#9ca3af' },
+        standoff: 10
+      },
+      color: darkMode ? '#6b7280' : '#9ca3af',
       side: 'right',
       overlaying: 'y',
-      showgrid: false
+      showgrid: false,
+      tickfont: { size: 11 },
+      zeroline: false
     },
-    plot_bgcolor: darkMode ? '#1e1e1e' : 'white',
-    paper_bgcolor: darkMode ? '#1e1e1e' : 'white',
+    plot_bgcolor: 'transparent',
+    paper_bgcolor: 'transparent',
     font: {
-      color: darkMode ? '#f5f5f5' : '#333'
+      color: darkMode ? '#e5e7eb' : '#374151',
+      family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
     },
-    margin: { l: 60, r: 60, t: 50, b: 50 },
+    margin: { l: 55, r: 55, t: 40, b: 40 },
     showlegend: true,
     legend: {
       orientation: 'h',
-      x: 0.5,
-      xanchor: 'center',
-      y: 1.12
+      x: 1,
+      xanchor: 'right',
+      y: 1.02,
+      yanchor: 'bottom',
+      bgcolor: 'transparent',
+      font: { size: 11 }
+    },
+    hovermode: 'x unified',
+    hoverlabel: {
+      bgcolor: darkMode ? '#1f2937' : 'white',
+      bordercolor: darkMode ? '#374151' : '#e5e7eb',
+      font: { size: 12, family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }
     }
   };
 
@@ -367,9 +394,11 @@ function StateDetailPage({ region, darkMode, onBack }) {
             layout={priceChartLayout}
             style={{ width: '100%', height: '350px' }}
             config={{
-              displayModeBar: true,
+              displayModeBar: 'hover',
               displaylogo: false,
-              modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
+              modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d'],
+              modeBarButtonsToAdd: [],
+              scrollZoom: false
             }}
           />
         </div>
@@ -393,9 +422,10 @@ function StateDetailPage({ region, darkMode, onBack }) {
           layout={generationHistoryLayout}
           style={{ width: '100%', height: '400px' }}
           config={{
-            displayModeBar: true,
+            displayModeBar: 'hover',
             displaylogo: false,
-            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
+            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d'],
+            scrollZoom: false
           }}
         />
       </div>
