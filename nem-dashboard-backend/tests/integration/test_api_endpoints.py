@@ -518,3 +518,59 @@ class TestDrilldownDataPopulation:
             total_percentage = sum(fuel["percentage"] for fuel in data["fuel_mix"])
             # Allow for small rounding errors
             assert 99.0 <= total_percentage <= 101.0, f"Percentages should sum to ~100, got {total_percentage}"
+
+
+class TestMergedPriceEndpoint:
+    """Tests for MERGED price type endpoint (bridges 4am data gap)"""
+
+    def test_merged_price_type_accepted(self, client):
+        """MERGED should be a valid price_type"""
+        response = client.get("/api/region/NSW/prices/history?hours=24&price_type=MERGED")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["price_type"] == "MERGED"
+
+    def test_merged_returns_data_structure(self, client):
+        """MERGED should return proper response structure"""
+        response = client.get("/api/region/NSW/prices/history?hours=24&price_type=MERGED")
+        assert response.status_code == 200
+        data = response.json()
+        assert "region" in data
+        assert "data" in data
+        assert "count" in data
+        assert "hours" in data
+        assert "price_type" in data
+
+    def test_merged_lowercase_accepted(self, client):
+        """lowercase 'merged' should be accepted and normalized"""
+        response = client.get("/api/region/NSW/prices/history?hours=24&price_type=merged")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["price_type"] == "MERGED"
+
+    def test_invalid_price_type_returns_400(self, client):
+        """Invalid price_type should return 400"""
+        response = client.get("/api/region/NSW/prices/history?hours=24&price_type=INVALID")
+        assert response.status_code == 400
+        data = response.json()
+        assert "Invalid price_type" in data["detail"]
+
+    def test_merged_includes_source_type_in_records(self, client):
+        """MERGED response records should include source_type field"""
+        response = client.get("/api/region/NSW/prices/history?hours=24&price_type=MERGED")
+        assert response.status_code == 200
+        data = response.json()
+
+        if data["count"] > 0:
+            # Each record should have source_type
+            for record in data["data"]:
+                assert "source_type" in record
+                assert record["source_type"] in ["PUBLIC", "DISPATCH"]
+
+    def test_merged_all_regions(self, client):
+        """MERGED should work for all valid regions"""
+        for region in ["NSW", "VIC", "QLD", "SA", "TAS"]:
+            response = client.get(f"/api/region/{region}/prices/history?hours=24&price_type=MERGED")
+            assert response.status_code == 200, f"Failed for region {region}"
+            data = response.json()
+            assert data["region"] == region

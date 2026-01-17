@@ -211,14 +211,51 @@ class DataIngester:
             logger.error(f"Error during backfill: {e}")
             return 0
 
+    async def backfill_dispatch_prices(self) -> int:
+        """Backfill DISPATCH prices from Current directory since last PUBLIC price.
+
+        Only fetches files newer than the latest PUBLIC price timestamp,
+        reducing the number of files from ~288 (3 days) to typically ~100-200
+        (since 4am today). Uses concurrent requests for faster fetching.
+        """
+        logger.info("Starting DISPATCH price backfill from Current directory...")
+
+        try:
+            # Get the latest PUBLIC price timestamp to avoid fetching unnecessary data
+            latest_public = await self.db.get_latest_price_timestamp('PUBLIC')
+
+            if latest_public:
+                logger.info(f"Latest PUBLIC price: {latest_public}, fetching DISPATCH since then")
+            else:
+                logger.info("No PUBLIC prices found, fetching all available DISPATCH data")
+
+            # Fetch only files newer than latest PUBLIC timestamp
+            df = await self.price_client.get_all_current_dispatch_prices(since=latest_public)
+
+            if df is not None and not df.empty:
+                records = await self.db.insert_price_data(df)
+                logger.info(f"Backfilled {records} DISPATCH price records from Current directory")
+                return records
+            else:
+                logger.info("No new DISPATCH price data to backfill")
+                return 0
+
+        except Exception as e:
+            logger.error(f"Error during DISPATCH price backfill: {e}")
+            return 0
+
     async def run_continuous_ingestion(self, interval_minutes: int = 5):
         """Run continuous data ingestion"""
         self.is_running = True
         logger.info(f"Starting continuous ingestion with {interval_minutes} minute intervals")
 
-        # Backfill missing historical data on startup
+        # Backfill missing historical PUBLIC price data on startup
         backfill_days = int(os.getenv('BACKFILL_DAYS_ON_STARTUP', '30'))
         await self.backfill_missing_data(days_back=backfill_days)
+
+        # Backfill DISPATCH prices from Current directory (~3 days)
+        # This bridges the gap between 4am (when PUBLIC prices end) and now
+        await self.backfill_dispatch_prices()
 
         # Initial data fetch
         await self.ingest_current_data()

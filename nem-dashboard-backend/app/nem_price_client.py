@@ -2,10 +2,11 @@
 NEM Price and Interconnector Data Client
 """
 
+import asyncio
 import httpx
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 import logging
 import zipfile
 import io
@@ -142,7 +143,131 @@ class NEMPriceClient:
         except Exception as e:
             logger.error(f"Error fetching daily prices for {date}: {e}")
             return None
-    
+
+    async def get_all_current_dispatch_prices(
+        self,
+        since: Optional[datetime] = None,
+        max_concurrent: int = 10
+    ) -> Optional[pd.DataFrame]:
+        """Fetch dispatch price files from Current directory.
+
+        Args:
+            since: Only fetch files with timestamps after this datetime.
+                   If None, fetches all files (~288 files, ~3 days).
+            max_concurrent: Maximum concurrent HTTP requests (default 10)
+
+        Returns:
+            DataFrame with dispatch price data, or None if no files found/error
+        """
+        try:
+            dispatch_url = f"{self.base_url}/Reports/Current/DispatchIS_Reports/"
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # 1. Get directory listing
+                response = await client.get(dispatch_url)
+                response.raise_for_status()
+
+                # 2. Find all dispatch price files
+                pattern = r'PUBLIC_DISPATCHIS_(\d{12})_\d{16}\.zip'
+                matches = re.findall(pattern, response.text)
+
+                if not matches:
+                    logger.warning("No dispatch price files found in Current directory")
+                    return None
+
+                # Build list of (filename, timestamp) tuples
+                all_files = []
+                for match in re.finditer(r'(PUBLIC_DISPATCHIS_(\d{12})_\d{16}\.zip)', response.text):
+                    filename = match.group(1)
+                    timestamp_str = match.group(2)  # YYYYMMDDHHmm
+                    try:
+                        file_timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M')
+                        all_files.append((filename, file_timestamp))
+                    except ValueError:
+                        continue
+
+                # 3. Filter files by timestamp if since is provided
+                if since:
+                    files_to_fetch = [
+                        (f, t) for f, t in all_files if t > since
+                    ]
+                    logger.info(f"Filtering: {len(all_files)} total files, {len(files_to_fetch)} newer than {since}")
+                else:
+                    files_to_fetch = all_files
+
+                if not files_to_fetch:
+                    logger.info("No new dispatch price files to fetch")
+                    return None
+
+                # Sort by timestamp (oldest first)
+                files_to_fetch.sort(key=lambda x: x[1])
+                filenames = [f for f, _ in files_to_fetch]
+
+                logger.info(f"Fetching {len(filenames)} dispatch price files concurrently")
+
+                # 4. Fetch files concurrently in batches
+                all_dfs = await self._fetch_files_concurrent(
+                    client, dispatch_url, filenames, max_concurrent
+                )
+
+                if not all_dfs:
+                    logger.warning("No valid data found in any dispatch price files")
+                    return None
+
+                # 5. Concatenate all DataFrames
+                combined_df = pd.concat(all_dfs, ignore_index=True)
+
+                # 6. Deduplicate by (settlementdate, region) - keep last occurrence
+                combined_df = combined_df.drop_duplicates(
+                    subset=['settlementdate', 'region'],
+                    keep='last'
+                )
+
+                logger.info(f"Successfully fetched {len(combined_df)} dispatch price records")
+                return combined_df
+
+        except Exception as e:
+            logger.error(f"Error fetching all current dispatch prices: {e}")
+            return None
+
+    async def _fetch_files_concurrent(
+        self,
+        client: httpx.AsyncClient,
+        base_url: str,
+        filenames: List[str],
+        max_concurrent: int
+    ) -> List[pd.DataFrame]:
+        """Fetch multiple files concurrently with rate limiting.
+
+        Args:
+            client: HTTP client to use
+            base_url: Base URL for files
+            filenames: List of filenames to fetch
+            max_concurrent: Maximum concurrent requests
+
+        Returns:
+            List of parsed DataFrames
+        """
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def fetch_one(filename: str) -> Optional[pd.DataFrame]:
+            async with semaphore:
+                try:
+                    file_url = f"{base_url}{filename}"
+                    file_response = await client.get(file_url)
+                    file_response.raise_for_status()
+                    return self._parse_dispatch_price_zip(file_response.content)
+                except Exception as e:
+                    logger.warning(f"Error fetching {filename}: {e}")
+                    return None
+
+        # Fetch all files concurrently
+        tasks = [fetch_one(f) for f in filenames]
+        results = await asyncio.gather(*tasks)
+
+        # Filter out None results
+        return [df for df in results if df is not None and not df.empty]
+
     def _parse_latest_dispatch_price_file(self, html_content: str) -> Optional[str]:
         """Parse directory listing for latest dispatch price file"""
         # Pattern for dispatch price files
@@ -311,16 +436,23 @@ class NEMPriceClient:
                             continue
 
             elif price_type == 'DISPATCH':
-                # Dispatch PRICE format: D,DISPATCH,PRICE,3,"2025/08/29 13:55:00",1,NSW1,0,12.5,1,...
-                # Columns: 0=D, 1=DISPATCH, 2=PRICE, 3=version, 4=settlementdate, 5=runno, 6=regionid, 7=dispatchinterval, 8=RRP, 9=EEP,...
+                # Dispatch PRICE format varies by version:
+                # Version 3: D,DISPATCH,PRICE,3,"date",runno,regionid,dispatchinterval,RRP,...
+                # Version 5: D,DISPATCH,PRICE,5,"date",runno,regionid,dispatchinterval,INTERVENTION,RRP,...
+                # We need to detect the version and adjust the RRP column index accordingly
                 for line in price_lines:
                     parts = line.split(',')
-                    if len(parts) >= 9:
+                    if len(parts) >= 10:
                         try:
+                            version = int(parts[3])
                             settlement_date = parts[4].strip('"')
                             region_id = parts[6].strip('"')  # Column 6 is REGIONID (NSW1, VIC1, etc.)
                             region = REGION_MAPPING.get(region_id, region_id)  # Map to display names
-                            rrp_value = self._safe_float(parts[8])  # Column 8 is RRP (Regional Reference Price)
+
+                            # Version 5 has INTERVENTION column at index 8, pushing RRP to index 9
+                            # Version 3 and earlier have RRP at index 8
+                            rrp_index = 9 if version >= 5 else 8
+                            rrp_value = self._safe_float(parts[rrp_index])
 
                             # Get demand from REGIONSUM if available
                             data.append({

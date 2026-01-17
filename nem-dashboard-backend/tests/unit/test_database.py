@@ -263,6 +263,25 @@ class TestPriceQueries:
         if len(result) > 0:
             assert all(result['region'] == 'NSW')
 
+    @pytest.mark.asyncio
+    async def test_get_latest_price_timestamp(self, populated_db):
+        """Test getting latest price timestamp for a price type"""
+        # Get latest DISPATCH timestamp
+        dispatch_ts = await populated_db.get_latest_price_timestamp('DISPATCH')
+        assert dispatch_ts is not None
+        assert isinstance(dispatch_ts, datetime)
+
+        # Get latest PUBLIC timestamp
+        public_ts = await populated_db.get_latest_price_timestamp('PUBLIC')
+        assert public_ts is not None
+        assert isinstance(public_ts, datetime)
+
+    @pytest.mark.asyncio
+    async def test_get_latest_price_timestamp_nonexistent_type(self, test_db):
+        """Test getting latest timestamp for non-existent price type returns None"""
+        result = await test_db.get_latest_price_timestamp('NONEXISTENT')
+        assert result is None
+
 
 class TestInterconnectorQueries:
     """Tests for interconnector data query methods"""
@@ -420,3 +439,217 @@ class TestGenerationByFuelType:
             assert 'fuel_source' in result.columns
             assert 'total_generation' in result.columns
             assert 'unit_count' in result.columns
+
+
+class TestGetMergedPriceHistory:
+    """Tests for get_merged_price_history method (MERGED price type)"""
+
+    @pytest.mark.asyncio
+    async def test_returns_public_when_no_dispatch(self, test_db):
+        """When only PUBLIC data exists, return PUBLIC with source_type"""
+        # Insert only PUBLIC data
+        public_df = pd.DataFrame([
+            {
+                'settlementdate': datetime.now() - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 85.50,
+                'totaldemand': 7500.0,
+                'price_type': 'PUBLIC'
+            }
+        ])
+        await test_db.insert_price_data(public_df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        assert len(result) == 1
+        assert 'source_type' in result.columns
+        assert result.iloc[0]['source_type'] == 'PUBLIC'
+
+    @pytest.mark.asyncio
+    async def test_returns_dispatch_when_no_public(self, test_db):
+        """When only DISPATCH data exists, return DISPATCH with source_type"""
+        # Insert only DISPATCH data
+        dispatch_df = pd.DataFrame([
+            {
+                'settlementdate': datetime.now() - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 90.00,
+                'totaldemand': 7600.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(dispatch_df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        assert len(result) == 1
+        assert 'source_type' in result.columns
+        assert result.iloc[0]['source_type'] == 'DISPATCH'
+
+    @pytest.mark.asyncio
+    async def test_fills_gap_with_dispatch_after_public(self, test_db):
+        """DISPATCH data fills gap after latest PUBLIC timestamp"""
+        now = datetime.now()
+
+        # Insert PUBLIC data for earlier time (simulating 4am cutoff)
+        public_df = pd.DataFrame([
+            {
+                'settlementdate': now - timedelta(hours=6),
+                'region': 'NSW',
+                'price': 80.00,
+                'totaldemand': 7000.0,
+                'price_type': 'PUBLIC'
+            },
+            {
+                'settlementdate': now - timedelta(hours=5),
+                'region': 'NSW',
+                'price': 82.00,
+                'totaldemand': 7100.0,
+                'price_type': 'PUBLIC'
+            }
+        ])
+        await test_db.insert_price_data(public_df)
+
+        # Insert DISPATCH data for more recent times (after PUBLIC cutoff)
+        dispatch_df = pd.DataFrame([
+            {
+                'settlementdate': now - timedelta(hours=2),
+                'region': 'NSW',
+                'price': 95.00,
+                'totaldemand': 7800.0,
+                'price_type': 'DISPATCH'
+            },
+            {
+                'settlementdate': now - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 98.00,
+                'totaldemand': 7900.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(dispatch_df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        # Should have 4 records total: 2 PUBLIC + 2 DISPATCH
+        assert len(result) == 4
+
+        # Check source types
+        public_count = (result['source_type'] == 'PUBLIC').sum()
+        dispatch_count = (result['source_type'] == 'DISPATCH').sum()
+        assert public_count == 2
+        assert dispatch_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_duplicate_timestamps(self, test_db):
+        """Should not have overlapping timestamps from both sources"""
+        now = datetime.now()
+        same_time = now - timedelta(hours=3)
+
+        # Insert both PUBLIC and DISPATCH for same timestamp
+        # PUBLIC should take precedence
+        df = pd.DataFrame([
+            {
+                'settlementdate': same_time,
+                'region': 'NSW',
+                'price': 80.00,
+                'totaldemand': 7000.0,
+                'price_type': 'PUBLIC'
+            },
+            {
+                'settlementdate': same_time,
+                'region': 'NSW',
+                'price': 85.00,
+                'totaldemand': 7200.0,
+                'price_type': 'DISPATCH'
+            },
+            # Add a later DISPATCH record to fill gap
+            {
+                'settlementdate': now - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 90.00,
+                'totaldemand': 7500.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        # Check no duplicate timestamps
+        duplicates = result.duplicated(subset=['settlementdate', 'region'])
+        assert duplicates.sum() == 0
+
+    @pytest.mark.asyncio
+    async def test_includes_source_type_column(self, test_db):
+        """Response should include source_type indicating PUBLIC or DISPATCH"""
+        now = datetime.now()
+
+        # Insert mixed data
+        df = pd.DataFrame([
+            {
+                'settlementdate': now - timedelta(hours=5),
+                'region': 'NSW',
+                'price': 80.00,
+                'totaldemand': 7000.0,
+                'price_type': 'PUBLIC'
+            },
+            {
+                'settlementdate': now - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 90.00,
+                'totaldemand': 7500.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        assert 'source_type' in result.columns
+        assert set(result['source_type'].unique()) == {'PUBLIC', 'DISPATCH'}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_dataframe_when_no_data(self, test_db):
+        """Should return empty DataFrame when no data exists"""
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_sorted_by_settlementdate(self, test_db):
+        """Results should be sorted by settlementdate ascending"""
+        now = datetime.now()
+
+        # Insert data in random order
+        df = pd.DataFrame([
+            {
+                'settlementdate': now - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 90.00,
+                'totaldemand': 7500.0,
+                'price_type': 'DISPATCH'
+            },
+            {
+                'settlementdate': now - timedelta(hours=5),
+                'region': 'NSW',
+                'price': 80.00,
+                'totaldemand': 7000.0,
+                'price_type': 'PUBLIC'
+            },
+            {
+                'settlementdate': now - timedelta(hours=3),
+                'region': 'NSW',
+                'price': 85.00,
+                'totaldemand': 7200.0,
+                'price_type': 'PUBLIC'
+            }
+        ])
+        await test_db.insert_price_data(df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        # Check sorting
+        timestamps = result['settlementdate'].tolist()
+        assert timestamps == sorted(timestamps)
