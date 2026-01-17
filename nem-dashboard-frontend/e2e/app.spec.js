@@ -15,14 +15,14 @@ test.describe('App', () => {
   });
 
   test('dark mode toggle works', async ({ page }) => {
-    // Initially light mode
-    await expect(page.locator('.app')).toHaveClass(/light/);
+    // Initially dark mode (default)
+    await expect(page.locator('.app')).toHaveClass(/dark/);
 
     // Click toggle
     await page.locator('.toggle-switch').click();
 
-    // Should be dark mode
-    await expect(page.locator('.app')).toHaveClass(/dark/);
+    // Should be light mode
+    await expect(page.locator('.app')).toHaveClass(/light/);
   });
 
   test.skip('dark mode toggle label is visible', async ({ page }) => {
