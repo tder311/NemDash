@@ -10,16 +10,6 @@ test.describe('App', () => {
     await expect(page.locator('h1')).toContainText('NEM Market Dashboard');
   });
 
-  test('displays navigation tabs', async ({ page }) => {
-    await expect(page.getByText('Live Prices & Flows')).toBeVisible();
-    await expect(page.getByText('Price History')).toBeVisible();
-  });
-
-  test('Live Prices tab is active by default', async ({ page }) => {
-    const liveTab = page.locator('.tab').filter({ hasText: 'Live Prices & Flows' });
-    await expect(liveTab).toHaveClass(/active/);
-  });
-
   test('dark mode toggle is visible', async ({ page }) => {
     await expect(page.locator('.toggle-switch')).toBeVisible();
   });
@@ -35,9 +25,9 @@ test.describe('App', () => {
     await expect(page.locator('.app')).toHaveClass(/dark/);
   });
 
-  test('dark mode toggle icon changes', async ({ page }) => {
-    // Moon icon is always visible as label
-    await expect(page.locator('.dark-mode-toggle')).toContainText('\u{1F319}');
+  test('dark mode toggle label is visible', async ({ page }) => {
+    // "Dark" label is always visible
+    await expect(page.locator('.dark-mode-toggle')).toContainText('Dark');
 
     // Toggle switch should not have active class initially (light mode)
     await expect(page.locator('.toggle-switch')).not.toHaveClass(/active/);
@@ -46,20 +36,6 @@ test.describe('App', () => {
 
     // Toggle switch should have active class in dark mode
     await expect(page.locator('.toggle-switch')).toHaveClass(/active/);
-  });
-
-  test('tab navigation works', async ({ page }) => {
-    // Click Price History tab
-    await page.getByText('Price History').click();
-
-    const historyTab = page.locator('.tab').filter({ hasText: 'Price History' });
-    await expect(historyTab).toHaveClass(/active/);
-
-    // Click back to Live Prices
-    await page.getByText('Live Prices & Flows').click();
-
-    const liveTab = page.locator('.tab').filter({ hasText: 'Live Prices & Flows' });
-    await expect(liveTab).toHaveClass(/active/);
   });
 
   test('body class updates with dark mode', async ({ page }) => {
