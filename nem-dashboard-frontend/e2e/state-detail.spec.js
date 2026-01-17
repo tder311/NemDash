@@ -76,17 +76,15 @@ test.describe('State Detail Page', () => {
     await expect(page.locator('.fuel-chart')).toBeVisible();
   });
 
-  test('displays fuel breakdown table', async ({ page }) => {
-    await expect(page.getByText('Generation by Fuel Source')).toBeVisible();
-    await expect(page.locator('.fuel-breakdown-table table')).toBeVisible();
+  test('displays generation history chart', async ({ page }) => {
+    await expect(page.getByText(/Generation by Fuel Source/)).toBeVisible();
+    await expect(page.locator('.generation-history-chart')).toBeVisible();
   });
 
-  test('fuel breakdown table has correct headers', async ({ page }) => {
-    const headers = page.locator('.fuel-breakdown-table th');
-    await expect(headers.nth(0)).toHaveText('Fuel Source');
-    await expect(headers.nth(1)).toHaveText('Generation (MW)');
-    await expect(headers.nth(2)).toHaveText('Share (%)');
-    await expect(headers.nth(3)).toHaveText('Units');
+  test('displays three charts on state detail page', async ({ page }) => {
+    // Price/demand chart, fuel mix donut, and generation history stacked area
+    const charts = page.locator('[data-testid="plotly-chart"]');
+    await expect(charts).toHaveCount(3);
   });
 
   test('back button navigates to overview', async ({ page }) => {
@@ -117,7 +115,7 @@ test.describe('State Detail Page - All Regions', () => {
 
       await expect(page.getByText(`${region.name} (${region.code})`)).toBeVisible({ timeout: 15000 });
       await expect(page.getByText('Current Price')).toBeVisible();
-      await expect(page.getByText('Generation by Fuel Source')).toBeVisible();
+      await expect(page.getByText(/Generation by Fuel Source/)).toBeVisible();
     });
   }
 });
