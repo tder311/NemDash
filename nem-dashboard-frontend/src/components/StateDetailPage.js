@@ -269,16 +269,20 @@ function StateDetailPage({ region, darkMode, onBack }) {
       const dataMap = {};
       fuelData.forEach(d => { dataMap[d.period] = d.generation_mw; });
 
+      const color = FUEL_COLORS[fuel] || FUEL_COLORS['Unknown'];
       return {
         x: timestamps.map(t => new Date(t)),
         y: timestamps.map(t => dataMap[t] || 0),
         type: 'scatter',
-        mode: 'none',
+        mode: 'lines',
         name: fuel,
         fill: 'tonexty',
         stackgroup: 'generation',
-        fillcolor: FUEL_COLORS[fuel] || FUEL_COLORS['Unknown'],
-        line: { width: 0 },
+        fillcolor: color + '80',  // Add transparency to fill
+        line: {
+          color: color,
+          width: 1
+        },
         hovertemplate: `<b>${fuel}</b><br>` +
                       'Time: %{x}<br>' +
                       'Generation: %{y:.0f} MW<br>' +
@@ -289,38 +293,58 @@ function StateDetailPage({ region, darkMode, onBack }) {
 
   const generationHistoryLayout = {
     title: {
-      text: `Generation by Fuel Source - Last ${timeRange} Hours`,
+      text: 'Generation by Fuel',
       font: {
-        size: 18,
-        color: darkMode ? '#f5f5f5' : '#333'
-      }
+        size: 16,
+        color: darkMode ? '#e5e7eb' : '#374151',
+        family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+      },
+      x: 0.02,
+      xanchor: 'left'
     },
     xaxis: {
-      title: 'Time',
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
-      tickformat: '%H:%M'
+      gridcolor: darkMode ? '#374151' : '#f3f4f6',
+      color: darkMode ? '#9ca3af' : '#6b7280',
+      tickformat: timeRange <= 24 ? '%H:%M' : '%d %b %H:%M',
+      tickfont: { size: 11 },
+      linecolor: darkMode ? '#374151' : '#e5e7eb',
+      showline: true,
+      zeroline: false
     },
     yaxis: {
-      title: 'Generation (MW)',
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333'
+      title: {
+        text: 'MW',
+        font: { size: 11, color: darkMode ? '#9ca3af' : '#6b7280' },
+        standoff: 10
+      },
+      gridcolor: darkMode ? '#374151' : '#f3f4f6',
+      color: darkMode ? '#9ca3af' : '#6b7280',
+      tickfont: { size: 11 },
+      zeroline: false
     },
-    plot_bgcolor: darkMode ? '#1e1e1e' : 'white',
-    paper_bgcolor: darkMode ? '#1e1e1e' : 'white',
+    plot_bgcolor: 'transparent',
+    paper_bgcolor: 'transparent',
     font: {
-      color: darkMode ? '#f5f5f5' : '#333'
+      color: darkMode ? '#e5e7eb' : '#374151',
+      family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
     },
-    margin: { l: 60, r: 30, t: 50, b: 50 },
+    margin: { l: 55, r: 55, t: 40, b: 40 },
     showlegend: true,
     legend: {
       orientation: 'h',
-      x: 0.5,
-      xanchor: 'center',
-      y: -0.15,
-      traceorder: 'normal'
+      x: 1,
+      xanchor: 'right',
+      y: 1.02,
+      yanchor: 'bottom',
+      bgcolor: 'transparent',
+      font: { size: 11 }
     },
-    hovermode: 'x unified'
+    hovermode: 'x unified',
+    hoverlabel: {
+      bgcolor: darkMode ? '#1f2937' : 'white',
+      bordercolor: darkMode ? '#374151' : '#e5e7eb',
+      font: { size: 12, family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }
+    }
   };
 
   if (loading) {
@@ -417,17 +441,28 @@ function StateDetailPage({ region, darkMode, onBack }) {
       </div>
 
       <div className="chart-wrapper generation-history-chart">
-        <Plot
-          data={createGenerationHistoryChartData()}
-          layout={generationHistoryLayout}
-          style={{ width: '100%', height: '400px' }}
-          config={{
-            displayModeBar: 'hover',
-            displaylogo: false,
-            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d'],
-            scrollZoom: false
-          }}
-        />
+        {generationHistory.length > 0 ? (
+          <Plot
+            data={createGenerationHistoryChartData()}
+            layout={generationHistoryLayout}
+            style={{ width: '100%', height: '400px' }}
+            config={{
+              displayModeBar: 'hover',
+              displaylogo: false,
+              modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d'],
+              scrollZoom: false
+            }}
+          />
+        ) : (
+          <div className="no-data-message">
+            <h3 style={{ color: darkMode ? '#f5f5f5' : '#333' }}>
+              Generation by Fuel Source - Last {timeRange} Hours
+            </h3>
+            <p style={{ color: darkMode ? '#aaa' : '#666' }}>
+              No generation history data available. Generator metadata may need to be imported.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

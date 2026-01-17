@@ -183,7 +183,37 @@ class NEMDatabase:
             df['settlementdate'] = pd.to_datetime(df['settlementdate'])
             
             return df
-    
+
+    async def get_latest_dispatch_timestamp(self) -> Optional[datetime]:
+        """Get the latest settlement timestamp from dispatch data.
+
+        Used to determine how far back to backfill dispatch data.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT MAX(settlementdate) as latest FROM dispatch_data
+            """)
+            row = await cursor.fetchone()
+
+            if row and row[0]:
+                return datetime.fromisoformat(row[0])
+            return None
+
+    async def get_earliest_dispatch_timestamp(self) -> Optional[datetime]:
+        """Get the earliest settlement timestamp from dispatch data.
+
+        Used to determine data coverage for backfill decisions.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT MIN(settlementdate) as earliest FROM dispatch_data
+            """)
+            row = await cursor.fetchone()
+
+            if row and row[0]:
+                return datetime.fromisoformat(row[0])
+            return None
+
     async def get_dispatch_data_by_date_range(self, start_date: datetime, end_date: datetime, duid: Optional[str] = None) -> pd.DataFrame:
         """Get dispatch data for a date range"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -494,27 +524,44 @@ class NEMDatabase:
             return df
 
     async def get_region_generation_history(self, region: str, hours: int = 24, aggregation_minutes: int = 30) -> pd.DataFrame:
-        """Get historical generation by fuel source for a specific region"""
+        """Get historical generation by fuel source for a specific region.
+
+        Uses a two-step aggregation:
+        1. Sum generation by fuel source at each timestamp
+        2. Average those totals within each aggregation period
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
-            # Aggregate to reduce data points - group by time period
+            # Use max settlementdate as reference to avoid timezone issues
+            # First get total generation per fuel per timestamp, then average within periods
             cursor = await db.execute("""
+                WITH timestamp_totals AS (
+                    SELECT
+                        d.settlementdate,
+                        COALESCE(g.fuel_source, 'Unknown') as fuel_source,
+                        SUM(d.scadavalue) as total_mw
+                    FROM dispatch_data d
+                    INNER JOIN generator_info g ON d.duid = g.duid
+                    WHERE g.region = ?
+                    AND d.settlementdate >= datetime(
+                        (SELECT MAX(settlementdate) FROM dispatch_data),
+                        ? || ' hours'
+                    )
+                    GROUP BY d.settlementdate, g.fuel_source
+                )
                 SELECT
                     datetime(
-                        (strftime('%s', d.settlementdate) / (? * 60)) * (? * 60),
+                        (strftime('%s', settlementdate) / (? * 60)) * (? * 60),
                         'unixepoch'
                     ) as period,
-                    COALESCE(g.fuel_source, 'Unknown') as fuel_source,
-                    AVG(d.scadavalue) as generation_mw,
+                    fuel_source,
+                    AVG(total_mw) as generation_mw,
                     COUNT(*) as sample_count
-                FROM dispatch_data d
-                LEFT JOIN generator_info g ON d.duid = g.duid
-                WHERE g.region = ?
-                AND d.settlementdate >= datetime('now', ? || ' hours')
-                GROUP BY period, g.fuel_source
+                FROM timestamp_totals
+                GROUP BY period, fuel_source
                 ORDER BY period ASC, fuel_source
-            """, (aggregation_minutes, aggregation_minutes, region, f'-{hours}'))
+            """, (region, f'-{hours}', aggregation_minutes, aggregation_minutes))
 
             rows = await cursor.fetchall()
 

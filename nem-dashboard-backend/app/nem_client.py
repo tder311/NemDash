@@ -45,24 +45,115 @@ class NEMDispatchClient:
         try:
             date_str = date.strftime("%Y%m%d")
             archive_url = f"{self.base_url}/Reports/Archive/Dispatch_SCADA/{date.year}/DISPATCH_SCADA_{date_str}.zip"
-            
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(archive_url)
                 response.raise_for_status()
-                
+
                 # Extract and parse the CSV from the ZIP file
                 with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
                     csv_files = [f for f in zip_file.namelist() if f.endswith('.CSV')]
                     if not csv_files:
                         logger.warning(f"No CSV files found in archive for {date_str}")
                         return None
-                    
+
                     # Read the first CSV file found
                     csv_content = zip_file.read(csv_files[0])
                     return self._parse_dispatch_csv(csv_content)
-                    
+
         except Exception as e:
             logger.error(f"Error fetching historical dispatch data for {date}: {e}")
+            return None
+
+    async def get_all_current_dispatch_data(
+        self,
+        since: Optional[datetime] = None,
+        max_concurrent: int = 10
+    ) -> Optional[pd.DataFrame]:
+        """Fetch all dispatch SCADA files from Current directory (~3 days of 5-min data).
+
+        Args:
+            since: Only fetch files with timestamps after this datetime.
+            max_concurrent: Maximum concurrent HTTP requests (default 10)
+
+        Returns:
+            DataFrame with dispatch SCADA data, or None if no files found/error
+        """
+        import asyncio
+        import re
+
+        try:
+            dispatch_url = f"{self.base_url}/REPORTS/CURRENT/Dispatch_SCADA/"
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # Get directory listing
+                response = await client.get(dispatch_url)
+                response.raise_for_status()
+
+                # Find all dispatch files with timestamps
+                pattern = r'(PUBLIC_DISPATCHSCADA_(\d{12})_\d{16}\.zip)'
+                all_files = []
+                for match in re.finditer(pattern, response.text):
+                    filename = match.group(1)
+                    timestamp_str = match.group(2)  # YYYYMMDDHHmm
+                    try:
+                        file_timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M')
+                        all_files.append((filename, file_timestamp))
+                    except ValueError:
+                        continue
+
+                if not all_files:
+                    logger.warning("No dispatch files found in Current directory")
+                    return None
+
+                # Filter by timestamp if provided
+                if since:
+                    files_to_fetch = [(f, t) for f, t in all_files if t > since]
+                    logger.info(f"Dispatch backfill: {len(all_files)} total files, {len(files_to_fetch)} newer than {since}")
+                else:
+                    files_to_fetch = all_files
+                    logger.info(f"Fetching all {len(all_files)} dispatch files from Current")
+
+                if not files_to_fetch:
+                    logger.info("No new dispatch files to fetch")
+                    return None
+
+                # Fetch files concurrently with semaphore
+                semaphore = asyncio.Semaphore(max_concurrent)
+                all_dataframes = []
+
+                async def fetch_file(filename: str) -> Optional[pd.DataFrame]:
+                    async with semaphore:
+                        try:
+                            file_url = f"{dispatch_url}{filename}"
+                            file_response = await client.get(file_url)
+                            file_response.raise_for_status()
+                            return self._parse_dispatch_zip(file_response.content)
+                        except Exception as e:
+                            logger.debug(f"Error fetching {filename}: {e}")
+                            return None
+
+                # Fetch all files concurrently
+                tasks = [fetch_file(f) for f, _ in files_to_fetch]
+                results = await asyncio.gather(*tasks)
+
+                # Collect valid results
+                for df in results:
+                    if df is not None and not df.empty:
+                        all_dataframes.append(df)
+
+                if not all_dataframes:
+                    logger.warning("No valid dispatch data retrieved")
+                    return None
+
+                # Combine all dataframes
+                combined = pd.concat(all_dataframes, ignore_index=True)
+                combined = combined.drop_duplicates(subset=['settlementdate', 'duid'], keep='last')
+                logger.info(f"Retrieved {len(combined)} dispatch records from {len(all_dataframes)} files")
+                return combined
+
+        except Exception as e:
+            logger.error(f"Error fetching all current dispatch data: {e}")
             return None
     
     def _parse_latest_dispatch_file(self, html_content: str) -> Optional[str]:

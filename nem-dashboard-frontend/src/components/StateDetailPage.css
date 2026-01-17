@@ -213,6 +213,26 @@
   margin-top: 0;
 }
 
+.no-data-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 400px;
+  text-align: center;
+  padding: 40px;
+}
+
+.no-data-message h3 {
+  margin: 0 0 12px 0;
+  font-size: 1.2rem;
+}
+
+.no-data-message p {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
 .fuel-breakdown-table {
   background: rgba(255, 255, 255, 0.95);
   border-radius: 12px;
