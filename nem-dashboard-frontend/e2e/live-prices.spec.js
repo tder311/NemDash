@@ -108,6 +108,9 @@ test.describe('Live Prices Page - Region Navigation', () => {
 
 test.describe('Live Prices Page - Data Refresh', () => {
   test('refreshes data automatically', async ({ page }) => {
+    // This test needs longer timeout since it waits for auto-refresh
+    test.setTimeout(45000);
+
     let requestCount = 0;
 
     // Count API requests

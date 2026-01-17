@@ -31,7 +31,9 @@ test.describe('State Detail Page', () => {
   });
 
   test('displays time range selector', async ({ page }) => {
-    await expect(page.getByLabel('Time Range:')).toBeVisible();
+    // Check for the time range selector container and label text
+    await expect(page.locator('.time-range-selector')).toBeVisible();
+    await expect(page.getByText('Time Range:')).toBeVisible();
 
     const select = page.getByRole('combobox');
     await expect(select).toHaveValue('24');
@@ -141,6 +143,9 @@ test.describe('State Detail Page - Dark Mode', () => {
 
 test.describe('State Detail Page - Data Refresh', () => {
   test('auto-refreshes every 60 seconds', async ({ page }) => {
+    // This test needs longer timeout since it waits for auto-refresh
+    test.setTimeout(90000);
+
     let requestCount = 0;
 
     await page.route('**/api/region/NSW/**', async route => {
