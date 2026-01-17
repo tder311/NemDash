@@ -41,6 +41,9 @@ jest.mock('axios', () => {
       if (url.includes('/prices/history') || (url.includes('/region/') && url.includes('/prices/'))) {
         return Promise.resolve({ data: { data: [], count: 0, message: 'No data' } });
       }
+      if (url.includes('/generation/history')) {
+        return Promise.resolve({ data: { data: [], count: 0, hours: 24, aggregation_minutes: 30, message: 'No data' } });
+      }
       if (url.includes('/generation/current')) {
         return Promise.resolve({ data: { fuel_mix: [], total_generation: 0, region: 'NSW' } });
       }

@@ -83,8 +83,10 @@ test.describe('State Detail Page', () => {
 
   test('displays three charts on state detail page', async ({ page }) => {
     // Price/demand chart, fuel mix donut, and generation history stacked area
-    const charts = page.locator('[data-testid="plotly-chart"]');
-    await expect(charts).toHaveCount(3);
+    // Use the chart wrapper classes instead of data-testid since Plotly doesn't add those
+    await expect(page.locator('.price-chart')).toBeVisible();
+    await expect(page.locator('.fuel-chart')).toBeVisible();
+    await expect(page.locator('.generation-history-chart')).toBeVisible();
   });
 
   test('back button navigates to overview', async ({ page }) => {
