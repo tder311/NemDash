@@ -214,6 +214,29 @@ class NEMDatabase:
                 return datetime.fromisoformat(row[0])
             return None
 
+    async def get_dispatch_dates_with_data(self, start_date: datetime, end_date: datetime, min_records: int = 100) -> set:
+        """Get dates that have sufficient dispatch data.
+
+        Args:
+            start_date: Start of date range
+            end_date: End of date range
+            min_records: Minimum records per day to consider it complete (default 100)
+
+        Returns:
+            Set of date strings (YYYY-MM-DD) that have sufficient data
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT date(settlementdate) as data_date, COUNT(*) as record_count
+                FROM dispatch_data
+                WHERE date(settlementdate) BETWEEN date(?) AND date(?)
+                GROUP BY date(settlementdate)
+                HAVING COUNT(*) >= ?
+            """, (start_date, end_date, min_records))
+
+            rows = await cursor.fetchall()
+            return {row[0] for row in rows}
+
     async def get_dispatch_data_by_date_range(self, start_date: datetime, end_date: datetime, duid: Optional[str] = None) -> pd.DataFrame:
         """Get dispatch data for a date range"""
         async with aiosqlite.connect(self.db_path) as db:

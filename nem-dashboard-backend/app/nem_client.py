@@ -41,25 +41,53 @@ class NEMDispatchClient:
             return None
     
     async def get_historical_dispatch_data(self, date: datetime) -> Optional[pd.DataFrame]:
-        """Fetch historical dispatch data for a specific date"""
+        """Fetch historical dispatch data for a specific date from NEMWEB archives.
+
+        Archives are ZIP files containing nested ZIPs for each 5-minute interval.
+        """
         try:
             date_str = date.strftime("%Y%m%d")
-            archive_url = f"{self.base_url}/Reports/Archive/Dispatch_SCADA/{date.year}/DISPATCH_SCADA_{date_str}.zip"
+            archive_url = f"{self.base_url}/Reports/Archive/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_{date_str}.zip"
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:  # Longer timeout for large archives
                 response = await client.get(archive_url)
                 response.raise_for_status()
 
-                # Extract and parse the CSV from the ZIP file
-                with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
-                    csv_files = [f for f in zip_file.namelist() if f.endswith('.CSV')]
-                    if not csv_files:
-                        logger.warning(f"No CSV files found in archive for {date_str}")
+                all_dataframes = []
+
+                # Archive is a ZIP containing nested ZIPs for each 5-min interval
+                with zipfile.ZipFile(io.BytesIO(response.content)) as outer_zip:
+                    inner_zips = [f for f in outer_zip.namelist() if f.endswith('.zip')]
+
+                    if not inner_zips:
+                        logger.warning(f"No inner ZIP files found in archive for {date_str}")
                         return None
 
-                    # Read the first CSV file found
-                    csv_content = zip_file.read(csv_files[0])
-                    return self._parse_dispatch_csv(csv_content)
+                    logger.info(f"Processing {len(inner_zips)} dispatch files for {date_str}")
+
+                    for inner_zip_name in inner_zips:
+                        try:
+                            inner_zip_content = outer_zip.read(inner_zip_name)
+                            with zipfile.ZipFile(io.BytesIO(inner_zip_content)) as inner_zip:
+                                csv_files = [f for f in inner_zip.namelist() if f.endswith('.CSV')]
+                                if csv_files:
+                                    csv_content = inner_zip.read(csv_files[0])
+                                    df = self._parse_dispatch_csv(csv_content)
+                                    if df is not None and not df.empty:
+                                        all_dataframes.append(df)
+                        except Exception as e:
+                            logger.debug(f"Error processing {inner_zip_name}: {e}")
+                            continue
+
+                if not all_dataframes:
+                    logger.warning(f"No valid dispatch data extracted for {date_str}")
+                    return None
+
+                # Combine all dataframes and dedupe
+                combined = pd.concat(all_dataframes, ignore_index=True)
+                combined = combined.drop_duplicates(subset=['settlementdate', 'duid'], keep='last')
+                logger.info(f"Extracted {len(combined)} dispatch records for {date_str}")
+                return combined
 
         except Exception as e:
             logger.error(f"Error fetching historical dispatch data for {date}: {e}")

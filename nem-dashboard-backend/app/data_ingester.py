@@ -244,54 +244,94 @@ class DataIngester:
             logger.error(f"Error during DISPATCH price backfill: {e}")
             return 0
 
-    async def backfill_dispatch_data(self, days_back: int = 3) -> int:
+    async def backfill_dispatch_data(self, days_back: int = 7) -> int:
         """Backfill dispatch SCADA data for generation history charts.
 
-        Fetches dispatch data from NEMWEB Current directory (~3 days rolling window)
-        to enable historical generation by fuel source charts.
+        Fetches dispatch data from:
+        1. NEMWEB Current directory (~3 days rolling window) for recent data
+        2. NEMWEB Archive for older historical data (up to days_back)
+
+        This enables historical generation by fuel source charts for up to 7 days.
         """
+        total_records = 0
+
         try:
-            # Check what dispatch data we already have
-            latest_dispatch = await self.db.get_latest_dispatch_timestamp()
-            earliest_dispatch = await self.db.get_earliest_dispatch_timestamp()
-
-            required_span = days_back * 24  # hours
-
-            # Check if we need to backfill - need data spanning multiple days
-            if latest_dispatch and earliest_dispatch:
-                # Convert to datetime if string
-                if isinstance(latest_dispatch, str):
-                    latest_dispatch = datetime.fromisoformat(latest_dispatch.replace('Z', '+00:00').replace(' ', 'T'))
-                if isinstance(earliest_dispatch, str):
-                    earliest_dispatch = datetime.fromisoformat(earliest_dispatch.replace('Z', '+00:00').replace(' ', 'T'))
-
-                data_span = (latest_dispatch - earliest_dispatch).total_seconds() / 3600  # hours
-
-                # If we have sufficient data span, skip backfill
-                if data_span >= required_span * 0.8:  # 80% coverage is good enough
-                    logger.info(f"Dispatch data spans {data_span:.1f} hours, sufficient for {days_back} days")
-                    return 0
-
-                logger.info(f"Dispatch data only spans {data_span:.1f} hours, need {required_span} hours")
-
-            # Fetch all available files (Current directory has ~3 days rolling window)
-            since = None
-
-            # Fetch all dispatch files from Current directory
+            # Step 1: Fetch recent data from Current directory (~3 days)
             logger.info("Fetching dispatch data from Current directory...")
-            df = await self.nem_client.get_all_current_dispatch_data(since=since)
+            df = await self.nem_client.get_all_current_dispatch_data(since=None)
 
             if df is not None and not df.empty:
                 records = await self.db.insert_dispatch_data(df)
-                logger.info(f"Backfilled {records} dispatch records")
-                return records
+                total_records += records
+                logger.info(f"Backfilled {records} dispatch records from Current directory")
+
+            # Step 2: Backfill older data from historical archives
+            # Archives are available with ~2 day delay, so we can fill gaps older than ~3 days
+            logger.info(f"Checking for missing dispatch data in last {days_back} days...")
+
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days_back)
+
+            # Find dates that need backfilling from archives
+            missing_dates = await self._get_missing_dispatch_dates(start_date, end_date)
+
+            if missing_dates:
+                logger.info(f"Found {len(missing_dates)} dates to backfill from archives")
+
+                for date in missing_dates:
+                    try:
+                        logger.info(f"Backfilling dispatch data for {date.strftime('%Y-%m-%d')} from archive...")
+                        archive_df = await self.nem_client.get_historical_dispatch_data(date)
+
+                        if archive_df is not None and not archive_df.empty:
+                            records = await self.db.insert_dispatch_data(archive_df)
+                            total_records += records
+                            logger.info(f"Backfilled {records} dispatch records for {date.strftime('%Y-%m-%d')}")
+
+                        # Delay between requests to respect NEMWEB rate limits
+                        await asyncio.sleep(1)
+
+                    except Exception as e:
+                        logger.warning(f"Could not backfill dispatch for {date.strftime('%Y-%m-%d')}: {e}")
+                        continue
             else:
-                logger.info("No dispatch data available for backfill")
-                return 0
+                logger.info("No missing dispatch dates found - data is complete")
+
+            logger.info(f"Dispatch backfill complete. Total records added: {total_records}")
+            return total_records
 
         except Exception as e:
             logger.error(f"Error during dispatch data backfill: {e}")
-            return 0
+            return total_records
+
+    async def _get_missing_dispatch_dates(self, start_date: datetime, end_date: datetime) -> list:
+        """Find dates with no or incomplete dispatch data in the specified range.
+
+        Archives have ~2 day delay, so we only check dates at least 2 days old.
+        """
+        # Archives are posted with ~2 day delay
+        archive_cutoff = datetime.now() - timedelta(days=2)
+
+        # Only check dates that would be available in archives
+        check_end = min(end_date, archive_cutoff)
+
+        if start_date >= check_end:
+            return []
+
+        # Get dates that have sufficient dispatch data
+        existing_dates = await self.db.get_dispatch_dates_with_data(start_date, check_end)
+
+        # Generate all dates in range and find missing ones
+        missing = []
+        current = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        while current <= check_end:
+            date_str = current.strftime('%Y-%m-%d')
+            if date_str not in existing_dates:
+                missing.append(current)
+            current += timedelta(days=1)
+
+        return missing
 
     async def run_continuous_ingestion(self, interval_minutes: int = 5):
         """Run continuous data ingestion"""
@@ -307,7 +347,7 @@ class DataIngester:
         await self.backfill_dispatch_prices()
 
         # Backfill dispatch SCADA data for generation history charts
-        dispatch_backfill_days = int(os.getenv('DISPATCH_BACKFILL_DAYS', '3'))
+        dispatch_backfill_days = int(os.getenv('DISPATCH_BACKFILL_DAYS', '7'))
         await self.backfill_dispatch_data(days_back=dispatch_backfill_days)
 
         # Initial data fetch
