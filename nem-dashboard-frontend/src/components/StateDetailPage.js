@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import axios from 'axios';
 import './StateDetailPage.css';
@@ -39,9 +39,8 @@ function StateDetailPage({ region, darkMode, onBack }) {
   const [timeRange, setTimeRange] = useState(24);
   const [lastUpdated, setLastUpdated] = useState('');
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      // Fetch all data in parallel
       const [priceResponse, fuelResponse, summaryResponse] = await Promise.all([
         axios.get(`/api/region/${region}/prices/history?hours=${timeRange}&price_type=PUBLIC`),
         axios.get(`/api/region/${region}/generation/current`),
@@ -55,7 +54,6 @@ function StateDetailPage({ region, darkMode, onBack }) {
       setLoading(false);
     } catch (error) {
       console.error('Error fetching region data:', error);
-      // Set sample data on error
       setSummary({
         region: region,
         latest_price: 0,
@@ -72,13 +70,13 @@ function StateDetailPage({ region, darkMode, onBack }) {
       setLastUpdated(new Date().toLocaleTimeString());
       setLoading(false);
     }
-  };
+  }, [region, timeRange]);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 60000); // Refresh every 60 seconds
+    const interval = setInterval(fetchData, 60000);
     return () => clearInterval(interval);
-  }, [region, timeRange]);
+  }, [fetchData]);
 
   const createPriceChartData = () => {
     if (!priceHistory.length) return [];

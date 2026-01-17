@@ -107,6 +107,7 @@ function LivePricesPage({ darkMode }) {
       <RegionSidebar
         regions={prices}
         darkMode={darkMode}
+        hoveredRegion={hoveredRegion}
         onRegionHover={handleRegionHover}
         onRegionLeave={handleRegionLeave}
         onRegionClick={handleRegionClick}
@@ -118,6 +119,8 @@ function LivePricesPage({ darkMode }) {
           darkMode={darkMode}
           hoveredRegion={hoveredRegion}
           onRegionClick={handleRegionClick}
+          onRegionHover={handleRegionHover}
+          onRegionLeave={handleRegionLeave}
         />
       </div>
     </div>

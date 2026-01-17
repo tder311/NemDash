@@ -19,9 +19,9 @@
 }
 
 .region-sidebar.dark {
-  background: linear-gradient(180deg, 
-    rgba(15, 23, 42, 0.95) 0%, 
-    rgba(26, 32, 44, 0.9) 100%);
+  background: linear-gradient(180deg,
+    rgba(26, 26, 26, 0.95) 0%,
+    rgba(38, 38, 38, 0.9) 100%);
   border-right-color: rgba(255, 255, 255, 0.1);
 }
 
@@ -56,7 +56,7 @@
 }
 
 .dark .sidebar-region-card {
-  background: rgba(30, 41, 59, 0.8);
+  background: rgba(38, 38, 38, 0.8);
 }
 
 .sidebar-region-card::before {
@@ -74,15 +74,17 @@
   left: 100%;
 }
 
-.sidebar-region-card:hover {
+.sidebar-region-card:hover,
+.sidebar-region-card.highlighted {
   transform: translateX(8px) scale(1.02);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
   border-color: var(--region-color);
   background: rgba(255, 255, 255, 0.95);
 }
 
-.dark .sidebar-region-card:hover {
-  background: rgba(30, 41, 59, 0.95);
+.dark .sidebar-region-card:hover,
+.dark .sidebar-region-card.highlighted {
+  background: rgba(51, 51, 51, 0.95);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 

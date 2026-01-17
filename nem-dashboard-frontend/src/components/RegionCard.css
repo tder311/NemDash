@@ -42,10 +42,10 @@
 }
 
 .region-card.dark {
-  background: rgba(26, 32, 44, 0.95);
-  color: #f7fafc;
+  background: rgba(38, 38, 38, 0.95);
+  color: #f5f5f5;
   border-color: var(--region-color);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3), 
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3),
               0 0 0 1px rgba(255, 255, 255, 0.1);
 }
 
@@ -73,9 +73,9 @@
 }
 
 .dark .region-price {
-  color: #e2e8f0;
+  color: #f5f5f5;
 }
 
 .dark .region-demand {
-  color: #cbd5e0;
+  color: #a0a0a0;
 }

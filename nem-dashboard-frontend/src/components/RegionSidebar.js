@@ -1,7 +1,7 @@
 import React from 'react';
 import './RegionSidebar.css';
 
-const RegionSidebar = ({ regions, darkMode, onRegionHover, onRegionLeave, onRegionClick }) => {
+const RegionSidebar = ({ regions, darkMode, hoveredRegion, onRegionHover, onRegionLeave, onRegionClick }) => {
   const handleMouseEnter = (regionCode) => {
     onRegionHover(regionCode);
   };
@@ -33,7 +33,7 @@ const RegionSidebar = ({ regions, darkMode, onRegionHover, onRegionLeave, onRegi
         {regions.map((region) => (
           <div
             key={region.region}
-            className="sidebar-region-card"
+            className={`sidebar-region-card ${hoveredRegion === region.region ? 'highlighted' : ''}`}
             style={{ '--region-color': getRegionColor(region.region) }}
             onMouseEnter={() => handleMouseEnter(region.region)}
             onMouseLeave={handleMouseLeave}
