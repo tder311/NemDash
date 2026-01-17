@@ -1,69 +1,101 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 
-const AustraliaMap = ({ darkMode, hoveredRegion, onRegionClick }) => {
+const NEM_REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS'];
+
+const REGION_COLORS = {
+  'NSW': '#1f77b4',
+  'VIC': '#ff7f0e',
+  'QLD': '#2ca02c',
+  'SA': '#d62728',
+  'TAS': '#9467bd'
+};
+
+const AustraliaMap = ({ darkMode, hoveredRegion, onRegionClick, onRegionHover, onRegionLeave }) => {
   const [svgContent, setSvgContent] = useState('');
+  const [localHover, setLocalHover] = useState(null);
   const containerRef = useRef(null);
 
   useEffect(() => {
-    // Load the SVG content
     fetch('/australia-map.svg')
       .then(response => response.text())
       .then(content => setSvgContent(content))
       .catch(error => console.error('Error loading SVG:', error));
   }, []);
 
-  // Handle click events on state paths
   const handleStateClick = useCallback((event) => {
     const target = event.target;
     if (target.classList.contains('state-path') && onRegionClick) {
-      const stateId = target.id;
-      const regionCode = stateId.replace('state-', '');
-      if (['NSW', 'VIC', 'QLD', 'SA', 'TAS'].includes(regionCode)) {
+      const regionCode = target.id.replace('state-', '');
+      if (NEM_REGIONS.includes(regionCode)) {
         onRegionClick(regionCode);
       }
     }
   }, [onRegionClick]);
 
+  const handleMouseOver = useCallback((event) => {
+    const target = event.target;
+    if (target.classList.contains('state-path')) {
+      const regionCode = target.id.replace('state-', '');
+      if (NEM_REGIONS.includes(regionCode)) {
+        setLocalHover(regionCode);
+        if (onRegionHover) onRegionHover(regionCode);
+      }
+    }
+  }, [onRegionHover]);
+
+  const handleMouseOut = useCallback((event) => {
+    const target = event.target;
+    if (target.classList.contains('state-path')) {
+      setLocalHover(null);
+      if (onRegionLeave) onRegionLeave();
+    }
+  }, [onRegionLeave]);
+
   useEffect(() => {
     if (!containerRef.current || !svgContent) return;
 
-    // Add click event listener to container
     const container = containerRef.current;
     container.addEventListener('click', handleStateClick);
+    container.addEventListener('mouseover', handleMouseOver);
+    container.addEventListener('mouseout', handleMouseOut);
 
-    // Add pointer cursor to clickable state paths
     const allPaths = container.querySelectorAll('.state-path');
     allPaths.forEach(path => {
       const regionCode = path.id.replace('state-', '');
-      if (['NSW', 'VIC', 'QLD', 'SA', 'TAS'].includes(regionCode)) {
+      if (NEM_REGIONS.includes(regionCode)) {
         path.style.cursor = 'pointer';
       }
     });
 
     return () => {
       container.removeEventListener('click', handleStateClick);
+      container.removeEventListener('mouseover', handleMouseOver);
+      container.removeEventListener('mouseout', handleMouseOut);
     };
-  }, [svgContent, handleStateClick]);
+  }, [svgContent, handleStateClick, handleMouseOver, handleMouseOut]);
+
+  // Highlight from either sidebar hover or direct map hover
+  const activeRegion = hoveredRegion || localHover;
 
   useEffect(() => {
     if (!containerRef.current || !svgContent) return;
 
-    // Clear any existing highlighting
     const allPaths = containerRef.current.querySelectorAll('.state-path');
     allPaths.forEach(path => {
       path.classList.remove('highlighted');
+      path.style.stroke = '';
+      path.style.strokeWidth = '';
     });
 
-    // Highlight the hovered region if there is one
-    if (hoveredRegion) {
-      const stateId = `state-${hoveredRegion}`;
-      const statePath = containerRef.current.querySelector(`#${stateId}`);
-
+    if (activeRegion) {
+      const statePath = containerRef.current.querySelector(`#state-${activeRegion}`);
       if (statePath) {
         statePath.classList.add('highlighted');
+        statePath.style.stroke = REGION_COLORS[activeRegion];
+        statePath.style.strokeWidth = '3px';
       }
     }
-  }, [hoveredRegion, svgContent]);
+  }, [activeRegion, svgContent]);
 
   const containerStyle = {
     position: 'absolute',

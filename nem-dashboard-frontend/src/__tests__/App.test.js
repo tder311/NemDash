@@ -22,11 +22,11 @@ describe('App', () => {
     });
   });
 
-  test('renders dark mode toggle', async () => {
+  test('renders dark mode toggle with label', async () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('🌙')).toBeInTheDocument();
+      expect(screen.getByText('Dark')).toBeInTheDocument();
     });
   });
 
@@ -44,31 +44,6 @@ describe('App', () => {
     await waitFor(() => {
       const appElement = document.querySelector('.app');
       expect(appElement).toHaveClass('dark');
-    });
-  });
-
-  test('renders Live Prices tab by default', async () => {
-    render(<App />);
-
-    await waitFor(() => {
-      const liveTab = screen.getByText(/Live Prices & Flows/i);
-      expect(liveTab.closest('.tab')).toHaveClass('active');
-    });
-  });
-
-  test('switches to Price History tab when clicked', async () => {
-    render(<App />);
-
-    // Wait for initial render
-    await waitFor(() => {
-      expect(screen.getByText(/Price History/i)).toBeInTheDocument();
-    });
-
-    const historyTab = screen.getByText(/Price History/i);
-    fireEvent.click(historyTab);
-
-    await waitFor(() => {
-      expect(historyTab.closest('.tab')).toHaveClass('active');
     });
   });
 
@@ -101,8 +76,8 @@ describe('App', () => {
   });
 });
 
-describe('App navigation', () => {
-  test('shows LivePricesPage when live tab is active', async () => {
+describe('App layout', () => {
+  test('shows LivePricesPage content', async () => {
     render(<App />);
 
     // Wait for loading to complete
@@ -116,22 +91,15 @@ describe('App navigation', () => {
     });
   });
 
-  test('shows PriceHistoryPage when history tab is clicked', async () => {
+  test('displays NEM Regions sidebar', async () => {
     render(<App />);
 
-    // Wait for initial load
     await waitFor(() => {
-      expect(screen.getByText(/Price History/i)).toBeInTheDocument();
-    });
+      expect(screen.queryByText(/Loading market data/i)).not.toBeInTheDocument();
+    }, { timeout: 3000 });
 
-    const historyTab = screen.getByText(/Price History/i);
-    fireEvent.click(historyTab);
-
-    // Price history page content should be visible
-    // (It will show loading or chart)
     await waitFor(() => {
-      const historyTabElement = historyTab.closest('.tab');
-      expect(historyTabElement).toHaveClass('active');
+      expect(screen.getByText(/NEM Regions/i)).toBeInTheDocument();
     });
   });
 });
