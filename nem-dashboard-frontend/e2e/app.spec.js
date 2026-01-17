@@ -36,13 +36,16 @@ test.describe('App', () => {
   });
 
   test('dark mode toggle icon changes', async ({ page }) => {
-    // Light mode shows moon
+    // Moon icon is always visible as label
     await expect(page.locator('.dark-mode-toggle')).toContainText('\u{1F319}');
+
+    // Toggle switch should not have active class initially (light mode)
+    await expect(page.locator('.toggle-switch')).not.toHaveClass(/active/);
 
     await page.locator('.toggle-switch').click();
 
-    // Dark mode shows sun
-    await expect(page.locator('.dark-mode-toggle')).toContainText('\u{2600}');
+    // Toggle switch should have active class in dark mode
+    await expect(page.locator('.toggle-switch')).toHaveClass(/active/);
   });
 
   test('tab navigation works', async ({ page }) => {

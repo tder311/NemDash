@@ -15,12 +15,12 @@ test.describe('Live Prices Page', () => {
   test('displays all 5 NEM regions in sidebar', async ({ page }) => {
     await expect(page.locator('.sidebar-region-card')).toHaveCount(5);
 
-    // Check all region codes are present
-    await expect(page.getByText('NSW')).toBeVisible();
-    await expect(page.getByText('VIC')).toBeVisible();
-    await expect(page.getByText('QLD')).toBeVisible();
-    await expect(page.getByText('SA')).toBeVisible();
-    await expect(page.getByText('TAS')).toBeVisible();
+    // Check all region codes are present (use exact match to avoid matching full names)
+    await expect(page.getByText('NSW', { exact: true })).toBeVisible();
+    await expect(page.getByText('VIC', { exact: true })).toBeVisible();
+    await expect(page.getByText('QLD', { exact: true })).toBeVisible();
+    await expect(page.getByText('SA', { exact: true })).toBeVisible();
+    await expect(page.getByText('TAS', { exact: true })).toBeVisible();
   });
 
   test('displays full region names', async ({ page }) => {
