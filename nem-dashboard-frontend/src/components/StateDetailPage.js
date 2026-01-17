@@ -34,6 +34,7 @@ const FUEL_COLORS = {
 function StateDetailPage({ region, darkMode, onBack }) {
   const [priceHistory, setPriceHistory] = useState([]);
   const [fuelMix, setFuelMix] = useState([]);
+  const [generationHistory, setGenerationHistory] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState(24);
@@ -41,15 +42,18 @@ function StateDetailPage({ region, darkMode, onBack }) {
 
   const fetchData = useCallback(async () => {
     try {
-      const [priceResponse, fuelResponse, summaryResponse] = await Promise.all([
+      // Fetch all data in parallel
+      const [priceResponse, fuelResponse, summaryResponse, genHistoryResponse] = await Promise.all([
         axios.get(`/api/region/${region}/prices/history?hours=${timeRange}&price_type=PUBLIC`),
         axios.get(`/api/region/${region}/generation/current`),
-        axios.get(`/api/region/${region}/summary`)
+        axios.get(`/api/region/${region}/summary`),
+        axios.get(`/api/region/${region}/generation/history?hours=${timeRange}`)
       ]);
 
       setPriceHistory(priceResponse.data.data || []);
       setFuelMix(fuelResponse.data.fuel_mix || []);
       setSummary(summaryResponse.data);
+      setGenerationHistory(genHistoryResponse.data.data || []);
       setLastUpdated(new Date().toLocaleTimeString());
       setLoading(false);
     } catch (error) {
@@ -67,6 +71,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
         { fuel_source: 'Wind', generation_mw: 0, percentage: 0, unit_count: 0 }
       ]);
       setPriceHistory([]);
+      setGenerationHistory([]);
       setLastUpdated(new Date().toLocaleTimeString());
       setLoading(false);
     }
@@ -81,28 +86,56 @@ function StateDetailPage({ region, darkMode, onBack }) {
   const createPriceChartData = () => {
     if (!priceHistory.length) return [];
 
-    return [{
-      x: priceHistory.map(d => new Date(d.settlementdate)),
-      y: priceHistory.map(d => d.price),
-      type: 'scatter',
-      mode: 'lines',
-      name: region,
-      line: {
-        color: REGION_COLORS[region],
-        width: 2
+    return [
+      {
+        x: priceHistory.map(d => new Date(d.settlementdate)),
+        y: priceHistory.map(d => d.price),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Price',
+        line: {
+          color: REGION_COLORS[region],
+          width: 2
+        },
+        fill: 'tozeroy',
+        fillcolor: `${REGION_COLORS[region]}20`,
+        yaxis: 'y',
+        hovertemplate: '<b>%{x}</b><br>' +
+                      'Price: $%{y:.2f}/MWh<br>' +
+                      '<extra></extra>'
       },
-      fill: 'tozeroy',
-      fillcolor: `${REGION_COLORS[region]}20`,
-      hovertemplate: '<b>%{x}</b><br>' +
-                    'Price: $%{y:.2f}/MWh<br>' +
-                    '<extra></extra>'
-    }];
+      {
+        x: priceHistory.map(d => new Date(d.settlementdate)),
+        y: priceHistory.map(d => d.totaldemand),
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Demand',
+        line: {
+          color: '#888888',
+          width: 2,
+          dash: 'dot'
+        },
+        yaxis: 'y2',
+        hovertemplate: '<b>%{x}</b><br>' +
+                      'Demand: %{y:.0f} MW<br>' +
+                      '<extra></extra>'
+      }
+    ];
   };
 
   const createFuelMixChartData = () => {
     if (!fuelMix.length) return [];
 
     const sortedFuelMix = [...fuelMix].sort((a, b) => b.generation_mw - a.generation_mw);
+    const LABEL_THRESHOLD = 5;
+
+    // Only show labels for top 3 or segments >= 5%
+    const customText = sortedFuelMix.map((f, idx) => {
+      if (idx < 3 || f.percentage >= LABEL_THRESHOLD) {
+        return `${f.fuel_source}<br>${f.percentage.toFixed(1)}%`;
+      }
+      return '';
+    });
 
     return [{
       values: sortedFuelMix.map(f => f.generation_mw),
@@ -112,7 +145,8 @@ function StateDetailPage({ region, darkMode, onBack }) {
       marker: {
         colors: sortedFuelMix.map(f => FUEL_COLORS[f.fuel_source] || FUEL_COLORS['Unknown'])
       },
-      textinfo: 'label+percent',
+      text: customText,
+      textinfo: 'text',
       textposition: 'outside',
       hovertemplate: '<b>%{label}</b><br>' +
                     'Generation: %{value:.0f} MW<br>' +
@@ -123,7 +157,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
 
   const priceChartLayout = {
     title: {
-      text: `${region} Price History - Last ${timeRange} Hours`,
+      text: `${region} Price & Demand - Last ${timeRange} Hours`,
       font: {
         size: 18,
         color: darkMode ? '#f5f5f5' : '#333'
@@ -138,15 +172,29 @@ function StateDetailPage({ region, darkMode, onBack }) {
     yaxis: {
       title: 'Price ($/MWh)',
       gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333'
+      color: darkMode ? '#f5f5f5' : '#333',
+      side: 'left'
+    },
+    yaxis2: {
+      title: 'Demand (MW)',
+      color: '#888888',
+      side: 'right',
+      overlaying: 'y',
+      showgrid: false
     },
     plot_bgcolor: darkMode ? '#1e1e1e' : 'white',
     paper_bgcolor: darkMode ? '#1e1e1e' : 'white',
     font: {
       color: darkMode ? '#f5f5f5' : '#333'
     },
-    margin: { l: 60, r: 30, t: 50, b: 50 },
-    showlegend: false
+    margin: { l: 60, r: 60, t: 50, b: 50 },
+    showlegend: true,
+    legend: {
+      orientation: 'h',
+      x: 0.5,
+      xanchor: 'center',
+      y: 1.12
+    }
   };
 
   const fuelMixLayout = {
@@ -170,6 +218,82 @@ function StateDetailPage({ region, darkMode, onBack }) {
       xanchor: 'center',
       y: -0.1
     }
+  };
+
+  const createGenerationHistoryChartData = () => {
+    if (!generationHistory.length) return [];
+
+    // Get unique fuel sources and sort by total generation
+    const fuelSources = [...new Set(generationHistory.map(d => d.fuel_source))];
+    const totalByFuel = {};
+    fuelSources.forEach(fuel => {
+      totalByFuel[fuel] = generationHistory
+        .filter(d => d.fuel_source === fuel)
+        .reduce((sum, d) => sum + (d.generation_mw || 0), 0);
+    });
+    const sortedFuels = fuelSources.sort((a, b) => totalByFuel[b] - totalByFuel[a]);
+
+    // Get unique timestamps
+    const timestamps = [...new Set(generationHistory.map(d => d.period))].sort();
+
+    // Create one trace per fuel source
+    return sortedFuels.map(fuel => {
+      const fuelData = generationHistory.filter(d => d.fuel_source === fuel);
+      const dataMap = {};
+      fuelData.forEach(d => { dataMap[d.period] = d.generation_mw; });
+
+      return {
+        x: timestamps.map(t => new Date(t)),
+        y: timestamps.map(t => dataMap[t] || 0),
+        type: 'scatter',
+        mode: 'none',
+        name: fuel,
+        fill: 'tonexty',
+        stackgroup: 'generation',
+        fillcolor: FUEL_COLORS[fuel] || FUEL_COLORS['Unknown'],
+        line: { width: 0 },
+        hovertemplate: `<b>${fuel}</b><br>` +
+                      'Time: %{x}<br>' +
+                      'Generation: %{y:.0f} MW<br>' +
+                      '<extra></extra>'
+      };
+    });
+  };
+
+  const generationHistoryLayout = {
+    title: {
+      text: `Generation by Fuel Source - Last ${timeRange} Hours`,
+      font: {
+        size: 18,
+        color: darkMode ? '#f5f5f5' : '#333'
+      }
+    },
+    xaxis: {
+      title: 'Time',
+      gridcolor: darkMode ? '#404040' : '#e0e0e0',
+      color: darkMode ? '#f5f5f5' : '#333',
+      tickformat: '%H:%M'
+    },
+    yaxis: {
+      title: 'Generation (MW)',
+      gridcolor: darkMode ? '#404040' : '#e0e0e0',
+      color: darkMode ? '#f5f5f5' : '#333'
+    },
+    plot_bgcolor: darkMode ? '#1e1e1e' : 'white',
+    paper_bgcolor: darkMode ? '#1e1e1e' : 'white',
+    font: {
+      color: darkMode ? '#f5f5f5' : '#333'
+    },
+    margin: { l: 60, r: 30, t: 50, b: 50 },
+    showlegend: true,
+    legend: {
+      orientation: 'h',
+      x: 0.5,
+      xanchor: 'center',
+      y: -0.15,
+      traceorder: 'normal'
+    },
+    hovermode: 'x unified'
   };
 
   if (loading) {
@@ -263,34 +387,17 @@ function StateDetailPage({ region, darkMode, onBack }) {
         </div>
       </div>
 
-      <div className="fuel-breakdown-table">
-        <h3>Generation by Fuel Source</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Fuel Source</th>
-              <th>Generation (MW)</th>
-              <th>Share (%)</th>
-              <th>Units</th>
-            </tr>
-          </thead>
-          <tbody>
-            {fuelMix.map((fuel, index) => (
-              <tr key={index}>
-                <td>
-                  <span
-                    className="fuel-indicator"
-                    style={{ backgroundColor: FUEL_COLORS[fuel.fuel_source] || FUEL_COLORS['Unknown'] }}
-                  />
-                  {fuel.fuel_source}
-                </td>
-                <td>{fuel.generation_mw?.toFixed(1) || '0'}</td>
-                <td>{fuel.percentage?.toFixed(1) || '0'}%</td>
-                <td>{fuel.unit_count}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="chart-wrapper generation-history-chart">
+        <Plot
+          data={createGenerationHistoryChartData()}
+          layout={generationHistoryLayout}
+          style={{ width: '100%', height: '400px' }}
+          config={{
+            displayModeBar: true,
+            displaylogo: false,
+            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
+          }}
+        />
       </div>
     </div>
   );

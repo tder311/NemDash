@@ -110,6 +110,15 @@ class RegionPriceHistoryResponse(BaseModel):
     message: str
 
 
+class RegionGenerationHistoryResponse(BaseModel):
+    region: str
+    data: List[Dict[str, Any]]
+    count: int
+    hours: int
+    aggregation_minutes: int
+    message: str
+
+
 class RegionSummaryResponse(BaseModel):
     region: str
     latest_price: Optional[float] = None
