@@ -6,6 +6,8 @@ from typing import Optional
 import time
 from pathlib import Path
 
+import pandas as pd
+
 from .nem_client import NEMDispatchClient
 from .nem_price_client import NEMPriceClient
 from .database import NEMDatabase
@@ -262,3 +264,136 @@ async def update_sample_generator_info(db: NEMDatabase):
     """Update database with sample generator information"""
     await db.update_generator_info(SAMPLE_GENERATOR_INFO)
     logger.info(f"Updated {len(SAMPLE_GENERATOR_INFO)} generator info records")
+
+
+async def import_generator_info_from_csv(db: NEMDatabase, csv_path: str = None):
+    """
+    Import generator info from GenInfo.csv if available.
+    Falls back to sample generator info if CSV not found.
+    """
+    # Try to find GenInfo.csv in common locations
+    if csv_path is None:
+        possible_paths = [
+            Path(__file__).parent.parent / 'data' / 'GenInfo.csv',
+            Path('./data/GenInfo.csv'),
+        ]
+        for path in possible_paths:
+            if path.exists():
+                csv_path = str(path)
+                break
+
+    if csv_path is None or not Path(csv_path).exists():
+        logger.warning("GenInfo.csv not found, using sample generator info only")
+        await update_sample_generator_info(db)
+        return
+
+    logger.info(f"Importing generator info from {csv_path}")
+
+    try:
+        # Read the CSV file
+        df = pd.read_csv(csv_path, encoding='utf-8-sig')  # Handle BOM
+        df.columns = df.columns.str.strip()  # Clean column names
+
+        # Filter for existing plants with DUIDs
+        df_valid = df[
+            (df['DUID'].notna()) &
+            (df['DUID'] != '') &
+            (df['Asset Type'].str.contains('Existing', na=False))
+        ].copy()
+
+        logger.info(f"Found {len(df_valid)} existing generators with DUIDs in CSV")
+
+        # Process generators
+        generators = []
+        for _, row in df_valid.iterrows():
+            duid = str(row['DUID']).strip()
+            if not duid or duid == 'nan':
+                continue
+
+            # Map region (remove the '1' suffix)
+            region = str(row['Region']).replace('1', '').strip()
+
+            # Clean fuel type mapping
+            fuel_type_raw = str(row['Fuel Type']).strip()
+            if 'Solar' in fuel_type_raw:
+                fuel_source = 'Solar'
+            elif 'Wind' in fuel_type_raw:
+                fuel_source = 'Wind'
+            elif 'Water' in fuel_type_raw or 'Hydro' in fuel_type_raw:
+                fuel_source = 'Hydro'
+            elif 'Gas' in fuel_type_raw or 'Coal Mine Gas' in fuel_type_raw:
+                fuel_source = 'Gas'
+            elif 'Coal' in fuel_type_raw:
+                fuel_source = 'Coal'
+            elif 'Other' in fuel_type_raw and 'Battery' in str(row.get('Technology Type', '')):
+                fuel_source = 'Battery'
+            elif 'Diesel' in fuel_type_raw:
+                fuel_source = 'Diesel'
+            else:
+                fuel_source = 'Other'
+
+            # Clean technology type
+            tech_type_raw = str(row.get('Technology Type', '')).strip()
+            if 'Solar PV' in tech_type_raw:
+                technology_type = 'Solar PV'
+            elif 'Wind Turbine' in tech_type_raw:
+                technology_type = 'Wind'
+            elif 'Storage - Battery' in tech_type_raw:
+                technology_type = 'Battery Storage'
+            elif 'Hydro' in tech_type_raw:
+                technology_type = 'Hydro'
+            elif 'Gas Turbine' in tech_type_raw:
+                technology_type = 'Gas Turbine'
+            elif 'Steam Turbine' in tech_type_raw:
+                if fuel_source == 'Coal':
+                    technology_type = 'Coal Steam'
+                else:
+                    technology_type = 'Gas Steam'
+            elif 'Reciprocating Engine' in tech_type_raw:
+                technology_type = 'Reciprocating Engine'
+            else:
+                technology_type = tech_type_raw if tech_type_raw else 'Unknown'
+
+            # Get capacity (try different columns)
+            capacity = 0.0
+            for cap_col in ['Nameplate Capacity (MW)', 'Aggregated Upper Nameplate Capacity (MW)', 'Upper Nameplate Capacity (MW)']:
+                if cap_col in row and pd.notna(row[cap_col]):
+                    try:
+                        cap_str = str(row[cap_col]).strip().replace(' - ', '-')
+                        if '-' in cap_str:
+                            # Handle range like "200.00 - 400.00"
+                            cap_parts = cap_str.split('-')
+                            capacity = float(cap_parts[-1].strip())
+                        else:
+                            capacity = float(cap_str)
+                        break
+                    except (ValueError, IndexError):
+                        continue
+
+            if capacity == 0.0:
+                capacity = 100.0  # Default
+
+            # Clean site name
+            station_name = str(row.get('Site Name', duid)).strip()
+            if not station_name or station_name == 'nan':
+                station_name = duid
+
+            generators.append({
+                'duid': duid,
+                'station_name': station_name,
+                'region': region,
+                'fuel_source': fuel_source,
+                'technology_type': technology_type,
+                'capacity_mw': capacity
+            })
+
+        if generators:
+            await db.update_generator_info(generators)
+            logger.info(f"Imported {len(generators)} generator records from GenInfo.csv")
+        else:
+            logger.warning("No valid generators found in CSV, using sample data")
+            await update_sample_generator_info(db)
+
+    except Exception as e:
+        logger.error(f"Error importing GenInfo.csv: {e}, falling back to sample data")
+        await update_sample_generator_info(db)

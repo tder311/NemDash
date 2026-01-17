@@ -9,7 +9,7 @@ from pathlib import Path
 import asyncio
 
 from .database import NEMDatabase
-from .data_ingester import DataIngester, update_sample_generator_info
+from .data_ingester import DataIngester, import_generator_info_from_csv
 from .models import (
     DispatchDataResponse,
     GenerationByFuelResponse,
@@ -59,8 +59,8 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await data_ingester.initialize()
 
-    # Update sample generator info
-    await update_sample_generator_info(db)
+    # Import generator info from CSV (falls back to sample data if not found)
+    await import_generator_info_from_csv(db)
 
     # Start background data ingestion
     background_task = asyncio.create_task(
