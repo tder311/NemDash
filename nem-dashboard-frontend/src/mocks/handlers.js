@@ -77,6 +77,22 @@ export const mockPriceHistory = {
   message: 'Retrieved 6 price records for NSW'
 };
 
+export const mockGenerationHistory = {
+  region: 'NSW',
+  data: [
+    { period: '2025-01-15T08:00:00', fuel_source: 'Coal', generation_mw: 4500, sample_count: 6 },
+    { period: '2025-01-15T08:00:00', fuel_source: 'Solar', generation_mw: 2000, sample_count: 6 },
+    { period: '2025-01-15T08:00:00', fuel_source: 'Wind', generation_mw: 1500, sample_count: 6 },
+    { period: '2025-01-15T08:30:00', fuel_source: 'Coal', generation_mw: 4600, sample_count: 6 },
+    { period: '2025-01-15T08:30:00', fuel_source: 'Solar', generation_mw: 2200, sample_count: 6 },
+    { period: '2025-01-15T08:30:00', fuel_source: 'Wind', generation_mw: 1400, sample_count: 6 },
+  ],
+  count: 6,
+  hours: 24,
+  aggregation_minutes: 30,
+  message: 'Retrieved 6 generation history records for NSW'
+};
+
 // Helper to create axios mock responses
 export const createAxiosMockResponse = (data, status = 200) => ({
   data,
@@ -97,6 +113,9 @@ export const setupAxiosMocks = (axios) => {
     }
     if (url.includes('/api/prices/latest')) {
       return Promise.resolve(createAxiosMockResponse(mockPriceData));
+    }
+    if (url.includes('/api/region/') && url.includes('/generation/history')) {
+      return Promise.resolve(createAxiosMockResponse(mockGenerationHistory));
     }
     if (url.includes('/api/region/') && url.includes('/generation/current')) {
       return Promise.resolve(createAxiosMockResponse(mockFuelMix));
