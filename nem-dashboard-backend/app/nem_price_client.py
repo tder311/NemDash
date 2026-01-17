@@ -114,32 +114,74 @@ class NEMPriceClient:
             return None
     
     async def get_daily_prices(self, date: datetime) -> Optional[pd.DataFrame]:
-        """Fetch daily price history from Public Prices"""
+        """Fetch daily price history from Public Prices.
+
+        NEMWEB PUBLIC_PRICES files use market day boundaries (04:05 to 04:00 next day).
+        To get a complete calendar day, we need TWO files:
+        - Previous day's file: Contains 00:00-04:00 of target date
+        - Target day's file: Contains 04:05-23:55 of target date
+
+        This function fetches both files and filters to the target calendar day.
+        """
         try:
-            date_str = date.strftime("%Y%m%d")
+            from datetime import timedelta
+
+            target_date = date.date() if hasattr(date, 'date') else date
+            prev_date = target_date - timedelta(days=1)
+
             public_prices_url = f"{self.base_url}/Reports/Current/Public_Prices/"
-            
+
+            all_dfs = []
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(public_prices_url)
                 response.raise_for_status()
-                
-                # Look for file matching the date
-                pattern = f"PUBLIC_PRICES_{date_str}0000_\\d{{14}}\\.zip"
-                matches = re.findall(pattern, response.text)
-                
-                if not matches:
-                    logger.warning(f"No public prices file found for {date_str}")
-                    return None
-                
-                latest_file = sorted(matches)[-1]  # Get latest version
-                file_url = f"{public_prices_url}{latest_file}"
-                logger.info(f"Fetching daily prices file: {latest_file}")
-                
-                file_response = await client.get(file_url)
-                file_response.raise_for_status()
-                
-                return self._parse_public_prices_zip(file_response.content)
-                
+                directory_html = response.text
+
+                # Fetch both the previous day's file (for 00:00-04:00) and target day's file (for 04:05-23:55)
+                for fetch_date in [prev_date, target_date]:
+                    date_str = fetch_date.strftime("%Y%m%d")
+                    pattern = f"PUBLIC_PRICES_{date_str}0000_\\d{{14}}\\.zip"
+                    matches = re.findall(pattern, directory_html)
+
+                    if not matches:
+                        logger.debug(f"No public prices file found for {date_str}")
+                        continue
+
+                    latest_file = sorted(matches)[-1]  # Get latest version
+                    file_url = f"{public_prices_url}{latest_file}"
+                    logger.info(f"Fetching daily prices file: {latest_file}")
+
+                    file_response = await client.get(file_url)
+                    file_response.raise_for_status()
+
+                    df = self._parse_public_prices_zip(file_response.content)
+                    if df is not None and not df.empty:
+                        all_dfs.append(df)
+
+            if not all_dfs:
+                logger.warning(f"No public prices files found for {target_date}")
+                return None
+
+            # Combine all fetched data
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+
+            # Filter to only the target calendar day
+            combined_df['settlementdate'] = pd.to_datetime(combined_df['settlementdate'])
+            target_date_str = target_date.strftime('%Y-%m-%d')
+            filtered_df = combined_df[
+                combined_df['settlementdate'].dt.date.astype(str) == target_date_str
+            ].copy()
+
+            # Remove duplicates (same timestamp from both files at 04:00 boundary)
+            filtered_df = filtered_df.drop_duplicates(
+                subset=['settlementdate', 'region'],
+                keep='last'
+            ).reset_index(drop=True)
+
+            logger.info(f"Retrieved {len(filtered_df)} price records for {target_date}")
+            return filtered_df
+
         except Exception as e:
             logger.error(f"Error fetching daily prices for {date}: {e}")
             return None

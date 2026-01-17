@@ -653,3 +653,75 @@ class TestGetMergedPriceHistory:
         # Check sorting
         timestamps = result['settlementdate'].tolist()
         assert timestamps == sorted(timestamps)
+
+    @pytest.mark.asyncio
+    async def test_fills_gaps_within_public_range(self, test_db):
+        """DISPATCH data fills gaps WITHIN the PUBLIC data range, not just after.
+
+        This tests the scenario where PUBLIC data has gaps (e.g., sparse days)
+        and DISPATCH data is available to fill those gaps.
+        """
+        now = datetime.now()
+
+        # Insert PUBLIC data with a GAP in the middle
+        # PUBLIC at hours 6, 4 (gap at hour 5), 2 (gap at hours 3, 1)
+        public_df = pd.DataFrame([
+            {
+                'settlementdate': now - timedelta(hours=6),
+                'region': 'NSW',
+                'price': 70.00,
+                'totaldemand': 6500.0,
+                'price_type': 'PUBLIC'
+            },
+            {
+                'settlementdate': now - timedelta(hours=4),
+                'region': 'NSW',
+                'price': 75.00,
+                'totaldemand': 6800.0,
+                'price_type': 'PUBLIC'
+            },
+            {
+                'settlementdate': now - timedelta(hours=2),
+                'region': 'NSW',
+                'price': 80.00,
+                'totaldemand': 7000.0,
+                'price_type': 'PUBLIC'
+            }
+        ])
+        await test_db.insert_price_data(public_df)
+
+        # Insert DISPATCH data for the gaps WITHIN the PUBLIC range
+        dispatch_df = pd.DataFrame([
+            {
+                'settlementdate': now - timedelta(hours=5),  # Gap between 6 and 4
+                'region': 'NSW',
+                'price': 72.00,
+                'totaldemand': 6700.0,
+                'price_type': 'DISPATCH'
+            },
+            {
+                'settlementdate': now - timedelta(hours=3),  # Gap between 4 and 2
+                'region': 'NSW',
+                'price': 77.00,
+                'totaldemand': 6900.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(dispatch_df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        # Should have 5 records: 3 PUBLIC + 2 DISPATCH filling the gaps
+        assert len(result) == 5
+
+        # Check that gaps are filled with DISPATCH
+        dispatch_rows = result[result['source_type'] == 'DISPATCH']
+        assert len(dispatch_rows) == 2
+
+        # Verify the DISPATCH records are at hours 5 and 3 (the gaps)
+        dispatch_times = dispatch_rows['settlementdate'].tolist()
+        expected_gap_times = [now - timedelta(hours=5), now - timedelta(hours=3)]
+        for expected_time in expected_gap_times:
+            # Allow small time difference for test timing
+            found = any(abs((dt - expected_time).total_seconds()) < 2 for dt in dispatch_times)
+            assert found, f"Expected DISPATCH at {expected_time} but not found"
