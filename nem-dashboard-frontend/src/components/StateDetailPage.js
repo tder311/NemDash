@@ -417,17 +417,28 @@ function StateDetailPage({ region, darkMode, onBack }) {
       </div>
 
       <div className="chart-wrapper generation-history-chart">
-        <Plot
-          data={createGenerationHistoryChartData()}
-          layout={generationHistoryLayout}
-          style={{ width: '100%', height: '400px' }}
-          config={{
-            displayModeBar: 'hover',
-            displaylogo: false,
-            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d'],
-            scrollZoom: false
-          }}
-        />
+        {generationHistory.length > 0 ? (
+          <Plot
+            data={createGenerationHistoryChartData()}
+            layout={generationHistoryLayout}
+            style={{ width: '100%', height: '400px' }}
+            config={{
+              displayModeBar: 'hover',
+              displaylogo: false,
+              modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d', 'autoScale2d'],
+              scrollZoom: false
+            }}
+          />
+        ) : (
+          <div className="no-data-message">
+            <h3 style={{ color: darkMode ? '#f5f5f5' : '#333' }}>
+              Generation by Fuel Source - Last {timeRange} Hours
+            </h3>
+            <p style={{ color: darkMode ? '#aaa' : '#666' }}>
+              No generation history data available. Generator metadata may need to be imported.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

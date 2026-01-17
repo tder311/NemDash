@@ -244,6 +244,55 @@ class DataIngester:
             logger.error(f"Error during DISPATCH price backfill: {e}")
             return 0
 
+    async def backfill_dispatch_data(self, days_back: int = 3) -> int:
+        """Backfill dispatch SCADA data for generation history charts.
+
+        Fetches dispatch data from NEMWEB Current directory (~3 days rolling window)
+        to enable historical generation by fuel source charts.
+        """
+        try:
+            # Check what dispatch data we already have
+            latest_dispatch = await self.db.get_latest_dispatch_timestamp()
+            earliest_dispatch = await self.db.get_earliest_dispatch_timestamp()
+
+            required_span = days_back * 24  # hours
+
+            # Check if we need to backfill - need data spanning multiple days
+            if latest_dispatch and earliest_dispatch:
+                # Convert to datetime if string
+                if isinstance(latest_dispatch, str):
+                    latest_dispatch = datetime.fromisoformat(latest_dispatch.replace('Z', '+00:00').replace(' ', 'T'))
+                if isinstance(earliest_dispatch, str):
+                    earliest_dispatch = datetime.fromisoformat(earliest_dispatch.replace('Z', '+00:00').replace(' ', 'T'))
+
+                data_span = (latest_dispatch - earliest_dispatch).total_seconds() / 3600  # hours
+
+                # If we have sufficient data span, skip backfill
+                if data_span >= required_span * 0.8:  # 80% coverage is good enough
+                    logger.info(f"Dispatch data spans {data_span:.1f} hours, sufficient for {days_back} days")
+                    return 0
+
+                logger.info(f"Dispatch data only spans {data_span:.1f} hours, need {required_span} hours")
+
+            # Fetch all available files (Current directory has ~3 days rolling window)
+            since = None
+
+            # Fetch all dispatch files from Current directory
+            logger.info("Fetching dispatch data from Current directory...")
+            df = await self.nem_client.get_all_current_dispatch_data(since=since)
+
+            if df is not None and not df.empty:
+                records = await self.db.insert_dispatch_data(df)
+                logger.info(f"Backfilled {records} dispatch records")
+                return records
+            else:
+                logger.info("No dispatch data available for backfill")
+                return 0
+
+        except Exception as e:
+            logger.error(f"Error during dispatch data backfill: {e}")
+            return 0
+
     async def run_continuous_ingestion(self, interval_minutes: int = 5):
         """Run continuous data ingestion"""
         self.is_running = True
@@ -256,6 +305,10 @@ class DataIngester:
         # Backfill DISPATCH prices from Current directory (~3 days)
         # This bridges the gap between 4am (when PUBLIC prices end) and now
         await self.backfill_dispatch_prices()
+
+        # Backfill dispatch SCADA data for generation history charts
+        dispatch_backfill_days = int(os.getenv('DISPATCH_BACKFILL_DAYS', '3'))
+        await self.backfill_dispatch_data(days_back=dispatch_backfill_days)
 
         # Initial data fetch
         await self.ingest_current_data()
