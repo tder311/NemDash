@@ -51,13 +51,13 @@ module.exports = defineConfig({
     {
       command: 'cd ../nem-dashboard-backend && python run.py',
       url: 'http://localhost:8000',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
     },
     {
       command: 'npm start',
       url: 'http://localhost:3000',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: true,
       timeout: 120 * 1000,
     },
   ],
