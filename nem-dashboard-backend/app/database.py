@@ -478,6 +478,40 @@ class NEMDatabase:
 
             return df
 
+    async def get_region_generation_history(self, region: str, hours: int = 24, aggregation_minutes: int = 30) -> pd.DataFrame:
+        """Get historical generation by fuel source for a specific region"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            # Aggregate to reduce data points - group by time period
+            cursor = await db.execute("""
+                SELECT
+                    datetime(
+                        (strftime('%s', d.settlementdate) / (? * 60)) * (? * 60),
+                        'unixepoch'
+                    ) as period,
+                    COALESCE(g.fuel_source, 'Unknown') as fuel_source,
+                    AVG(d.scadavalue) as generation_mw,
+                    COUNT(*) as sample_count
+                FROM dispatch_data d
+                LEFT JOIN generator_info g ON d.duid = g.duid
+                WHERE g.region = ?
+                AND d.settlementdate >= datetime('now', ? || ' hours')
+                GROUP BY period, g.fuel_source
+                ORDER BY period ASC, fuel_source
+            """, (aggregation_minutes, aggregation_minutes, region, f'-{hours}'))
+
+            rows = await cursor.fetchall()
+
+            if not rows:
+                return pd.DataFrame()
+
+            data = [dict(row) for row in rows]
+            df = pd.DataFrame(data)
+            df['period'] = pd.to_datetime(df['period'])
+
+            return df
+
     async def get_region_price_history(self, region: str, hours: int = 24, price_type: str = 'DISPATCH') -> pd.DataFrame:
         """Get price history for a specific region over the last N hours"""
         async with aiosqlite.connect(self.db_path) as db:

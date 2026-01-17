@@ -29,6 +29,15 @@ const mockSummary = {
   generator_count: 57
 };
 
+const mockGenerationHistory = {
+  data: [
+    { period: '2025-01-15T08:00:00', fuel_source: 'Coal', generation_mw: 4500 },
+    { period: '2025-01-15T08:00:00', fuel_source: 'Solar', generation_mw: 2000 },
+    { period: '2025-01-15T09:00:00', fuel_source: 'Coal', generation_mw: 4600 },
+    { period: '2025-01-15T09:00:00', fuel_source: 'Solar', generation_mw: 2200 },
+  ]
+};
+
 describe('StateDetailPage', () => {
   const mockOnBack = jest.fn();
 
@@ -53,7 +62,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -61,17 +71,19 @@ describe('StateDetailPage', () => {
       expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    // Check all three API calls were made
+    // Check all four API calls were made
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=24&price_type=PUBLIC');
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/generation/current');
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/summary');
+    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/generation/history?hours=24');
   });
 
   test('displays region name and code', async () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -87,7 +99,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -101,31 +114,29 @@ describe('StateDetailPage', () => {
     expect(screen.getByText('57')).toBeInTheDocument();
   });
 
-  test('displays fuel breakdown table', async () => {
+  test('displays generation history chart', async () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(screen.getByText('Generation by Fuel Source')).toBeInTheDocument();
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    // Check fuel sources are displayed
-    expect(screen.getByText('Coal')).toBeInTheDocument();
-    expect(screen.getByText('Solar')).toBeInTheDocument();
-    expect(screen.getByText('Wind')).toBeInTheDocument();
-    expect(screen.getByText('Gas')).toBeInTheDocument();
-    expect(screen.getByText('Hydro')).toBeInTheDocument();
+    // Check that 3 charts are rendered (price/demand, fuel mix, and generation history)
+    expect(screen.getAllByTestId('plotly-chart').length).toBe(3);
   });
 
   test('back button calls onBack prop', async () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -143,10 +154,12 @@ describe('StateDetailPage', () => {
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory })
       // Re-fetch after time range change
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -169,12 +182,13 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('plotly-chart').length).toBe(2);
+      expect(screen.getAllByTestId('plotly-chart').length).toBe(3);
     });
   });
 
@@ -183,9 +197,11 @@ describe('StateDetailPage', () => {
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory })
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -193,7 +209,7 @@ describe('StateDetailPage', () => {
       expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    expect(axios.get).toHaveBeenCalledTimes(3);
+    expect(axios.get).toHaveBeenCalledTimes(4);
 
     // Advance timer by 60 seconds
     act(() => {
@@ -201,7 +217,7 @@ describe('StateDetailPage', () => {
     });
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledTimes(6);
+      expect(axios.get).toHaveBeenCalledTimes(8);
     });
   });
 
@@ -223,7 +239,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -236,7 +253,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={true} onBack={mockOnBack} />);
 
@@ -249,7 +267,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -262,7 +281,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } });
+      .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="VIC" darkMode={false} onBack={mockOnBack} />);
 
@@ -275,6 +295,7 @@ describe('StateDetailPage', () => {
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/prices/history?hours=24&price_type=PUBLIC');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/current');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/summary');
+    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/history?hours=24');
   });
 
   test('re-fetches data when region prop changes', async () => {
@@ -282,9 +303,11 @@ describe('StateDetailPage', () => {
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory })
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } });
+      .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     const { rerender } = render(
       <StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />
@@ -294,13 +317,13 @@ describe('StateDetailPage', () => {
       expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    expect(axios.get).toHaveBeenCalledTimes(3);
+    expect(axios.get).toHaveBeenCalledTimes(4);
 
     // Change region
     rerender(<StateDetailPage region="VIC" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledTimes(6);
+      expect(axios.get).toHaveBeenCalledTimes(8);
     });
   });
 
@@ -316,7 +339,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: summaryWithNulls });
+      .mockResolvedValueOnce({ data: summaryWithNulls })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -332,24 +356,8 @@ describe('StateDetailPage', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: { fuel_mix: [] } })
-      .mockResolvedValueOnce({ data: mockSummary });
-
-    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
-
-    await waitFor(() => {
-      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
-    });
-
-    expect(screen.getByText('Generation by Fuel Source')).toBeInTheDocument();
-    // Table should exist (may have header or fallback data)
-    expect(screen.getByRole('table')).toBeInTheDocument();
-  });
-
-  test('handles empty price history', async () => {
-    axios.get
-      .mockResolvedValueOnce({ data: { data: [] } })
-      .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
@@ -358,14 +366,32 @@ describe('StateDetailPage', () => {
     });
 
     // Charts should still render (with empty data)
-    expect(screen.getAllByTestId('plotly-chart').length).toBe(2);
+    expect(screen.getAllByTestId('plotly-chart').length).toBe(3);
+  });
+
+  test('handles empty price history', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: { data: [] } })
+      .mockResolvedValueOnce({ data: mockFuelMix })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
+    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
+    });
+
+    // Charts should still render (with empty data)
+    expect(screen.getAllByTestId('plotly-chart').length).toBe(3);
   });
 
   test('clears interval on unmount', async () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
 
     const { unmount } = render(
       <StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />
@@ -392,7 +418,8 @@ describe('StateDetailPage REGION_NAMES mapping', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
   });
 
   test.each([
@@ -418,7 +445,8 @@ describe('StateDetailPage time range options', () => {
     axios.get
       .mockResolvedValueOnce({ data: mockPriceHistory })
       .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary });
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
   });
 
   test('has all time range options', async () => {

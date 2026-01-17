@@ -20,6 +20,7 @@ from .models import (
     FuelMixRecord,
     RegionFuelMixResponse,
     RegionPriceHistoryResponse,
+    RegionGenerationHistoryResponse,
     RegionSummaryResponse,
     DataCoverageResponse
 )
@@ -469,6 +470,57 @@ async def get_region_current_generation(region: str):
 
     except Exception as e:
         logger.error(f"Error getting region fuel mix for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/region/{region}/generation/history", response_model=RegionGenerationHistoryResponse)
+async def get_region_generation_history(
+    region: str,
+    hours: int = Query(default=24, ge=1, le=168, description="Hours of history (1-168)"),
+    aggregation: int = Query(default=30, ge=5, le=60, description="Aggregation interval in minutes")
+):
+    """Get historical generation by fuel source for a specific region"""
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+
+    # Auto-adjust aggregation for longer time ranges
+    if hours > 48:
+        aggregation = max(aggregation, 30)
+    if hours > 96:
+        aggregation = max(aggregation, 60)
+
+    try:
+        df = await db.get_region_generation_history(region, hours, aggregation)
+
+        if df.empty:
+            return RegionGenerationHistoryResponse(
+                region=region,
+                data=[],
+                count=0,
+                hours=hours,
+                aggregation_minutes=aggregation,
+                message=f"No generation history available for {region}"
+            )
+
+        records = df.to_dict('records')
+        for record in records:
+            if 'period' in record:
+                record['period'] = record['period'].isoformat()
+
+        return RegionGenerationHistoryResponse(
+            region=region,
+            data=records,
+            count=len(records),
+            hours=hours,
+            aggregation_minutes=aggregation,
+            message=f"Retrieved {len(records)} generation history records for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting generation history for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
