@@ -6,6 +6,7 @@ import pytest
 from app.nem_price_client import NEMPriceClient, REGION_MAPPING
 from tests.fixtures.sample_price_csv import (
     SAMPLE_DISPATCH_PRICE_CSV,
+    SAMPLE_DISPATCH_PRICE_CSV_V5,
     SAMPLE_TRADING_PRICE_CSV,
     SAMPLE_PUBLIC_PRICE_CSV,
     SAMPLE_PRICE_NO_RECORDS,
@@ -164,13 +165,27 @@ class TestParsePriceCsv:
         return NEMPriceClient()
 
     def test_parse_price_csv_dispatch_format(self, client):
-        """Test parsing DISPATCH price format"""
+        """Test parsing DISPATCH price format (version 3)"""
         df = client._parse_price_csv(SAMPLE_DISPATCH_PRICE_CSV, 'DISPATCH')
 
         assert df is not None
         assert len(df) == 5  # 5 regions
         assert 'NSW' in df['region'].values
         assert df.loc[df['region'] == 'NSW', 'price'].values[0] == 85.50
+        assert df['price_type'].iloc[0] == 'DISPATCH'
+
+    def test_parse_price_csv_dispatch_format_v5(self, client):
+        """Test parsing DISPATCH price format (version 5 with INTERVENTION column)"""
+        df = client._parse_price_csv(SAMPLE_DISPATCH_PRICE_CSV_V5, 'DISPATCH')
+
+        assert df is not None
+        assert len(df) == 5  # 5 regions
+        assert 'NSW' in df['region'].values
+        # Version 5 has INTERVENTION column at index 8, RRP at index 9
+        # Verify prices are correctly extracted (not zeros)
+        assert df.loc[df['region'] == 'NSW', 'price'].values[0] == 85.50
+        assert df.loc[df['region'] == 'VIC', 'price'].values[0] == 72.30
+        assert df.loc[df['region'] == 'SA', 'price'].values[0] == 95.20
         assert df['price_type'].iloc[0] == 'DISPATCH'
 
     def test_parse_price_csv_trading_format(self, client):
@@ -424,4 +439,259 @@ class TestAsyncMethods:
         httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
 
         df = await client.get_current_dispatch_prices()
+        assert df is None
+
+
+class TestGetAllCurrentDispatchPrices:
+    """Tests for get_all_current_dispatch_prices method (backfill from Current directory)"""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_returns_dataframe_with_expected_columns(self, client, httpx_mock):
+        """Should return DataFrame with settlementdate, region, price, totaldemand, price_type"""
+        from tests.fixtures.sample_price_csv import (
+            SAMPLE_DISPATCH_PRICE_DIR_MULTI,
+            create_dispatch_price_csv_for_time,
+            create_price_zip,
+        )
+
+        # Mock directory listing
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=SAMPLE_DISPATCH_PRICE_DIR_MULTI
+        )
+
+        # Mock each file download (5 files in the directory)
+        timestamps = [
+            ("2025/01/15 04:00:00", "202501150400_0000000123456780"),
+            ("2025/01/15 04:05:00", "202501150405_0000000123456781"),
+            ("2025/01/15 04:10:00", "202501150410_0000000123456782"),
+            ("2025/01/15 04:15:00", "202501150415_0000000123456783"),
+            ("2025/01/15 04:20:00", "202501150420_0000000123456784"),
+        ]
+
+        for ts, file_suffix in timestamps:
+            csv_content = create_dispatch_price_csv_for_time(ts)
+            httpx_mock.add_response(
+                url=f"https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_{file_suffix}.zip",
+                content=create_price_zip(csv_content, 'DISPATCH')
+            )
+
+        df = await client.get_all_current_dispatch_prices()
+
+        assert df is not None
+        assert 'settlementdate' in df.columns
+        assert 'region' in df.columns
+        assert 'price' in df.columns
+        assert 'totaldemand' in df.columns
+        assert 'price_type' in df.columns
+
+    @pytest.mark.asyncio
+    async def test_fetches_all_files_from_directory(self, client, httpx_mock):
+        """Should fetch and parse all available ZIP files"""
+        from tests.fixtures.sample_price_csv import (
+            SAMPLE_DISPATCH_PRICE_DIR_MULTI,
+            create_dispatch_price_csv_for_time,
+            create_price_zip,
+        )
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=SAMPLE_DISPATCH_PRICE_DIR_MULTI
+        )
+
+        timestamps = [
+            ("2025/01/15 04:00:00", "202501150400_0000000123456780"),
+            ("2025/01/15 04:05:00", "202501150405_0000000123456781"),
+            ("2025/01/15 04:10:00", "202501150410_0000000123456782"),
+            ("2025/01/15 04:15:00", "202501150415_0000000123456783"),
+            ("2025/01/15 04:20:00", "202501150420_0000000123456784"),
+        ]
+
+        for ts, file_suffix in timestamps:
+            csv_content = create_dispatch_price_csv_for_time(ts)
+            httpx_mock.add_response(
+                url=f"https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_{file_suffix}.zip",
+                content=create_price_zip(csv_content, 'DISPATCH')
+            )
+
+        df = await client.get_all_current_dispatch_prices()
+
+        assert df is not None
+        # Should have data for 5 timestamps * 5 regions = 25 records
+        assert len(df) == 25
+        # Should have 5 unique timestamps
+        assert df['settlementdate'].nunique() == 5
+
+    @pytest.mark.asyncio
+    async def test_deduplicates_by_settlementdate_and_region(self, client, httpx_mock):
+        """Should not have duplicate (settlementdate, region) combinations"""
+        from tests.fixtures.sample_price_csv import (
+            SAMPLE_DISPATCH_PRICE_DIR_MULTI,
+            create_dispatch_price_csv_for_time,
+            create_price_zip,
+        )
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=SAMPLE_DISPATCH_PRICE_DIR_MULTI
+        )
+
+        timestamps = [
+            ("2025/01/15 04:00:00", "202501150400_0000000123456780"),
+            ("2025/01/15 04:05:00", "202501150405_0000000123456781"),
+            ("2025/01/15 04:10:00", "202501150410_0000000123456782"),
+            ("2025/01/15 04:15:00", "202501150415_0000000123456783"),
+            ("2025/01/15 04:20:00", "202501150420_0000000123456784"),
+        ]
+
+        for ts, file_suffix in timestamps:
+            csv_content = create_dispatch_price_csv_for_time(ts)
+            httpx_mock.add_response(
+                url=f"https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_{file_suffix}.zip",
+                content=create_price_zip(csv_content, 'DISPATCH')
+            )
+
+        df = await client.get_all_current_dispatch_prices()
+
+        assert df is not None
+        # Check no duplicates
+        duplicates = df.duplicated(subset=['settlementdate', 'region'])
+        assert duplicates.sum() == 0
+
+    @pytest.mark.asyncio
+    async def test_handles_empty_directory(self, client, httpx_mock):
+        """Should return None if no files found"""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html="<html><body>No files</body></html>"
+        )
+
+        df = await client.get_all_current_dispatch_prices()
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_handles_network_error(self, client, httpx_mock):
+        """Should return None on network error"""
+        import httpx
+        httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
+
+        df = await client.get_all_current_dispatch_prices()
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_continues_on_individual_file_error(self, client, httpx_mock):
+        """Should continue processing even if one file fails to download"""
+        from tests.fixtures.sample_price_csv import (
+            create_dispatch_price_csv_for_time,
+            create_price_zip,
+        )
+
+        # Directory with 3 files
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip">file1</a>
+<a href="PUBLIC_DISPATCHIS_202501150405_0000000123456781.zip">file2</a>
+<a href="PUBLIC_DISPATCHIS_202501150410_0000000123456782.zip">file3</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=dir_html
+        )
+
+        # First file succeeds
+        csv1 = create_dispatch_price_csv_for_time("2025/01/15 04:00:00")
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip",
+            content=create_price_zip(csv1, 'DISPATCH')
+        )
+
+        # Second file fails (404)
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_202501150405_0000000123456781.zip",
+            status_code=404
+        )
+
+        # Third file succeeds
+        csv3 = create_dispatch_price_csv_for_time("2025/01/15 04:10:00")
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_202501150410_0000000123456782.zip",
+            content=create_price_zip(csv3, 'DISPATCH')
+        )
+
+        df = await client.get_all_current_dispatch_prices()
+
+        # Should still return data from 2 successful files
+        assert df is not None
+        assert len(df) == 10  # 2 files * 5 regions
+
+    @pytest.mark.asyncio
+    async def test_filters_files_by_since_parameter(self, client, httpx_mock):
+        """Should only fetch files with timestamps after 'since' parameter"""
+        from datetime import datetime
+        from tests.fixtures.sample_price_csv import (
+            create_dispatch_price_csv_for_time,
+            create_price_zip,
+        )
+
+        # Directory with 5 files at different times
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip">file1</a>
+<a href="PUBLIC_DISPATCHIS_202501150405_0000000123456781.zip">file2</a>
+<a href="PUBLIC_DISPATCHIS_202501150410_0000000123456782.zip">file3</a>
+<a href="PUBLIC_DISPATCHIS_202501150415_0000000123456783.zip">file4</a>
+<a href="PUBLIC_DISPATCHIS_202501150420_0000000123456784.zip">file5</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=dir_html
+        )
+
+        # Only mock files that should be fetched (after 04:10)
+        timestamps = [
+            ("2025/01/15 04:15:00", "202501150415_0000000123456783"),
+            ("2025/01/15 04:20:00", "202501150420_0000000123456784"),
+        ]
+
+        for ts, file_suffix in timestamps:
+            csv_content = create_dispatch_price_csv_for_time(ts)
+            httpx_mock.add_response(
+                url=f"https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_{file_suffix}.zip",
+                content=create_price_zip(csv_content, 'DISPATCH')
+            )
+
+        # Request with since=04:10, should only get files at 04:15 and 04:20
+        since = datetime(2025, 1, 15, 4, 10)
+        df = await client.get_all_current_dispatch_prices(since=since)
+
+        assert df is not None
+        # Should have 2 timestamps * 5 regions = 10 records
+        assert len(df) == 10
+        # All timestamps should be after since
+        assert all(df['settlementdate'] > since)
+
+    @pytest.mark.asyncio
+    async def test_since_returns_none_when_no_newer_files(self, client, httpx_mock):
+        """Should return None when no files are newer than 'since'"""
+        from datetime import datetime
+
+        # Directory with files only from earlier times
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip">file1</a>
+<a href="PUBLIC_DISPATCHIS_202501150405_0000000123456781.zip">file2</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=dir_html
+        )
+
+        # Request with since in the future
+        since = datetime(2025, 1, 15, 10, 0)  # 10:00, after all files
+        df = await client.get_all_current_dispatch_prices(since=since)
+
         assert df is None

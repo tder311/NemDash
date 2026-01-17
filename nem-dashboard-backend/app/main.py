@@ -528,17 +528,30 @@ async def get_region_generation_history(
 async def get_region_price_history(
     region: str,
     hours: int = Query(default=24, ge=1, le=168, description="Hours of history (1-168)"),
-    price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, or PUBLIC")
+    price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, PUBLIC, or MERGED")
 ):
-    """Get price history for a specific region over the last N hours"""
+    """Get price history for a specific region over the last N hours.
+
+    The MERGED price type intelligently combines PUBLIC (official settlement) prices
+    with DISPATCH (real-time) prices. PUBLIC prices are preferred where available,
+    with DISPATCH filling gaps from the latest PUBLIC timestamp to current time.
+    """
     valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    valid_price_types = ['DISPATCH', 'TRADING', 'PUBLIC', 'MERGED']
     region = region.upper()
+    price_type = price_type.upper()
 
     if region not in valid_regions:
         raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
 
+    if price_type not in valid_price_types:
+        raise HTTPException(status_code=400, detail=f"Invalid price_type. Must be one of: {', '.join(valid_price_types)}")
+
     try:
-        df = await db.get_region_price_history(region, hours, price_type)
+        if price_type == 'MERGED':
+            df = await db.get_merged_price_history(region, hours)
+        else:
+            df = await db.get_region_price_history(region, hours, price_type)
 
         if df.empty:
             return RegionPriceHistoryResponse(

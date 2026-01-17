@@ -72,7 +72,7 @@ describe('StateDetailPage', () => {
     });
 
     // Check all four API calls were made
-    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=24&price_type=PUBLIC');
+    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=24&price_type=MERGED');
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/generation/current');
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/summary');
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/generation/history?hours=24');
@@ -174,7 +174,7 @@ describe('StateDetailPage', () => {
     fireEvent.change(select, { target: { value: '48' } });
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=48&price_type=PUBLIC');
+      expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=48&price_type=MERGED');
     });
   });
 
@@ -292,7 +292,7 @@ describe('StateDetailPage', () => {
 
     // Region name and code are rendered together as "Victoria (VIC)"
     expect(screen.getByText(/Victoria \(VIC\)/i)).toBeInTheDocument();
-    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/prices/history?hours=24&price_type=PUBLIC');
+    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/prices/history?hours=24&price_type=MERGED');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/current');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/summary');
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/history?hours=24');

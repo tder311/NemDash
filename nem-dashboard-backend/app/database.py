@@ -326,9 +326,24 @@ class NEMDatabase:
             data = [dict(row) for row in rows]
             df = pd.DataFrame(data)
             df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
+
             return df
-    
+
+    async def get_latest_price_timestamp(self, price_type: str = 'PUBLIC') -> Optional[datetime]:
+        """Get the latest settlement timestamp for a given price type.
+
+        Used to determine how far back to fetch DISPATCH prices when backfilling.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                SELECT MAX(settlementdate) as latest FROM price_data WHERE price_type = ?
+            """, (price_type,))
+            row = await cursor.fetchone()
+
+            if row and row[0]:
+                return datetime.fromisoformat(row[0])
+            return None
+
     async def get_price_history(self, start_date: datetime, end_date: datetime, region: Optional[str] = None, price_type: str = 'DISPATCH') -> pd.DataFrame:
         """Get price data for a date range"""
         async with aiosqlite.connect(self.db_path) as db:
@@ -536,6 +551,50 @@ class NEMDatabase:
             df['settlementdate'] = pd.to_datetime(df['settlementdate'])
 
             return df
+
+    async def get_merged_price_history(self, region: str, hours: int = 24) -> pd.DataFrame:
+        """Get price history merging PUBLIC and DISPATCH prices.
+
+        Uses PUBLIC prices where available, fills gaps with DISPATCH prices
+        for times after the latest PUBLIC timestamp.
+
+        Args:
+            region: NEM region (NSW, VIC, QLD, SA, TAS)
+            hours: Number of hours of history to retrieve
+
+        Returns:
+            DataFrame with merged price data including 'source_type' column
+        """
+        # 1. Get PUBLIC prices
+        public_df = await self.get_region_price_history(region, hours, 'PUBLIC')
+
+        # 2. Get DISPATCH prices
+        dispatch_df = await self.get_region_price_history(region, hours, 'DISPATCH')
+
+        # Handle edge cases
+        if public_df.empty and dispatch_df.empty:
+            return pd.DataFrame()
+
+        if public_df.empty:
+            dispatch_df['source_type'] = 'DISPATCH'
+            return dispatch_df.sort_values('settlementdate').reset_index(drop=True)
+
+        if dispatch_df.empty:
+            public_df['source_type'] = 'PUBLIC'
+            return public_df.sort_values('settlementdate').reset_index(drop=True)
+
+        # 3. Find latest PUBLIC timestamp
+        latest_public = public_df['settlementdate'].max()
+
+        # 4. Filter DISPATCH to only include times after latest PUBLIC
+        dispatch_fill = dispatch_df[dispatch_df['settlementdate'] > latest_public].copy()
+
+        # 5. Add source_type and merge
+        public_df['source_type'] = 'PUBLIC'
+        dispatch_fill['source_type'] = 'DISPATCH'
+
+        merged = pd.concat([public_df, dispatch_fill], ignore_index=True)
+        return merged.sort_values('settlementdate').reset_index(drop=True)
 
     async def get_region_summary(self, region: str) -> Dict[str, Any]:
         """Get summary statistics for a specific region"""
