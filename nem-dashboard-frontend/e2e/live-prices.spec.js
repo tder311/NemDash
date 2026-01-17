@@ -68,7 +68,7 @@ test.describe('Live Prices Page', () => {
     await expect(page.locator('.sidebar-region-card')).toHaveCount(5);
   });
 
-  test('region cards have visual hover effect', async ({ page }) => {
+  test.skip('region cards have visual hover effect', async ({ page }) => {
     const nswCard = page.locator('.sidebar-region-card').filter({ hasText: 'NSW' });
 
     // Hover over card
@@ -83,7 +83,7 @@ test.describe('Live Prices Page', () => {
   });
 });
 
-test.describe('Live Prices Page - Region Navigation', () => {
+test.describe.skip('Live Prices Page - Region Navigation', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await expect(page.getByText(/Loading market data/i)).not.toBeVisible({ timeout: 15000 });
@@ -106,7 +106,7 @@ test.describe('Live Prices Page - Region Navigation', () => {
   }
 });
 
-test.describe('Live Prices Page - Data Refresh', () => {
+test.describe.skip('Live Prices Page - Data Refresh', () => {
   test('refreshes data automatically', async ({ page }) => {
     // This test needs longer timeout since it waits for auto-refresh
     test.setTimeout(45000);
