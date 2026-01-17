@@ -18,6 +18,7 @@ from tests.fixtures.sample_dispatch_csv import (
     SAMPLE_DIRECTORY_HTML_SINGLE,
     create_sample_dispatch_zip,
     create_empty_zip,
+    create_nested_archive_zip,
 )
 
 
@@ -288,18 +289,21 @@ class TestAsyncMethods:
 
     @pytest.mark.asyncio
     async def test_get_historical_dispatch_data_success(self, client, httpx_mock):
-        """Test successful fetch of historical dispatch data"""
+        """Test successful fetch of historical dispatch data from nested ZIP archive"""
         from datetime import datetime
 
         test_date = datetime(2025, 1, 15)
 
+        # NEMWEB archives are nested ZIPs (outer ZIP contains inner ZIPs with CSVs)
         httpx_mock.add_response(
-            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/2025/DISPATCH_SCADA_20250115.zip",
-            content=create_sample_dispatch_zip()
+            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip",
+            content=create_nested_archive_zip()
         )
 
         df = await client.get_historical_dispatch_data(test_date)
         assert df is not None
+        # Should have records from the nested archive (2 intervals * 5 records each, deduped)
+        assert len(df) >= 5
 
     @pytest.mark.asyncio
     async def test_get_historical_dispatch_data_not_found(self, client, httpx_mock):
@@ -310,7 +314,7 @@ class TestAsyncMethods:
         test_date = datetime(2025, 1, 15)
 
         httpx_mock.add_response(
-            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/2025/DISPATCH_SCADA_20250115.zip",
+            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip",
             status_code=404
         )
 
