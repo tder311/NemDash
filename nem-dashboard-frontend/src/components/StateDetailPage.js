@@ -31,6 +31,25 @@ const FUEL_COLORS = {
   'Unknown': '#9e9e9e'
 };
 
+// Helper to format time range for display
+const formatTimeRange = (hours) => {
+  if (hours <= 48) return `${hours} Hours`;
+  if (hours === 168) return '7 Days';
+  if (hours === 720) return '30 Days';
+  if (hours === 2160) return '90 Days';
+  if (hours === 8760) return '365 Days';
+  return `${hours} Hours`;
+};
+
+// Helper to get aggregation level description
+const getAggregationLabel = (hours) => {
+  if (hours < 48) return 'Real-time (5 min)';
+  if (hours <= 168) return '30 min averages';
+  if (hours <= 720) return 'Hourly averages';
+  if (hours <= 2160) return 'Daily averages';
+  return 'Weekly averages';
+};
+
 function StateDetailPage({ region, darkMode, onBack }) {
   const [priceHistory, setPriceHistory] = useState([]);
   const [fuelMix, setFuelMix] = useState([]);
@@ -168,7 +187,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
     xaxis: {
       gridcolor: darkMode ? '#374151' : '#f3f4f6',
       color: darkMode ? '#9ca3af' : '#6b7280',
-      tickformat: timeRange <= 24 ? '%H:%M' : '%d %b %H:%M',
+      tickformat: timeRange <= 24 ? '%H:%M' : timeRange <= 168 ? '%d %b %H:%M' : timeRange <= 720 ? '%d %b' : '%b %Y',
       tickfont: { size: 11 },
       linecolor: darkMode ? '#374151' : '#e5e7eb',
       showline: true,
@@ -305,7 +324,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
     xaxis: {
       gridcolor: darkMode ? '#374151' : '#f3f4f6',
       color: darkMode ? '#9ca3af' : '#6b7280',
-      tickformat: timeRange <= 24 ? '%H:%M' : '%d %b %H:%M',
+      tickformat: timeRange <= 24 ? '%H:%M' : timeRange <= 168 ? '%d %b %H:%M' : timeRange <= 720 ? '%d %b' : '%b %Y',
       tickfont: { size: 11 },
       linecolor: darkMode ? '#374151' : '#e5e7eb',
       showline: true,
@@ -408,6 +427,9 @@ function StateDetailPage({ region, darkMode, onBack }) {
           <option value={24}>24 Hours</option>
           <option value={48}>48 Hours</option>
           <option value={168}>7 Days</option>
+          <option value={720}>30 Days</option>
+          <option value={2160}>90 Days</option>
+          <option value={8760}>365 Days</option>
         </select>
       </div>
 
@@ -456,7 +478,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
         ) : (
           <div className="no-data-message">
             <h3 style={{ color: darkMode ? '#f5f5f5' : '#333' }}>
-              Generation by Fuel Source - Last {timeRange} Hours
+              Generation by Fuel Source - Last {formatTimeRange(timeRange)}
             </h3>
             <p style={{ color: darkMode ? '#aaa' : '#666' }}>
               No generation history data available. Generator metadata may need to be imported.

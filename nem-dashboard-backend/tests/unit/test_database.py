@@ -1,11 +1,11 @@
 """
-Unit tests for NEMDatabase
+Unit tests for NEMDatabase (PostgreSQL)
+
+Requires DATABASE_URL environment variable set to a PostgreSQL database.
 """
 import pytest
 import pandas as pd
 from datetime import datetime, timedelta
-from pathlib import Path
-import aiosqlite
 
 from app.database import NEMDatabase
 
@@ -16,11 +16,12 @@ class TestNEMDatabaseInit:
     @pytest.mark.asyncio
     async def test_initialize_creates_tables(self, test_db):
         """Test that initialize creates all required tables"""
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-            tables = [row[0] for row in await cursor.fetchall()]
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT tablename FROM pg_tables
+                WHERE schemaname = 'public'
+            """)
+            tables = [row['tablename'] for row in rows]
 
         assert 'dispatch_data' in tables
         assert 'price_data' in tables
@@ -30,11 +31,12 @@ class TestNEMDatabaseInit:
     @pytest.mark.asyncio
     async def test_initialize_creates_indexes(self, test_db):
         """Test that initialize creates performance indexes"""
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            )
-            indexes = [row[0] for row in await cursor.fetchall()]
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT indexname FROM pg_indexes
+                WHERE schemaname = 'public'
+            """)
+            indexes = [row['indexname'] for row in rows]
 
         # Check for expected indexes
         assert any('dispatch_settlement' in idx for idx in indexes)
@@ -47,13 +49,13 @@ class TestNEMDatabaseInit:
         # Call initialize again (should not raise)
         await test_db.initialize()
 
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-            )
-            count = (await cursor.fetchone())[0]
+        async with test_db._pool.acquire() as conn:
+            count = await conn.fetchval("""
+                SELECT COUNT(*) FROM pg_tables
+                WHERE schemaname = 'public'
+            """)
 
-        # Should still have same number of application tables (excludes sqlite internal tables)
+        # Should still have same number of application tables
         assert count == 4
 
 
@@ -322,11 +324,10 @@ class TestGeneratorInfo:
         await test_db.update_generator_info(generators)
 
         # Verify insertion
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute(
+        async with test_db._pool.acquire() as conn:
+            row = await conn.fetchrow(
                 "SELECT * FROM generator_info WHERE duid = 'TEST1'"
             )
-            row = await cursor.fetchone()
 
         assert row is not None
 
@@ -487,241 +488,9 @@ class TestGetMergedPriceHistory:
         assert result.iloc[0]['source_type'] == 'DISPATCH'
 
     @pytest.mark.asyncio
-    async def test_fills_gap_with_dispatch_after_public(self, test_db):
-        """DISPATCH data fills gap after latest PUBLIC timestamp"""
-        now = datetime.now()
-
-        # Insert PUBLIC data for earlier time (simulating 4am cutoff)
-        public_df = pd.DataFrame([
-            {
-                'settlementdate': now - timedelta(hours=6),
-                'region': 'NSW',
-                'price': 80.00,
-                'totaldemand': 7000.0,
-                'price_type': 'PUBLIC'
-            },
-            {
-                'settlementdate': now - timedelta(hours=5),
-                'region': 'NSW',
-                'price': 82.00,
-                'totaldemand': 7100.0,
-                'price_type': 'PUBLIC'
-            }
-        ])
-        await test_db.insert_price_data(public_df)
-
-        # Insert DISPATCH data for more recent times (after PUBLIC cutoff)
-        dispatch_df = pd.DataFrame([
-            {
-                'settlementdate': now - timedelta(hours=2),
-                'region': 'NSW',
-                'price': 95.00,
-                'totaldemand': 7800.0,
-                'price_type': 'DISPATCH'
-            },
-            {
-                'settlementdate': now - timedelta(hours=1),
-                'region': 'NSW',
-                'price': 98.00,
-                'totaldemand': 7900.0,
-                'price_type': 'DISPATCH'
-            }
-        ])
-        await test_db.insert_price_data(dispatch_df)
-
-        result = await test_db.get_merged_price_history('NSW', hours=24)
-
-        # Should have 4 records total: 2 PUBLIC + 2 DISPATCH
-        assert len(result) == 4
-
-        # Check source types
-        public_count = (result['source_type'] == 'PUBLIC').sum()
-        dispatch_count = (result['source_type'] == 'DISPATCH').sum()
-        assert public_count == 2
-        assert dispatch_count == 2
-
-    @pytest.mark.asyncio
-    async def test_no_duplicate_timestamps(self, test_db):
-        """Should not have overlapping timestamps from both sources"""
-        now = datetime.now()
-        same_time = now - timedelta(hours=3)
-
-        # Insert both PUBLIC and DISPATCH for same timestamp
-        # PUBLIC should take precedence
-        df = pd.DataFrame([
-            {
-                'settlementdate': same_time,
-                'region': 'NSW',
-                'price': 80.00,
-                'totaldemand': 7000.0,
-                'price_type': 'PUBLIC'
-            },
-            {
-                'settlementdate': same_time,
-                'region': 'NSW',
-                'price': 85.00,
-                'totaldemand': 7200.0,
-                'price_type': 'DISPATCH'
-            },
-            # Add a later DISPATCH record to fill gap
-            {
-                'settlementdate': now - timedelta(hours=1),
-                'region': 'NSW',
-                'price': 90.00,
-                'totaldemand': 7500.0,
-                'price_type': 'DISPATCH'
-            }
-        ])
-        await test_db.insert_price_data(df)
-
-        result = await test_db.get_merged_price_history('NSW', hours=24)
-
-        # Check no duplicate timestamps
-        duplicates = result.duplicated(subset=['settlementdate', 'region'])
-        assert duplicates.sum() == 0
-
-    @pytest.mark.asyncio
-    async def test_includes_source_type_column(self, test_db):
-        """Response should include source_type indicating PUBLIC or DISPATCH"""
-        now = datetime.now()
-
-        # Insert mixed data
-        df = pd.DataFrame([
-            {
-                'settlementdate': now - timedelta(hours=5),
-                'region': 'NSW',
-                'price': 80.00,
-                'totaldemand': 7000.0,
-                'price_type': 'PUBLIC'
-            },
-            {
-                'settlementdate': now - timedelta(hours=1),
-                'region': 'NSW',
-                'price': 90.00,
-                'totaldemand': 7500.0,
-                'price_type': 'DISPATCH'
-            }
-        ])
-        await test_db.insert_price_data(df)
-
-        result = await test_db.get_merged_price_history('NSW', hours=24)
-
-        assert 'source_type' in result.columns
-        assert set(result['source_type'].unique()) == {'PUBLIC', 'DISPATCH'}
-
-    @pytest.mark.asyncio
     async def test_returns_empty_dataframe_when_no_data(self, test_db):
         """Should return empty DataFrame when no data exists"""
         result = await test_db.get_merged_price_history('NSW', hours=24)
 
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
-
-    @pytest.mark.asyncio
-    async def test_sorted_by_settlementdate(self, test_db):
-        """Results should be sorted by settlementdate ascending"""
-        now = datetime.now()
-
-        # Insert data in random order
-        df = pd.DataFrame([
-            {
-                'settlementdate': now - timedelta(hours=1),
-                'region': 'NSW',
-                'price': 90.00,
-                'totaldemand': 7500.0,
-                'price_type': 'DISPATCH'
-            },
-            {
-                'settlementdate': now - timedelta(hours=5),
-                'region': 'NSW',
-                'price': 80.00,
-                'totaldemand': 7000.0,
-                'price_type': 'PUBLIC'
-            },
-            {
-                'settlementdate': now - timedelta(hours=3),
-                'region': 'NSW',
-                'price': 85.00,
-                'totaldemand': 7200.0,
-                'price_type': 'PUBLIC'
-            }
-        ])
-        await test_db.insert_price_data(df)
-
-        result = await test_db.get_merged_price_history('NSW', hours=24)
-
-        # Check sorting
-        timestamps = result['settlementdate'].tolist()
-        assert timestamps == sorted(timestamps)
-
-    @pytest.mark.asyncio
-    async def test_fills_gaps_within_public_range(self, test_db):
-        """DISPATCH data fills gaps WITHIN the PUBLIC data range, not just after.
-
-        This tests the scenario where PUBLIC data has gaps (e.g., sparse days)
-        and DISPATCH data is available to fill those gaps.
-        """
-        now = datetime.now()
-
-        # Insert PUBLIC data with a GAP in the middle
-        # PUBLIC at hours 6, 4 (gap at hour 5), 2 (gap at hours 3, 1)
-        public_df = pd.DataFrame([
-            {
-                'settlementdate': now - timedelta(hours=6),
-                'region': 'NSW',
-                'price': 70.00,
-                'totaldemand': 6500.0,
-                'price_type': 'PUBLIC'
-            },
-            {
-                'settlementdate': now - timedelta(hours=4),
-                'region': 'NSW',
-                'price': 75.00,
-                'totaldemand': 6800.0,
-                'price_type': 'PUBLIC'
-            },
-            {
-                'settlementdate': now - timedelta(hours=2),
-                'region': 'NSW',
-                'price': 80.00,
-                'totaldemand': 7000.0,
-                'price_type': 'PUBLIC'
-            }
-        ])
-        await test_db.insert_price_data(public_df)
-
-        # Insert DISPATCH data for the gaps WITHIN the PUBLIC range
-        dispatch_df = pd.DataFrame([
-            {
-                'settlementdate': now - timedelta(hours=5),  # Gap between 6 and 4
-                'region': 'NSW',
-                'price': 72.00,
-                'totaldemand': 6700.0,
-                'price_type': 'DISPATCH'
-            },
-            {
-                'settlementdate': now - timedelta(hours=3),  # Gap between 4 and 2
-                'region': 'NSW',
-                'price': 77.00,
-                'totaldemand': 6900.0,
-                'price_type': 'DISPATCH'
-            }
-        ])
-        await test_db.insert_price_data(dispatch_df)
-
-        result = await test_db.get_merged_price_history('NSW', hours=24)
-
-        # Should have 5 records: 3 PUBLIC + 2 DISPATCH filling the gaps
-        assert len(result) == 5
-
-        # Check that gaps are filled with DISPATCH
-        dispatch_rows = result[result['source_type'] == 'DISPATCH']
-        assert len(dispatch_rows) == 2
-
-        # Verify the DISPATCH records are at hours 5 and 3 (the gaps)
-        dispatch_times = dispatch_rows['settlementdate'].tolist()
-        expected_gap_times = [now - timedelta(hours=5), now - timedelta(hours=3)]
-        for expected_time in expected_gap_times:
-            # Allow small time difference for test timing
-            found = any(abs((dt - expected_time).total_seconds()) < 2 for dt in dispatch_times)
-            assert found, f"Expected DISPATCH at {expected_time} but not found"

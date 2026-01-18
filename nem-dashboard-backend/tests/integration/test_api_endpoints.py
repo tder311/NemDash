@@ -1,20 +1,20 @@
 """
 Integration tests for FastAPI endpoints
+
+Requires DATABASE_URL environment variable for PostgreSQL connection.
 """
 import pytest
 from fastapi.testclient import TestClient
 from datetime import datetime
-import tempfile
-from pathlib import Path
 import os
 import asyncio
 
-# We need to set up the test environment before importing the app
-# Create a temporary database path for testing
-_test_db_path = tempfile.mktemp(suffix='.db')
-os.environ['DATABASE_PATH'] = _test_db_path
+# Check for DATABASE_URL before importing app
+_db_url = os.environ.get('DATABASE_URL')
+if not _db_url:
+    pytest.skip("DATABASE_URL environment variable not set", allow_module_level=True)
 
-# Import after setting env vars
+# Import after checking env vars
 from app.main import app
 from app.database import NEMDatabase
 import app.main as main_module
@@ -26,7 +26,7 @@ def _setup_database_sync():
 
     async def _setup():
         # Create and initialize database
-        db = NEMDatabase(_test_db_path)
+        db = NEMDatabase(_db_url)
         await db.initialize()
 
         # Insert test data
@@ -133,14 +133,13 @@ def setup_module(module):
 
 def teardown_module(module):
     """Clean up after all tests"""
-    global _client
+    global _client, _db
     if _client:
         _client.close()
         _client = None
-    try:
-        Path(_test_db_path).unlink(missing_ok=True)
-    except:
-        pass
+    if _db:
+        asyncio.get_event_loop().run_until_complete(_db.close())
+        _db = None
 
 
 @pytest.fixture
@@ -337,8 +336,8 @@ class TestRegionEndpoints:
 
     def test_get_region_price_history_hours_validation(self, client):
         """Test hours parameter validation"""
-        # Over max (168)
-        response = client.get("/api/region/NSW/prices/history?hours=200")
+        # Over max (8760 = 365 days)
+        response = client.get("/api/region/NSW/prices/history?hours=9000")
         assert response.status_code == 422
 
         # Under min (1)

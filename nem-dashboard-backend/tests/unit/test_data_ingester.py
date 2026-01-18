@@ -1,7 +1,10 @@
 """
 Unit tests for DataIngester
+
+Requires DATABASE_URL environment variable for tests that need a real database.
 """
 import pytest
+import os
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch, MagicMock
 import pandas as pd
@@ -11,14 +14,22 @@ from pathlib import Path
 from app.data_ingester import DataIngester, update_sample_generator_info, import_generator_info_from_csv, SAMPLE_GENERATOR_INFO
 
 
+def get_test_db_url():
+    """Get test database URL from environment or skip."""
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        pytest.skip("DATABASE_URL environment variable not set")
+    return db_url
+
+
 class TestDataIngesterInit:
     """Tests for DataIngester initialization"""
 
     @pytest.mark.asyncio
-    async def test_init_creates_clients(self, tmp_path):
+    async def test_init_creates_clients(self):
         """Test that init creates database and client instances"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
 
         assert ingester.db is not None
         assert ingester.nem_client is not None
@@ -26,23 +37,24 @@ class TestDataIngesterInit:
         assert ingester.is_running is False
 
     @pytest.mark.asyncio
-    async def test_initialize(self, tmp_path):
-        """Test that initialize creates database"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+    async def test_initialize(self):
+        """Test that initialize creates database connection"""
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
-        assert Path(db_path).exists()
+        assert ingester.db._pool is not None
+        await ingester.db.close()
 
 
 class TestStopContinuousIngestion:
     """Tests for stop_continuous_ingestion method"""
 
     @pytest.mark.asyncio
-    async def test_stop_sets_flag(self, tmp_path):
+    async def test_stop_sets_flag(self):
         """Test that stop sets is_running to False"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         ingester.is_running = True
 
         ingester.stop_continuous_ingestion()
@@ -54,10 +66,10 @@ class TestIngestCurrentData:
     """Tests for ingest_current_data method"""
 
     @pytest.mark.asyncio
-    async def test_ingest_current_data_success(self, tmp_path):
+    async def test_ingest_current_data_success(self):
         """Test successful current data ingestion"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         # Mock all client methods to return sample data
@@ -100,12 +112,13 @@ class TestIngestCurrentData:
 
         # Should succeed even if some sources fail
         assert isinstance(success, bool)
+        await ingester.db.close()
 
     @pytest.mark.asyncio
-    async def test_ingest_current_data_partial_failure(self, tmp_path):
+    async def test_ingest_current_data_partial_failure(self):
         """Test that partial failures don't stop ingestion"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         # Some return None (failure), some return data
@@ -118,16 +131,17 @@ class TestIngestCurrentData:
         # Should not raise, just return success indicator
         success = await ingester.ingest_current_data()
         assert isinstance(success, bool)
+        await ingester.db.close()
 
 
 class TestIngestHistoricalData:
     """Tests for ingest_historical_data method"""
 
     @pytest.mark.asyncio
-    async def test_ingest_historical_data(self, tmp_path):
+    async def test_ingest_historical_data(self):
         """Test historical data ingestion"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         sample_df = pd.DataFrame([{
@@ -149,16 +163,17 @@ class TestIngestHistoricalData:
 
         total = await ingester.ingest_historical_data(start, end)
         assert isinstance(total, int)
+        await ingester.db.close()
 
 
 class TestIngestHistoricalPrices:
     """Tests for ingest_historical_prices method"""
 
     @pytest.mark.asyncio
-    async def test_ingest_historical_prices(self, tmp_path):
+    async def test_ingest_historical_prices(self):
         """Test historical price ingestion"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         price_df = pd.DataFrame([{
@@ -176,16 +191,17 @@ class TestIngestHistoricalPrices:
 
         total = await ingester.ingest_historical_prices(start, end)
         assert isinstance(total, int)
+        await ingester.db.close()
 
 
 class TestBackfillMissingData:
     """Tests for backfill_missing_data method"""
 
     @pytest.mark.asyncio
-    async def test_backfill_missing_data(self, tmp_path):
+    async def test_backfill_missing_data(self):
         """Test backfill missing data"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         price_df = pd.DataFrame([{
@@ -201,22 +217,24 @@ class TestBackfillMissingData:
         # Backfill with small days_back for testing
         total = await ingester.backfill_missing_data(days_back=2, max_gaps_per_run=2)
         assert isinstance(total, int)
+        await ingester.db.close()
 
 
 class TestGetDataSummary:
     """Tests for get_data_summary method"""
 
     @pytest.mark.asyncio
-    async def test_get_data_summary(self, tmp_path):
+    async def test_get_data_summary(self):
         """Test data summary retrieval"""
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         summary = await ingester.get_data_summary()
 
         assert isinstance(summary, dict)
         assert 'total_records' in summary
+        await ingester.db.close()
 
 
 class TestSampleGeneratorInfo:
@@ -238,14 +256,9 @@ class TestSampleGeneratorInfo:
         """Test updating sample generator info"""
         await update_sample_generator_info(test_db)
 
-        # Verify data was inserted
-        duids = await test_db.get_unique_duids()
-        # Note: get_unique_duids gets from dispatch_data, not generator_info
-        # So we need to check generator_info directly
-        import aiosqlite
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM generator_info")
-            count = (await cursor.fetchone())[0]
+        # Verify data was inserted using asyncpg
+        async with test_db._pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM generator_info")
 
         assert count >= len(SAMPLE_GENERATOR_INFO)
 
@@ -263,11 +276,11 @@ TEST3,Test Station 3,QLD1,Solar,Solar PV,Existing,150
 
         await import_generator_info_from_csv(test_db, str(csv_file))
 
-        # Verify data was imported
-        import aiosqlite
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM generator_info WHERE duid IN ('TEST1', 'TEST2', 'TEST3')")
-            count = (await cursor.fetchone())[0]
+        # Verify data was imported using asyncpg
+        async with test_db._pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM generator_info WHERE duid IN ('TEST1', 'TEST2', 'TEST3')"
+            )
 
         assert count == 3
 
@@ -277,10 +290,8 @@ TEST3,Test Station 3,QLD1,Solar,Solar PV,Existing,150
         await import_generator_info_from_csv(test_db, "/nonexistent/path/GenInfo.csv")
 
         # Should have fallen back to sample data
-        import aiosqlite
-        async with aiosqlite.connect(test_db.db_path) as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM generator_info")
-            count = (await cursor.fetchone())[0]
+        async with test_db._pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM generator_info")
 
         assert count >= len(SAMPLE_GENERATOR_INFO)
 
@@ -289,12 +300,12 @@ class TestRunContinuousIngestion:
     """Tests for run_continuous_ingestion method"""
 
     @pytest.mark.asyncio
-    async def test_run_continuous_ingestion_can_be_stopped(self, tmp_path):
+    async def test_run_continuous_ingestion_can_be_stopped(self):
         """Test that continuous ingestion can be stopped"""
         import asyncio
 
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         # Mock methods to return quickly
@@ -313,14 +324,15 @@ class TestRunContinuousIngestion:
         )
 
         assert ingester.is_running is False
+        await ingester.db.close()
 
     @pytest.mark.asyncio
-    async def test_run_continuous_ingestion_handles_exceptions(self, tmp_path):
+    async def test_run_continuous_ingestion_handles_exceptions(self):
         """Test that exceptions in the loop don't stop ingestion"""
         import asyncio
 
-        db_path = str(tmp_path / "test.db")
-        ingester = DataIngester(db_path)
+        db_url = get_test_db_url()
+        ingester = DataIngester(db_url)
         await ingester.initialize()
 
         call_count = 0
@@ -350,3 +362,4 @@ class TestRunContinuousIngestion:
 
         # Should have continued after the exception in the loop
         assert call_count >= 3
+        await ingester.db.close()

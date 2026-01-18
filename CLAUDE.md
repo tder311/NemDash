@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NEM (National Electricity Market) Dashboard - A full-stack application for visualizing real-time and historical Australian electricity market data from AEMO's NEMWEB portal.
 
-**Architecture**: FastAPI backend + React frontend with SQLite database
+**Architecture**: FastAPI backend + React frontend with PostgreSQL database
 
 ## Development Commands
 
@@ -67,7 +67,7 @@ Run `make help` to see all commands. Key targets:
 1. **NEMDispatchClient** (nem_client.py) - Downloads CSV/ZIP files from NEMWEB
 2. **NEMPriceClient** (nem_price_client.py) - Fetches price and interconnector data
 3. **DataIngester** (data_ingester.py) - Orchestrates continuous data ingestion (5-min intervals)
-4. **NEMDatabase** (database.py) - SQLite operations with async aiosqlite
+4. **NEMDatabase** (database.py) - PostgreSQL operations with async asyncpg
 5. **FastAPI** (main.py) - REST API endpoints with CORS enabled
 
 ### Key Database Tables
@@ -194,10 +194,17 @@ HOST=0.0.0.0
 PORT=8000
 RELOAD=True
 LOG_LEVEL=info
-DATABASE_PATH=./data/nem_dispatch.db
+DATABASE_URL=postgresql://postgres:localdev@localhost:5432/nem_dashboard
 NEM_API_BASE_URL=https://www.nemweb.com.au
 UPDATE_INTERVAL_MINUTES=5
 BACKFILL_DAYS_ON_STARTUP=30
+```
+
+### PostgreSQL Setup
+```bash
+# Start PostgreSQL with Docker
+cd nem-dashboard-backend
+docker-compose up -d
 ```
 
 ### Frontend
@@ -242,10 +249,10 @@ BACKFILL_DAYS_ON_STARTUP=30
 ## Important Implementation Details
 
 ### Database UNIQUE Constraints
-All data tables use `ON CONFLICT REPLACE` to handle duplicate records gracefully. When inserting data, duplicates based on unique constraints (settlementdate + identifying column) will replace existing records rather than error.
+All data tables use `ON CONFLICT DO UPDATE` to handle duplicate records gracefully. When inserting data, duplicates based on unique constraints (settlementdate + identifying column) will update existing records rather than error.
 
 ### Async/Await Throughout Backend
-Entire backend is async: aiosqlite for database, httpx for HTTP requests, FastAPI async endpoints. Do not mix sync database operations.
+Entire backend is async: asyncpg for database, httpx for HTTP requests, FastAPI async endpoints. Do not mix sync database operations.
 
 ### CORS Configuration
 CORS middleware configured to allow frontend origins (localhost:3000, localhost:8050). Add new origins to allow_origins list in main.py if deploying to different ports/domains.
@@ -270,15 +277,13 @@ This imports from `data/GenInfo.csv` which should contain columns: duid, station
 
 1. Generator info sample data is limited to 10 common units (run `import_geninfo_csv.py` for full dataset)
 2. Frontend has no authentication/authorization
-3. SQLite database not suitable for high-concurrency production use (designed for easy migration to PostgreSQL)
-4. No data retention policy - database grows indefinitely
-5. Interconnector data parsing may fail if NEMWEB changes file naming conventions
+3. No data retention policy - database grows indefinitely
+4. Interconnector data parsing may fail if NEMWEB changes file naming conventions
 
 ## Deployment Considerations
 
 - Backend requires Python 3.8+ with asyncio support
 - Frontend requires Node.js 14+ for React 18
-- Database file location must be writable
+- PostgreSQL 15+ required (use docker-compose for local development)
 - NEMWEB may rate-limit requests - respect 5-minute intervals
-- Consider using PostgreSQL for production instead of SQLite
 - Add reverse proxy (nginx) for production frontend serving

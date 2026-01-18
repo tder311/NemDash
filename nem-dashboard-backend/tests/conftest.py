@@ -1,5 +1,8 @@
 """
 Shared pytest fixtures for NEM Dashboard tests
+
+Requires a running PostgreSQL instance for testing.
+Set DATABASE_URL environment variable to your test database.
 """
 import pytest
 import tempfile
@@ -57,19 +60,19 @@ def price_client():
 
 @pytest.fixture
 async def test_db():
-    """Create a temporary database for testing"""
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
-        db_path = f.name
+    """Create a database for testing.
 
-    db = NEMDatabase(db_path)
+    Requires DATABASE_URL environment variable pointing to a PostgreSQL database.
+    """
+    db_url = os.getenv('DATABASE_URL')
+
+    if not db_url:
+        pytest.skip("DATABASE_URL environment variable not set. Set it to run database tests.")
+
+    db = NEMDatabase(db_url)
     await db.initialize()
     yield db
-
-    # Cleanup
-    try:
-        Path(db_path).unlink(missing_ok=True)
-    except Exception:
-        pass
+    await db.close()
 
 
 @pytest.fixture

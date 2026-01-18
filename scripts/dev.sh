@@ -51,6 +51,42 @@ if [ ! -f "$BACKEND_DIR/.env" ]; then
     cp "$BACKEND_DIR/.env.example" "$BACKEND_DIR/.env"
 fi
 
+# Check if Docker is available and start PostgreSQL
+echo "Checking PostgreSQL..."
+if command -v docker &> /dev/null; then
+    # Check if PostgreSQL container is running
+    if ! docker ps --format '{{.Names}}' | grep -q "nem_dashboard_postgres"; then
+        echo "Starting PostgreSQL with docker-compose..."
+        cd "$BACKEND_DIR"
+        if docker compose version &> /dev/null 2>&1; then
+            docker compose up -d
+        else
+            docker-compose up -d
+        fi
+
+        # Wait for PostgreSQL to be ready
+        echo "Waiting for PostgreSQL to be ready..."
+        for i in {1..30}; do
+            if docker compose exec -T postgres pg_isready -U postgres &> /dev/null 2>&1 || \
+               docker-compose exec -T postgres pg_isready -U postgres &> /dev/null 2>&1; then
+                echo "PostgreSQL is ready!"
+                break
+            fi
+            if [ $i -eq 30 ]; then
+                echo "Warning: PostgreSQL may not be ready yet"
+            fi
+            sleep 1
+        done
+        cd "$PROJECT_ROOT"
+    else
+        echo "PostgreSQL is already running"
+    fi
+else
+    echo "Warning: Docker not found. Make sure PostgreSQL is running manually."
+    echo "The backend requires DATABASE_URL to be set to a running PostgreSQL instance."
+fi
+echo ""
+
 # Create temporary launcher scripts
 BACKEND_LAUNCHER=$(mktemp /tmp/nem-backend.XXXXXX.sh)
 FRONTEND_LAUNCHER=$(mktemp /tmp/nem-frontend.XXXXXX.sh)

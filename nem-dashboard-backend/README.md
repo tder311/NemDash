@@ -6,18 +6,36 @@ FastAPI backend service for the NEM Dashboard application. Provides REST API end
 
 - **Real-time Data Ingestion**: Automatic 5-minute fetch cycles from NEMWEB
 - **REST API**: 14+ endpoints for dispatch, price, and interconnector data
-- **Async Architecture**: Non-blocking I/O with aiosqlite and httpx
+- **Async Architecture**: Non-blocking I/O with asyncpg and httpx
 - **Generator Classification**: Comprehensive generator metadata with fuel types
-- **SQLite Database**: Local storage with automatic schema management
+- **PostgreSQL Database**: Production-ready database with connection pooling
 
 ## Quick Start
+
+### Prerequisites
+
+- Python 3.8+
+- PostgreSQL 15+ (or Docker)
+
+### Start PostgreSQL with Docker
+
+```bash
+# Start PostgreSQL container
+docker-compose up -d
+
+# Wait for PostgreSQL to be ready
+docker-compose exec postgres pg_isready -U postgres
+```
+
+### Install and Run
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure environment (optional)
+# Configure environment
 cp .env.example .env
+# Edit .env if needed (default works with docker-compose)
 
 # Start the server
 python run.py
@@ -32,17 +50,20 @@ nem-dashboard-backend/
 ├── app/
 │   ├── __init__.py           # Package initialization
 │   ├── main.py               # FastAPI application, routes, lifecycle
-│   ├── database.py           # SQLite database operations (NEMDatabase)
+│   ├── database.py           # PostgreSQL database operations (NEMDatabase)
 │   ├── models.py             # Pydantic response schemas
 │   ├── nem_client.py         # Dispatch data client (NEMDispatchClient)
 │   ├── nem_price_client.py   # Price/interconnector client (NEMPriceClient)
 │   └── data_ingester.py      # Data pipeline orchestration (DataIngester)
 ├── data/
-│   ├── nem_dispatch.db       # SQLite database (auto-created)
 │   └── GenInfo.csv           # Generator metadata (optional)
+├── scripts/
+│   ├── setup_postgres.sh     # PostgreSQL setup script
+│   └── migrate_to_postgres.py# Migration from SQLite (if needed)
 ├── run.py                    # Application entry point
 ├── import_geninfo_csv.py     # Generator data import utility
 ├── requirements.txt          # Python dependencies
+├── docker-compose.yml        # PostgreSQL container config
 └── .env.example              # Environment configuration template
 ```
 
@@ -57,14 +78,17 @@ PORT=8000
 RELOAD=True
 LOG_LEVEL=info
 
-# Database
-DATABASE_PATH=./data/nem_dispatch.db
+# Database (PostgreSQL required)
+DATABASE_URL=postgresql://postgres:localdev@localhost:5432/nem_dashboard
 
 # NEMWEB API
 NEM_API_BASE_URL=https://www.nemweb.com.au
 
 # Data ingestion interval (minutes)
 UPDATE_INTERVAL_MINUTES=5
+
+# Days to backfill on startup
+BACKFILL_DAYS_ON_STARTUP=30
 ```
 
 ## API Endpoints
@@ -133,7 +157,7 @@ async def lifespan(app: FastAPI):
 
 ### database.py - NEMDatabase Class
 
-Async SQLite operations with `aiosqlite`:
+Async PostgreSQL operations with `asyncpg`:
 
 | Method | Description |
 |--------|-------------|
@@ -183,15 +207,15 @@ ingest_historical_prices(start, end)   # Batch historical prices
 ## Database Schema
 
 ### dispatch_data
-- Unique: (settlementdate, duid) ON CONFLICT REPLACE
+- Unique: (settlementdate, duid) ON CONFLICT DO UPDATE
 - Columns: id, settlementdate, duid, scadavalue, uigf, totalcleared, ramprate, availability, raise1sec, lower1sec, created_at
 
 ### price_data
-- Unique: (settlementdate, region, price_type) ON CONFLICT REPLACE
+- Unique: (settlementdate, region, price_type) ON CONFLICT DO UPDATE
 - Columns: id, settlementdate, region, price, totaldemand, price_type, created_at
 
 ### interconnector_data
-- Unique: (settlementdate, interconnector) ON CONFLICT REPLACE
+- Unique: (settlementdate, interconnector) ON CONFLICT DO UPDATE
 - Columns: id, settlementdate, interconnector, meteredmwflow, mwflow, mwloss, marginalvalue, created_at
 
 ### generator_info
@@ -224,6 +248,16 @@ Requirements:
 - Required columns: duid, station_name, region, fuel_source, technology_type, capacity_mw
 
 ## Development
+
+### Testing
+
+```bash
+# Set DATABASE_URL for tests
+export DATABASE_URL=postgresql://postgres:localdev@localhost:5432/nem_dashboard
+
+# Run tests
+pytest tests/
+```
 
 ### Testing Endpoints
 
@@ -271,7 +305,7 @@ Add production domains to `allow_origins` list.
 ```
 fastapi>=0.104.0      # Web framework
 uvicorn>=0.24.0       # ASGI server
-aiosqlite>=0.19.0     # Async SQLite
+asyncpg>=0.29.0       # Async PostgreSQL
 httpx>=0.25.0         # Async HTTP client
 pandas>=2.0.0         # Data processing
 python-dotenv>=1.0.0  # Environment config
@@ -283,6 +317,6 @@ pydantic>=2.0.0       # Data validation
 | Issue | Solution |
 |-------|----------|
 | No data appearing | Check NEMWEB connectivity, verify ingestion logs |
-| Database locked | SQLite limitation - consider PostgreSQL for production |
+| Connection refused | Ensure PostgreSQL is running (`docker-compose up -d`) |
 | Stale data | Check ingestion task, manually trigger `/api/ingest/current` |
 | Memory issues | Process smaller date ranges for historical imports |

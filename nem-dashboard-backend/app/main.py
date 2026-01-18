@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import asyncio
 
-from .database import NEMDatabase
+from .database import NEMDatabase, calculate_aggregation_minutes
 from .data_ingester import DataIngester, import_generator_info_from_csv
 from .models import (
     DispatchDataResponse,
@@ -49,15 +49,22 @@ async def lifespan(app: FastAPI):
         return
 
     # Startup
-    db_path = os.getenv('DATABASE_PATH', './data/nem_dispatch.db')
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is required. "
+            "Example: postgresql://postgres:localdev@localhost:5432/nem_dashboard"
+        )
     nem_base_url = os.getenv('NEM_API_BASE_URL', 'https://www.nemweb.com.au')
     update_interval = int(os.getenv('UPDATE_INTERVAL_MINUTES', '5'))
 
-    db = NEMDatabase(db_path)
-    data_ingester = DataIngester(db_path, nem_base_url)
+    data_ingester = DataIngester(db_url, nem_base_url)
 
     # Initialize database
     await data_ingester.initialize()
+
+    # Use the data_ingester's database instance for consistency
+    db = data_ingester.db
 
     # Import generator info from CSV (falls back to sample data if not found)
     await import_generator_info_from_csv(db)
@@ -82,6 +89,10 @@ async def lifespan(app: FastAPI):
 
     if data_ingester:
         await data_ingester.cleanup()
+
+    # Close database connection pool (for PostgreSQL)
+    if db:
+        await db.close()
 
     logger.info("NEM Dashboard API stopped")
 
@@ -476,21 +487,27 @@ async def get_region_current_generation(region: str):
 @app.get("/api/region/{region}/generation/history", response_model=RegionGenerationHistoryResponse)
 async def get_region_generation_history(
     region: str,
-    hours: int = Query(default=24, ge=1, le=168, description="Hours of history (1-168)"),
-    aggregation: int = Query(default=30, ge=5, le=60, description="Aggregation interval in minutes")
+    hours: int = Query(default=24, ge=1, le=8760, description="Hours of history (1-8760, i.e., up to 365 days)"),
+    aggregation: Optional[int] = Query(default=None, ge=5, le=10080, description="Aggregation interval in minutes (auto-calculated if not specified)")
 ):
-    """Get historical generation by fuel source for a specific region"""
+    """Get historical generation by fuel source for a specific region.
+
+    Auto-aggregation levels when aggregation is not specified:
+    - < 48h: 5 min (raw data)
+    - 48h - 7d: 30 min
+    - 7d - 30d: 60 min (hourly)
+    - 30d - 90d: 1440 min (daily)
+    - > 90d: 10080 min (weekly)
+    """
     valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
     region = region.upper()
 
     if region not in valid_regions:
         raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
 
-    # Auto-adjust aggregation for longer time ranges
-    if hours > 48:
-        aggregation = max(aggregation, 30)
-    if hours > 96:
-        aggregation = max(aggregation, 60)
+    # Use auto-calculated aggregation if not specified
+    if aggregation is None:
+        aggregation = calculate_aggregation_minutes(hours)
 
     try:
         df = await db.get_region_generation_history(region, hours, aggregation)
@@ -527,7 +544,7 @@ async def get_region_generation_history(
 @app.get("/api/region/{region}/prices/history", response_model=RegionPriceHistoryResponse)
 async def get_region_price_history(
     region: str,
-    hours: int = Query(default=24, ge=1, le=168, description="Hours of history (1-168)"),
+    hours: int = Query(default=24, ge=1, le=8760, description="Hours of history (1-8760, i.e., up to 365 days)"),
     price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, PUBLIC, or MERGED")
 ):
     """Get price history for a specific region over the last N hours.
@@ -535,6 +552,11 @@ async def get_region_price_history(
     The MERGED price type intelligently combines PUBLIC (official settlement) prices
     with DISPATCH (real-time) prices. PUBLIC prices are preferred where available,
     with DISPATCH filling gaps from the latest PUBLIC timestamp to current time.
+
+    For extended ranges (>7 days), data is automatically aggregated:
+    - 7d - 30d: hourly averages
+    - 30d - 90d: daily averages
+    - > 90d: weekly averages
     """
     valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
     valid_price_types = ['DISPATCH', 'TRADING', 'PUBLIC', 'MERGED']
@@ -547,9 +569,13 @@ async def get_region_price_history(
     if price_type not in valid_price_types:
         raise HTTPException(status_code=400, detail=f"Invalid price_type. Must be one of: {', '.join(valid_price_types)}")
 
+    # Calculate aggregation for response metadata
+    aggregation_minutes = calculate_aggregation_minutes(hours)
+
     try:
-        if price_type == 'MERGED':
-            df = await db.get_merged_price_history(region, hours)
+        # For extended ranges with MERGED, use aggregated price history
+        if price_type == 'MERGED' or aggregation_minutes > 30:
+            df = await db.get_aggregated_price_history(region, hours)
         else:
             df = await db.get_region_price_history(region, hours, price_type)
 
@@ -560,6 +586,7 @@ async def get_region_price_history(
                 count=0,
                 hours=hours,
                 price_type=price_type,
+                aggregation_minutes=aggregation_minutes,
                 message=f"No price history available for {region}"
             )
 
@@ -574,6 +601,7 @@ async def get_region_price_history(
             count=len(records),
             hours=hours,
             price_type=price_type,
+            aggregation_minutes=aggregation_minutes,
             message=f"Retrieved {len(records)} price records for {region}"
         )
 

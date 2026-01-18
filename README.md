@@ -170,7 +170,7 @@ Create a `.env` file in `nem-dashboard-backend/`:
 | `PORT` | `8000` | Server port |
 | `RELOAD` | `True` | Auto-reload on code changes |
 | `LOG_LEVEL` | `info` | Logging level |
-| `DATABASE_PATH` | `./data/nem_dispatch.db` | SQLite database location |
+| `DATABASE_URL` | `postgresql://postgres:localdev@localhost:5432/nem_dashboard` | PostgreSQL connection URL |
 | `NEM_API_BASE_URL` | `https://www.nemweb.com.au` | NEMWEB base URL |
 | `UPDATE_INTERVAL_MINUTES` | `5` | Data fetch interval |
 
