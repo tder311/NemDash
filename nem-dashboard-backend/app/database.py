@@ -564,13 +564,9 @@ class NEMDatabase:
                     AVG(total_mw) as generation_mw,
                     COUNT(*) as sample_count
                 FROM timestamp_totals
-                GROUP BY
-                    TO_TIMESTAMP(
-                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($4 * 60)) * ($4 * 60)
-                    ),
-                    fuel_source
+                GROUP BY 1, 2
                 ORDER BY period ASC, fuel_source
-            """, region, f'-{hours}', aggregation_minutes, aggregation_minutes)
+            """, region, f'-{hours}', aggregation_minutes)
 
         if not rows:
             return pd.DataFrame()
@@ -662,11 +658,9 @@ class NEMDatabase:
                     AVG(totaldemand) as totaldemand,
                     COUNT(*) as sample_count
                 FROM deduped
-                GROUP BY TO_TIMESTAMP(
-                    (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($5 * 60)) * ($5 * 60)
-                )
+                GROUP BY 1
                 ORDER BY settlementdate ASC
-            """, region, region, f'-{hours}', aggregation_minutes, aggregation_minutes)
+            """, region, region, f'-{hours}', aggregation_minutes)
 
         if not rows:
             return pd.DataFrame()
