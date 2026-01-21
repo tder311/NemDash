@@ -363,3 +363,64 @@ class TestTimeRangeOptions:
         assert 720 in hours_values
         assert 2160 in hours_values
         assert 8760 in hours_values
+
+
+class TestDatabaseHealthEndpoint:
+    """Tests for database health endpoint"""
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_default(self, async_client):
+        """Get database health with default parameters should return 200"""
+        response = await async_client.get("/api/database/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert "tables" in data
+        assert "gaps" in data
+        assert "checked_hours" in data
+        assert "checked_at" in data
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_with_hours(self, async_client):
+        """Get database health with custom hours should return 200"""
+        response = await async_client.get("/api/database/health?hours_back=24")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["checked_hours"] == 24
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_tables_structure(self, async_client):
+        """Database health should return table stats for all tables"""
+        response = await async_client.get("/api/database/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["tables"]) == 4
+        table_names = [t["table"] for t in data["tables"]]
+        assert "dispatch_data" in table_names
+        assert "price_data" in table_names
+        assert "interconnector_data" in table_names
+        assert "generator_info" in table_names
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_gaps_structure(self, async_client):
+        """Database health should return gap info for time-series tables"""
+        response = await async_client.get("/api/database/health")
+        assert response.status_code == 200
+        data = response.json()
+        # gaps should be returned for time-series tables
+        assert len(data["gaps"]) == 3
+        gap_tables = [g["table"] for g in data["gaps"]]
+        assert "dispatch_data" in gap_tables
+        assert "price_data" in gap_tables
+        assert "interconnector_data" in gap_tables
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_invalid_hours(self, async_client):
+        """Get database health with invalid hours should return 422"""
+        response = await async_client.get("/api/database/health?hours_back=0")
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_max_hours(self, async_client):
+        """Get database health with max hours should return 200"""
+        response = await async_client.get("/api/database/health?hours_back=8760")
+        assert response.status_code == 200

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import axios from 'axios';
+import DatabaseHealthPage from './DatabaseHealthPage';
 import './StateDetailPage.css';
 
 const REGION_NAMES = {
@@ -58,6 +59,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState(24);
   const [lastUpdated, setLastUpdated] = useState('');
+  const [showHealthPage, setShowHealthPage] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -366,6 +368,16 @@ function StateDetailPage({ region, darkMode, onBack }) {
     }
   };
 
+  // Show database health page if requested
+  if (showHealthPage) {
+    return (
+      <DatabaseHealthPage
+        darkMode={darkMode}
+        onBack={() => setShowHealthPage(false)}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div className={`state-detail-container ${darkMode ? 'dark' : 'light'}`}>
@@ -386,7 +398,13 @@ function StateDetailPage({ region, darkMode, onBack }) {
         <h1 className="state-title" style={{ color: REGION_COLORS[region] }}>
           {REGION_NAMES[region]} ({region})
         </h1>
-        <div className="last-updated">Last Updated: {lastUpdated}</div>
+        <div
+          className="last-updated clickable"
+          onClick={() => setShowHealthPage(true)}
+          title="Click to view database health"
+        >
+          Last Updated: {lastUpdated}
+        </div>
       </div>
 
       <div className="summary-cards">

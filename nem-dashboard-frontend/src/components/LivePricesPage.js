@@ -3,6 +3,7 @@ import axios from 'axios';
 import RegionSidebar from './RegionSidebar';
 import AustraliaMap from './AustraliaMap';
 import StateDetailPage from './StateDetailPage';
+import DatabaseHealthPage from './DatabaseHealthPage';
 import './LivePricesPage.css';
 
 
@@ -12,6 +13,7 @@ function LivePricesPage({ darkMode }) {
   const [loading, setLoading] = useState(true);
   const [hoveredRegion, setHoveredRegion] = useState(null);
   const [selectedRegion, setSelectedRegion] = useState(null);
+  const [showHealthPage, setShowHealthPage] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -77,6 +79,16 @@ function LivePricesPage({ darkMode }) {
     setSelectedRegion(null);
   };
 
+  // Show database health page if requested
+  if (showHealthPage) {
+    return (
+      <DatabaseHealthPage
+        darkMode={darkMode}
+        onBack={() => setShowHealthPage(false)}
+      />
+    );
+  }
+
   // Show state detail page if a region is selected
   if (selectedRegion) {
     return (
@@ -99,7 +111,11 @@ function LivePricesPage({ darkMode }) {
 
   return (
     <div className={`live-prices-container ${darkMode ? 'dark' : 'light'}`}>
-      <div className="last-updated">
+      <div
+        className="last-updated clickable"
+        onClick={() => setShowHealthPage(true)}
+        title="Click to view database health"
+      >
         Last Updated: {lastUpdated}
       </div>
       

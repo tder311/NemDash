@@ -80,6 +80,21 @@
   border-color: rgba(255, 255, 255, 0.1);
 }
 
+.last-updated.clickable {
+  cursor: pointer;
+}
+
+.last-updated.clickable:hover {
+  background: rgba(102, 126, 234, 0.15);
+  border-color: rgba(102, 126, 234, 0.3);
+  transform: translateY(-1px);
+}
+
+.dark .last-updated.clickable:hover {
+  background: rgba(102, 126, 234, 0.25);
+  border-color: rgba(102, 126, 234, 0.4);
+}
+
 /* State highlighting styles */
 .state-path {
   transition: all 0.3s ease;

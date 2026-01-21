@@ -137,3 +137,32 @@ class DataCoverageResponse(BaseModel):
     total_records: int
     days_with_data: int
     message: str
+
+
+class GapInfo(BaseModel):
+    gap_start: str
+    gap_end: str
+    missing_intervals: int
+    duration_minutes: int
+
+
+class TableGaps(BaseModel):
+    table: str
+    gaps: List[GapInfo]
+    total_gaps: int
+
+
+class TableStats(BaseModel):
+    table: str
+    total_records: int
+    earliest_date: Optional[str] = None
+    latest_date: Optional[str] = None
+    days_with_data: Optional[int] = None
+    expected_interval: Optional[int] = None
+
+
+class DatabaseHealthResponse(BaseModel):
+    tables: List[TableStats]
+    gaps: List[TableGaps]
+    checked_hours: int
+    checked_at: str

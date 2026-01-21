@@ -57,6 +57,20 @@
   color: #aaa;
 }
 
+.last-updated.clickable {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.last-updated.clickable:hover {
+  background: rgba(102, 126, 234, 0.15);
+  transform: translateY(-1px);
+}
+
+.state-detail-container.dark .last-updated.clickable:hover {
+  background: rgba(102, 126, 234, 0.25);
+}
+
 .summary-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
