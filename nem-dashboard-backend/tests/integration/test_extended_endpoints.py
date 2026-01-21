@@ -14,6 +14,9 @@ _db_url = os.environ.get('DATABASE_URL')
 if not _db_url:
     pytest.skip("DATABASE_URL environment variable not set", allow_module_level=True)
 
+# Mark all tests in this module as slow - skip in CI by default
+pytestmark = pytest.mark.slow
+
 
 class TestExtendedHoursValidation:
     """Tests for extended hours parameter validation"""

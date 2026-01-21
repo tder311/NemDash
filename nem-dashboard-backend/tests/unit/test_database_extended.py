@@ -8,52 +8,14 @@ NOTE: These tests are marked as slow because they generate substantial test data
 (7 days of 5-minute interval data). Run with `pytest -m slow` to include them.
 """
 import pytest
-import pytest_asyncio
 import pandas as pd
-from datetime import datetime, timedelta
 
 # Mark all tests in this module as slow - skip in CI by default
 pytestmark = pytest.mark.slow
 
-from app.database import NEMDatabase, calculate_aggregation_minutes
-from tests.fixtures.extended_data import (
-    generate_dispatch_data,
-    generate_price_data,
-    generate_generator_info,
-)
+from app.database import calculate_aggregation_minutes
 
-
-@pytest_asyncio.fixture
-async def populated_db_extended(test_db):
-    """Database with 7 days of sample data for extended range testing.
-
-    Uses 7 days as a reasonable test size that's faster than 30 days
-    but still exercises the aggregation logic.
-    """
-    # Use recent dates relative to now for the time-based queries
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=7)
-
-    # Generate and insert dispatch data
-    dispatch_df = generate_dispatch_data(start_date, days=7, region='NSW')
-    await test_db.insert_dispatch_data(dispatch_df)
-
-    # Generate and insert price data (PUBLIC type)
-    price_df = generate_price_data(
-        start_date, days=7, region='NSW', price_type='PUBLIC'
-    )
-    await test_db.insert_price_data(price_df)
-
-    # Generate and insert DISPATCH price data for merged queries
-    dispatch_price_df = generate_price_data(
-        start_date, days=7, region='NSW', price_type='DISPATCH'
-    )
-    await test_db.insert_price_data(dispatch_price_df)
-
-    # Add generator info for test DUIDs
-    await test_db.update_generator_info(generate_generator_info('NSW'))
-
-    return test_db
+# Note: populated_db_extended fixture is defined in conftest.py
 
 
 class TestRegionGenerationHistoryExtended:
