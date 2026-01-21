@@ -3,11 +3,17 @@ Unit tests for extended time range database queries.
 
 Tests verify that get_region_generation_history and get_aggregated_price_history
 work correctly with extended ranges (30d, 90d, 365d) and appropriate aggregation.
+
+NOTE: These tests are marked as slow because they generate substantial test data
+(7 days of 5-minute interval data). Run with `pytest -m slow` to include them.
 """
 import pytest
 import pytest_asyncio
 import pandas as pd
 from datetime import datetime, timedelta
+
+# Mark all tests in this module as slow - skip in CI by default
+pytestmark = pytest.mark.slow
 
 from app.database import NEMDatabase, calculate_aggregation_minutes
 from tests.fixtures.extended_data import (
