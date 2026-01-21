@@ -22,6 +22,10 @@ from app.models import (
     RegionPriceHistoryResponse,
     RegionSummaryResponse,
     DataCoverageResponse,
+    GapInfo,
+    TableGaps,
+    TableStats,
+    DatabaseHealthResponse,
 )
 
 
@@ -355,3 +359,169 @@ class TestRegionPriceHistoryResponse:
         assert response.region == "NSW"
         assert response.hours == 24
         assert response.price_type == "DISPATCH"
+
+
+class TestGapInfo:
+    """Tests for GapInfo model"""
+
+    def test_gap_info_valid(self):
+        """Test valid GapInfo"""
+        gap = GapInfo(
+            gap_start="2025-01-15T10:15:00",
+            gap_end="2025-01-15T10:45:00",
+            missing_intervals=5,
+            duration_minutes=30
+        )
+        assert gap.gap_start == "2025-01-15T10:15:00"
+        assert gap.gap_end == "2025-01-15T10:45:00"
+        assert gap.missing_intervals == 5
+        assert gap.duration_minutes == 30
+
+    def test_gap_info_single_interval(self):
+        """Test GapInfo for a single missing interval"""
+        gap = GapInfo(
+            gap_start="2025-01-15T10:00:00",
+            gap_end="2025-01-15T10:10:00",
+            missing_intervals=1,
+            duration_minutes=10
+        )
+        assert gap.missing_intervals == 1
+
+
+class TestTableGaps:
+    """Tests for TableGaps model"""
+
+    def test_table_gaps_valid(self):
+        """Test valid TableGaps with gaps"""
+        gaps = TableGaps(
+            table="dispatch_data",
+            gaps=[
+                GapInfo(
+                    gap_start="2025-01-15T10:15:00",
+                    gap_end="2025-01-15T10:45:00",
+                    missing_intervals=5,
+                    duration_minutes=30
+                )
+            ],
+            total_gaps=1
+        )
+        assert gaps.table == "dispatch_data"
+        assert gaps.total_gaps == 1
+        assert len(gaps.gaps) == 1
+
+    def test_table_gaps_empty(self):
+        """Test TableGaps with no gaps"""
+        gaps = TableGaps(
+            table="price_data",
+            gaps=[],
+            total_gaps=0
+        )
+        assert gaps.total_gaps == 0
+        assert len(gaps.gaps) == 0
+
+
+class TestTableStats:
+    """Tests for TableStats model"""
+
+    def test_table_stats_valid(self):
+        """Test valid TableStats"""
+        stats = TableStats(
+            table="dispatch_data",
+            total_records=1000000,
+            earliest_date="2025-01-01T00:00:00",
+            latest_date="2025-01-15T10:30:00",
+            days_with_data=15,
+            expected_interval=5
+        )
+        assert stats.table == "dispatch_data"
+        assert stats.total_records == 1000000
+        assert stats.expected_interval == 5
+
+    def test_table_stats_static_table(self):
+        """Test TableStats for static reference table (no intervals)"""
+        stats = TableStats(
+            table="generator_info",
+            total_records=456,
+            earliest_date="2025-01-01T00:00:00",
+            latest_date="2025-01-15T00:00:00"
+        )
+        assert stats.table == "generator_info"
+        assert stats.days_with_data is None
+        assert stats.expected_interval is None
+
+    def test_table_stats_empty(self):
+        """Test TableStats for empty table"""
+        stats = TableStats(
+            table="dispatch_data",
+            total_records=0
+        )
+        assert stats.total_records == 0
+        assert stats.earliest_date is None
+        assert stats.latest_date is None
+
+
+class TestDatabaseHealthResponse:
+    """Tests for DatabaseHealthResponse model"""
+
+    def test_database_health_response_valid(self):
+        """Test valid DatabaseHealthResponse"""
+        response = DatabaseHealthResponse(
+            tables=[
+                TableStats(
+                    table="dispatch_data",
+                    total_records=1000000,
+                    earliest_date="2025-01-01T00:00:00",
+                    latest_date="2025-01-15T10:30:00",
+                    days_with_data=15,
+                    expected_interval=5
+                ),
+                TableStats(
+                    table="price_data",
+                    total_records=50000,
+                    earliest_date="2025-01-01T00:00:00",
+                    latest_date="2025-01-15T10:30:00",
+                    days_with_data=15,
+                    expected_interval=5
+                ),
+            ],
+            gaps=[
+                TableGaps(table="dispatch_data", gaps=[], total_gaps=0),
+                TableGaps(table="price_data", gaps=[], total_gaps=0),
+            ],
+            checked_hours=168,
+            checked_at="2025-01-15T10:30:00"
+        )
+        assert len(response.tables) == 2
+        assert len(response.gaps) == 2
+        assert response.checked_hours == 168
+
+    def test_database_health_response_with_gaps(self):
+        """Test DatabaseHealthResponse with detected gaps"""
+        response = DatabaseHealthResponse(
+            tables=[
+                TableStats(
+                    table="dispatch_data",
+                    total_records=500000,
+                    days_with_data=7,
+                    expected_interval=5
+                )
+            ],
+            gaps=[
+                TableGaps(
+                    table="dispatch_data",
+                    gaps=[
+                        GapInfo(
+                            gap_start="2025-01-10T03:00:00",
+                            gap_end="2025-01-10T03:30:00",
+                            missing_intervals=5,
+                            duration_minutes=30
+                        )
+                    ],
+                    total_gaps=1
+                )
+            ],
+            checked_hours=168,
+            checked_at="2025-01-15T10:30:00"
+        )
+        assert response.gaps[0].total_gaps == 1
+        assert response.gaps[0].gaps[0].missing_intervals == 5
