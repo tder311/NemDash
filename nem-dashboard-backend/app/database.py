@@ -757,3 +757,90 @@ class NEMDatabase:
             current += timedelta(days=1)
 
         return missing
+
+    async def get_database_health(self, hours_back: int = 168) -> Dict[str, Any]:
+        """Get comprehensive database health including gap detection.
+
+        Args:
+            hours_back: Number of hours to look back for gap detection (default 168 = 7 days)
+
+        Returns:
+            Dictionary with table statistics and detected gaps
+        """
+        tables = ['dispatch_data', 'price_data', 'interconnector_data', 'generator_info']
+        table_stats = []
+        gaps_by_table = []
+
+        async with self._pool.acquire() as conn:
+            for table in tables:
+                if table == 'generator_info':
+                    # Static reference table - no time-series gaps
+                    row = await conn.fetchrow("""
+                        SELECT COUNT(*) as total_records,
+                               MIN(updated_at) as earliest_date,
+                               MAX(updated_at) as latest_date
+                        FROM generator_info
+                    """)
+                    table_stats.append({
+                        'table': table,
+                        'total_records': row['total_records'] or 0,
+                        'earliest_date': str(row['earliest_date']) if row['earliest_date'] else None,
+                        'latest_date': str(row['latest_date']) if row['latest_date'] else None,
+                        'days_with_data': None,
+                        'expected_interval': None
+                    })
+                else:
+                    # Time-series tables
+                    row = await conn.fetchrow(f"""
+                        SELECT COUNT(*) as total_records,
+                               MIN(settlementdate) as earliest_date,
+                               MAX(settlementdate) as latest_date,
+                               COUNT(DISTINCT settlementdate::DATE) as days_with_data
+                        FROM {table}
+                    """)
+                    table_stats.append({
+                        'table': table,
+                        'total_records': row['total_records'] or 0,
+                        'earliest_date': str(row['earliest_date']) if row['earliest_date'] else None,
+                        'latest_date': str(row['latest_date']) if row['latest_date'] else None,
+                        'days_with_data': row['days_with_data'] or 0,
+                        'expected_interval': 5
+                    })
+
+                    # Detect gaps using window function (efficient O(n log n) on indexed data)
+                    gaps = await conn.fetch(f"""
+                        WITH ordered_data AS (
+                            SELECT DISTINCT settlementdate,
+                                   LAG(settlementdate) OVER (ORDER BY settlementdate) as prev_date
+                            FROM {table}
+                            WHERE settlementdate >= NOW() - INTERVAL '{hours_back} hours'
+                        ),
+                        detected_gaps AS (
+                            SELECT
+                                prev_date as gap_start,
+                                settlementdate as gap_end,
+                                EXTRACT(EPOCH FROM (settlementdate - prev_date)) / 60 as gap_minutes
+                            FROM ordered_data
+                            WHERE prev_date IS NOT NULL
+                            AND EXTRACT(EPOCH FROM (settlementdate - prev_date)) / 60 > 5
+                        )
+                        SELECT * FROM detected_gaps ORDER BY gap_start LIMIT 100
+                    """)
+
+                    gaps_by_table.append({
+                        'table': table,
+                        'gaps': [{
+                            'gap_start': str(g['gap_start']),
+                            'gap_end': str(g['gap_end']),
+                            'missing_intervals': int(g['gap_minutes'] / 5) - 1,
+                            'duration_minutes': int(g['gap_minutes'])
+                        } for g in gaps],
+                        'total_gaps': len(gaps)
+                    })
+
+        return {
+            'tables': table_stats,
+            'gaps': gaps_by_table,
+            'checked_hours': hours_back,
+            'checked_at': datetime.now().isoformat()
+        }

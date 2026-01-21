@@ -22,7 +22,8 @@ from .models import (
     RegionPriceHistoryResponse,
     RegionGenerationHistoryResponse,
     RegionSummaryResponse,
-    DataCoverageResponse
+    DataCoverageResponse,
+    DatabaseHealthResponse
 )
 
 # Configure logging
@@ -682,6 +683,32 @@ async def get_data_coverage(
 
     except Exception as e:
         logger.error(f"Error getting data coverage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/database/health", response_model=DatabaseHealthResponse)
+async def get_database_health(
+    hours_back: int = Query(default=168, ge=1, le=8760, description="Hours of history to check for gaps (1-8760)")
+):
+    """Get comprehensive database health including record counts and gap detection.
+
+    Returns:
+    - Record counts for all tables (dispatch_data, price_data, interconnector_data, generator_info)
+    - Date ranges for each table
+    - Detected gaps in 5-minute interval data within the specified time range
+    """
+    try:
+        health = await db.get_database_health(hours_back)
+
+        return DatabaseHealthResponse(
+            tables=health['tables'],
+            gaps=health['gaps'],
+            checked_hours=health['checked_hours'],
+            checked_at=health['checked_at']
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting database health: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
