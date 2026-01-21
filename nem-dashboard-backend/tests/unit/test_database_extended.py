@@ -5,6 +5,7 @@ Tests verify that get_region_generation_history and get_aggregated_price_history
 work correctly with extended ranges (30d, 90d, 365d) and appropriate aggregation.
 """
 import pytest
+import pytest_asyncio
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -16,7 +17,7 @@ from tests.fixtures.extended_data import (
 )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def populated_db_extended(test_db):
     """Database with 7 days of sample data for extended range testing.
 

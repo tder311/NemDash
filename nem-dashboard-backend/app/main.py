@@ -122,6 +122,27 @@ async def health():
     """Health check endpoint"""
     return {"status": "healthy", "database": "connected", "timestamp": datetime.now().isoformat()}
 
+
+@app.get("/api/time-range-options")
+async def get_time_range_options():
+    """Get available time range options for the frontend.
+
+    Returns a list of predefined time ranges with their corresponding
+    aggregation intervals for optimal data visualization.
+    """
+    options = [
+        {"label": "24 hours", "hours": 24, "aggregation_minutes": calculate_aggregation_minutes(24)},
+        {"label": "48 hours", "hours": 48, "aggregation_minutes": calculate_aggregation_minutes(48)},
+        {"label": "7 days", "hours": 168, "aggregation_minutes": calculate_aggregation_minutes(168)},
+        {"label": "14 days", "hours": 336, "aggregation_minutes": calculate_aggregation_minutes(336)},
+        {"label": "30 days", "hours": 720, "aggregation_minutes": calculate_aggregation_minutes(720)},
+        {"label": "60 days", "hours": 1440, "aggregation_minutes": calculate_aggregation_minutes(1440)},
+        {"label": "90 days", "hours": 2160, "aggregation_minutes": calculate_aggregation_minutes(2160)},
+        {"label": "365 days", "hours": 8760, "aggregation_minutes": calculate_aggregation_minutes(8760)},
+    ]
+    return {"options": options}
+
+
 @app.get("/api/dispatch/latest", response_model=DispatchDataResponse)
 async def get_latest_dispatch_data(
     limit: int = Query(default=1000, ge=1, le=5000, description="Maximum number of records to return")

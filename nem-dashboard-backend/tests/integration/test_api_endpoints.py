@@ -47,7 +47,7 @@ class TestDispatchEndpoints:
     async def test_get_dispatch_range(self, async_client):
         """Get dispatch range should return 200"""
         response = await async_client.get(
-            "/api/dispatch/range?start=2025-01-15T00:00:00&end=2025-01-16T00:00:00"
+            "/api/dispatch/range?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00"
         )
         assert response.status_code == 200
 
@@ -55,7 +55,7 @@ class TestDispatchEndpoints:
     async def test_get_dispatch_range_with_duid(self, async_client):
         """Get dispatch range with DUID filter should return 200"""
         response = await async_client.get(
-            "/api/dispatch/range?start=2025-01-15T00:00:00&end=2025-01-16T00:00:00&duid=BAYSW1"
+            "/api/dispatch/range?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00&duid=BAYSW1"
         )
         assert response.status_code == 200
 
@@ -80,7 +80,7 @@ class TestPriceEndpoints:
     @pytest.mark.asyncio
     async def test_get_price_history(self, async_client):
         """Get price history should return 200"""
-        response = await async_client.get("/api/prices/history?hours=24")
+        response = await async_client.get("/api/prices/history?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00")
         assert response.status_code == 200
         data = response.json()
         assert "data" in data
@@ -88,7 +88,7 @@ class TestPriceEndpoints:
     @pytest.mark.asyncio
     async def test_get_price_history_with_region(self, async_client):
         """Get price history with region filter should return 200"""
-        response = await async_client.get("/api/prices/history?hours=24&region=NSW")
+        response = await async_client.get("/api/prices/history?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00&region=NSW")
         assert response.status_code == 200
 
 
@@ -106,7 +106,7 @@ class TestInterconnectorEndpoints:
     @pytest.mark.asyncio
     async def test_get_interconnector_history(self, async_client):
         """Get interconnector history should return 200"""
-        response = await async_client.get("/api/interconnectors/history?hours=24")
+        response = await async_client.get("/api/interconnectors/history?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00")
         assert response.status_code == 200
 
 
@@ -162,7 +162,7 @@ class TestGeneratorEndpoints:
     @pytest.mark.asyncio
     async def test_get_generators_filter(self, async_client):
         """Get generators should return 200"""
-        response = await async_client.get("/api/generators")
+        response = await async_client.get("/api/generators/filter")
         assert response.status_code == 200
         data = response.json()
         assert "data" in data
@@ -170,13 +170,13 @@ class TestGeneratorEndpoints:
     @pytest.mark.asyncio
     async def test_get_generators_by_region(self, async_client):
         """Get generators by region should return 200"""
-        response = await async_client.get("/api/generators?region=NSW")
+        response = await async_client.get("/api/generators/filter?region=NSW")
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_get_generators_by_fuel(self, async_client):
         """Get generators by fuel source should return 200"""
-        response = await async_client.get("/api/generators?fuel_source=Coal")
+        response = await async_client.get("/api/generators/filter?fuel_source=Coal")
         assert response.status_code == 200
 
 
@@ -186,19 +186,19 @@ class TestDataCoverageEndpoint:
     @pytest.mark.asyncio
     async def test_get_data_coverage_price(self, async_client):
         """Get data coverage for price should return 200"""
-        response = await async_client.get("/api/data-coverage?data_type=price")
+        response = await async_client.get("/api/data/coverage?table=price_data")
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_get_data_coverage_dispatch(self, async_client):
         """Get data coverage for dispatch should return 200"""
-        response = await async_client.get("/api/data-coverage?data_type=dispatch")
+        response = await async_client.get("/api/data/coverage?table=dispatch_data")
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_get_data_coverage_interconnector(self, async_client):
         """Get data coverage for interconnector should return 200"""
-        response = await async_client.get("/api/data-coverage?data_type=interconnector")
+        response = await async_client.get("/api/data/coverage?table=interconnector_data")
         assert response.status_code == 200
 
 
@@ -224,7 +224,7 @@ class TestGenerationByFuel:
     @pytest.mark.asyncio
     async def test_get_generation_by_fuel(self, async_client):
         """Get generation by fuel should return 200"""
-        response = await async_client.get("/api/generation/by-fuel")
+        response = await async_client.get("/api/generation/by-fuel?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00")
         assert response.status_code == 200
 
 
@@ -247,7 +247,7 @@ class TestResponseFormats:
     async def test_empty_response_structure(self, async_client):
         """Empty responses should have correct structure"""
         response = await async_client.get(
-            "/api/dispatch/range?start=2020-01-01T00:00:00&end=2020-01-02T00:00:00"
+            "/api/dispatch/range?start_date=2020-01-01T00:00:00&end_date=2020-01-02T00:00:00"
         )
         assert response.status_code == 200
         data = response.json()

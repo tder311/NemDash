@@ -64,7 +64,7 @@ def price_client():
 # Database Fixtures
 # ============================================================================
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db():
     """Create a database for testing.
 
@@ -81,7 +81,7 @@ async def test_db():
     await db.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def populated_db(test_db):
     """Database with sample data pre-loaded"""
     # Insert sample dispatch data
