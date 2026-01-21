@@ -1,26 +1,79 @@
-import sqlite3
+"""
+PostgreSQL database layer for NEM Dashboard.
+
+Configuration:
+    DATABASE_URL=postgresql://user:pass@localhost:5432/nem_dashboard
+"""
+
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
 import logging
 from typing import Optional, List, Dict, Any
-import asyncio
-import aiosqlite
+from dataclasses import dataclass
+
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
+
+def calculate_aggregation_minutes(hours: int) -> int:
+    """Calculate appropriate aggregation interval based on time range.
+
+    Returns aggregation in minutes:
+    - < 48h: 5 min (raw data)
+    - 48h - 7d: 30 min
+    - 7d - 30d: 60 min (hourly)
+    - 30d - 90d: 1440 min (daily)
+    - > 90d: 10080 min (weekly)
+    """
+    if hours < 48:
+        return 5
+    elif hours <= 168:  # 7 days
+        return 30
+    elif hours <= 720:  # 30 days
+        return 60
+    elif hours <= 2160:  # 90 days
+        return 1440
+    else:
+        return 10080
+
+
+@dataclass
+class DatabaseConfig:
+    """Database configuration settings."""
+    url: str
+    pool_min: int = 5
+    pool_max: int = 20
+
+
 class NEMDatabase:
-    def __init__(self, db_path: str):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+    """PostgreSQL database interface for NEM Dashboard."""
+
+    def __init__(self, db_url: str, pool_min: int = 5, pool_max: int = 20):
+        """Initialize database connection.
+
+        Args:
+            db_url: PostgreSQL connection URL (postgresql://user:pass@host:port/db)
+            pool_min: Minimum pool connections
+            pool_max: Maximum pool connections
+        """
+        self.config = DatabaseConfig(url=db_url, pool_min=pool_min, pool_max=pool_max)
+        self._pool: Optional[asyncpg.Pool] = None
+        logger.info("Initialized NEMDatabase for PostgreSQL")
+
     async def initialize(self):
-        """Initialize the database with required tables"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.executescript("""
+        """Initialize the database connection pool and schema."""
+        self._pool = await asyncpg.create_pool(
+            self.config.url,
+            min_size=self.config.pool_min,
+            max_size=self.config.pool_max
+        )
+
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS dispatch_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    settlementdate DATETIME NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    settlementdate TIMESTAMP NOT NULL,
                     duid TEXT NOT NULL,
                     scadavalue REAL,
                     uigf REAL,
@@ -29,10 +82,12 @@ class NEMDatabase:
                     availability REAL,
                     raise1sec REAL,
                     lower1sec REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(settlementdate, duid) ON CONFLICT REPLACE
-                );
-                
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(settlementdate, duid)
+                )
+            """)
+
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS generator_info (
                     duid TEXT PRIMARY KEY,
                     station_name TEXT,
@@ -40,307 +95,284 @@ class NEMDatabase:
                     fuel_source TEXT,
                     technology_type TEXT,
                     capacity_mw REAL,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS price_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    settlementdate DATETIME NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    settlementdate TIMESTAMP NOT NULL,
                     region TEXT NOT NULL,
                     price REAL,
                     totaldemand REAL,
                     price_type TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(settlementdate, region, price_type) ON CONFLICT REPLACE
-                );
-                
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(settlementdate, region, price_type)
+                )
+            """)
+
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS interconnector_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    settlementdate DATETIME NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    settlementdate TIMESTAMP NOT NULL,
                     interconnector TEXT NOT NULL,
                     meteredmwflow REAL,
                     mwflow REAL,
                     mwloss REAL,
                     marginalvalue REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(settlementdate, interconnector) ON CONFLICT REPLACE
-                );
-                
-                CREATE INDEX IF NOT EXISTS idx_dispatch_settlement ON dispatch_data(settlementdate);
-                CREATE INDEX IF NOT EXISTS idx_dispatch_duid ON dispatch_data(duid);
-                CREATE INDEX IF NOT EXISTS idx_dispatch_settlement_duid ON dispatch_data(settlementdate, duid);
-                
-                CREATE INDEX IF NOT EXISTS idx_price_settlement ON price_data(settlementdate);
-                CREATE INDEX IF NOT EXISTS idx_price_region ON price_data(region);
-                CREATE INDEX IF NOT EXISTS idx_price_settlement_region ON price_data(settlementdate, region);
-                
-                CREATE INDEX IF NOT EXISTS idx_interconnector_settlement ON interconnector_data(settlementdate);
-                CREATE INDEX IF NOT EXISTS idx_interconnector_name ON interconnector_data(interconnector);
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(settlementdate, interconnector)
+                )
             """)
-            await db.commit()
-    
+
+            # Create indexes
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_settlement ON dispatch_data(settlementdate)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_duid ON dispatch_data(duid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_settlement_duid ON dispatch_data(settlementdate, duid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_settlement ON price_data(settlementdate)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_region ON price_data(region)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_settlement_region ON price_data(settlementdate, region)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_interconnector_settlement ON interconnector_data(settlementdate)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_interconnector_name ON interconnector_data(interconnector)")
+
+        logger.info("PostgreSQL database initialized")
+
+    async def close(self):
+        """Close database connection pool."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+            logger.info("PostgreSQL connection pool closed")
+
+    # Data insertion methods
     async def insert_dispatch_data(self, df: pd.DataFrame) -> int:
-        """Insert dispatch data from DataFrame"""
+        """Insert dispatch data from DataFrame."""
         if df.empty:
             return 0
-            
-        async with aiosqlite.connect(self.db_path) as db:
-            # Convert DataFrame to list of tuples
-            records = []
-            for _, row in df.iterrows():
-                records.append((
-                    row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
-                    row['duid'],
-                    row['scadavalue'],
-                    row['uigf'],
-                    row['totalcleared'],
-                    row['ramprate'],
-                    row['availability'],
-                    row['raise1sec'],
-                    row['lower1sec']
-                ))
-            
-            await db.executemany("""
-                INSERT OR REPLACE INTO dispatch_data 
+
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
+                row['duid'],
+                row['scadavalue'],
+                row['uigf'],
+                row['totalcleared'],
+                row['ramprate'],
+                row['availability'],
+                row['raise1sec'],
+                row['lower1sec']
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO dispatch_data
                 (settlementdate, duid, scadavalue, uigf, totalcleared, ramprate, availability, raise1sec, lower1sec)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ON CONFLICT (settlementdate, duid) DO UPDATE SET
+                    scadavalue = EXCLUDED.scadavalue,
+                    uigf = EXCLUDED.uigf,
+                    totalcleared = EXCLUDED.totalcleared,
+                    ramprate = EXCLUDED.ramprate,
+                    availability = EXCLUDED.availability,
+                    raise1sec = EXCLUDED.raise1sec,
+                    lower1sec = EXCLUDED.lower1sec
             """, records)
-            
-            await db.commit()
-            return len(records)
-    
+
+        return len(records)
+
     async def insert_price_data(self, df: pd.DataFrame) -> int:
-        """Insert price data from DataFrame"""
+        """Insert price data from DataFrame."""
         if df.empty:
             return 0
-            
-        async with aiosqlite.connect(self.db_path) as db:
-            records = []
-            for _, row in df.iterrows():
-                records.append((
-                    row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
-                    row['region'],
-                    row['price'],
-                    row['totaldemand'],
-                    row['price_type']
-                ))
-            
-            await db.executemany("""
-                INSERT OR REPLACE INTO price_data 
+
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
+                row['region'],
+                row['price'],
+                row['totaldemand'],
+                row['price_type']
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO price_data
                 (settlementdate, region, price, totaldemand, price_type)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (settlementdate, region, price_type) DO UPDATE SET
+                    price = EXCLUDED.price,
+                    totaldemand = EXCLUDED.totaldemand
             """, records)
-            
-            await db.commit()
-            return len(records)
-    
+
+        return len(records)
+
     async def insert_interconnector_data(self, df: pd.DataFrame) -> int:
-        """Insert interconnector data from DataFrame"""
+        """Insert interconnector data from DataFrame."""
         if df.empty:
             return 0
-            
-        async with aiosqlite.connect(self.db_path) as db:
-            records = []
-            for _, row in df.iterrows():
-                records.append((
-                    row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
-                    row['interconnector'],
-                    row['meteredmwflow'],
-                    row['mwflow'],
-                    row['mwloss'],
-                    row['marginalvalue']
-                ))
-            
-            await db.executemany("""
-                INSERT OR REPLACE INTO interconnector_data 
+
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
+                row['interconnector'],
+                row['meteredmwflow'],
+                row['mwflow'],
+                row['mwloss'],
+                row['marginalvalue']
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO interconnector_data
                 (settlementdate, interconnector, meteredmwflow, mwflow, mwloss, marginalvalue)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (settlementdate, interconnector) DO UPDATE SET
+                    meteredmwflow = EXCLUDED.meteredmwflow,
+                    mwflow = EXCLUDED.mwflow,
+                    mwloss = EXCLUDED.mwloss,
+                    marginalvalue = EXCLUDED.marginalvalue
             """, records)
-            
-            await db.commit()
-            return len(records)
-    
+
+        return len(records)
+
+    async def update_generator_info(self, generator_data: List[Dict[str, Any]]):
+        """Update generator information."""
+        records = []
+        for gen in generator_data:
+            records.append((
+                gen['duid'],
+                gen.get('station_name'),
+                gen.get('region'),
+                gen.get('fuel_source'),
+                gen.get('technology_type'),
+                gen.get('capacity_mw')
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO generator_info
+                (duid, station_name, region, fuel_source, technology_type, capacity_mw)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (duid) DO UPDATE SET
+                    station_name = EXCLUDED.station_name,
+                    region = EXCLUDED.region,
+                    fuel_source = EXCLUDED.fuel_source,
+                    technology_type = EXCLUDED.technology_type,
+                    capacity_mw = EXCLUDED.capacity_mw,
+                    updated_at = CURRENT_TIMESTAMP
+            """, records)
+
+    # Query methods
     async def get_latest_dispatch_data(self, limit: int = 1000) -> pd.DataFrame:
-        """Get the most recent dispatch data"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            cursor = await db.execute("""
-                SELECT * FROM dispatch_data 
+        """Get the most recent dispatch data."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM dispatch_data
                 WHERE settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
                 ORDER BY duid
-                LIMIT ?
-            """, (limit,))
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            # Convert to DataFrame
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
-            return df
+                LIMIT $1
+            """, limit)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
 
     async def get_latest_dispatch_timestamp(self) -> Optional[datetime]:
-        """Get the latest settlement timestamp from dispatch data.
-
-        Used to determine how far back to backfill dispatch data.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                SELECT MAX(settlementdate) as latest FROM dispatch_data
-            """)
-            row = await cursor.fetchone()
-
-            if row and row[0]:
-                return datetime.fromisoformat(row[0])
-            return None
+        """Get the latest settlement timestamp from dispatch data."""
+        async with self._pool.acquire() as conn:
+            result = await conn.fetchval("SELECT MAX(settlementdate) FROM dispatch_data")
+        return result
 
     async def get_earliest_dispatch_timestamp(self) -> Optional[datetime]:
-        """Get the earliest settlement timestamp from dispatch data.
-
-        Used to determine data coverage for backfill decisions.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                SELECT MIN(settlementdate) as earliest FROM dispatch_data
-            """)
-            row = await cursor.fetchone()
-
-            if row and row[0]:
-                return datetime.fromisoformat(row[0])
-            return None
+        """Get the earliest settlement timestamp from dispatch data."""
+        async with self._pool.acquire() as conn:
+            result = await conn.fetchval("SELECT MIN(settlementdate) FROM dispatch_data")
+        return result
 
     async def get_dispatch_dates_with_data(self, start_date: datetime, end_date: datetime, min_records: int = 100) -> set:
-        """Get dates that have sufficient dispatch data.
-
-        Args:
-            start_date: Start of date range
-            end_date: End of date range
-            min_records: Minimum records per day to consider it complete (default 100)
-
-        Returns:
-            Set of date strings (YYYY-MM-DD) that have sufficient data
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                SELECT date(settlementdate) as data_date, COUNT(*) as record_count
+        """Get dates that have sufficient dispatch data."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT settlementdate::DATE as data_date, COUNT(*) as record_count
                 FROM dispatch_data
-                WHERE date(settlementdate) BETWEEN date(?) AND date(?)
-                GROUP BY date(settlementdate)
-                HAVING COUNT(*) >= ?
-            """, (start_date, end_date, min_records))
+                WHERE settlementdate::DATE BETWEEN $1::DATE AND $2::DATE
+                GROUP BY settlementdate::DATE
+                HAVING COUNT(*) >= $3
+            """, start_date, end_date, min_records)
 
-            rows = await cursor.fetchall()
-            return {row[0] for row in rows}
+        return {str(row['data_date']) for row in rows}
 
     async def get_dispatch_data_by_date_range(self, start_date: datetime, end_date: datetime, duid: Optional[str] = None) -> pd.DataFrame:
-        """Get dispatch data for a date range"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
+        """Get dispatch data for a date range."""
+        async with self._pool.acquire() as conn:
             if duid:
-                cursor = await db.execute("""
-                    SELECT * FROM dispatch_data 
-                    WHERE settlementdate BETWEEN ? AND ? AND duid = ?
+                rows = await conn.fetch("""
+                    SELECT * FROM dispatch_data
+                    WHERE settlementdate BETWEEN $1 AND $2 AND duid = $3
                     ORDER BY settlementdate
-                """, (start_date, end_date, duid))
+                """, start_date, end_date, duid)
             else:
-                cursor = await db.execute("""
-                    SELECT * FROM dispatch_data 
-                    WHERE settlementdate BETWEEN ? AND ?
+                rows = await conn.fetch("""
+                    SELECT * FROM dispatch_data
+                    WHERE settlementdate BETWEEN $1 AND $2
                     ORDER BY settlementdate
-                """, (start_date, end_date))
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
-            return df
-    
+                """, start_date, end_date)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
+
     async def get_generation_by_fuel_type(self, start_date: datetime, end_date: datetime) -> pd.DataFrame:
-        """Get aggregated generation data by fuel type"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            cursor = await db.execute("""
-                SELECT 
+        """Get aggregated generation data by fuel type."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
                     d.settlementdate,
                     COALESCE(g.fuel_source, 'Unknown') as fuel_source,
                     SUM(d.scadavalue) as total_generation,
                     COUNT(*) as unit_count
                 FROM dispatch_data d
                 LEFT JOIN generator_info g ON d.duid = g.duid
-                WHERE d.settlementdate BETWEEN ? AND ?
+                WHERE d.settlementdate BETWEEN $1 AND $2
                 GROUP BY d.settlementdate, g.fuel_source
                 ORDER BY d.settlementdate, g.fuel_source
-            """, (start_date, end_date))
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
-            return df
-    
+            """, start_date, end_date)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
+
     async def get_unique_duids(self) -> List[str]:
-        """Get list of all unique DUIDs in the database"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT DISTINCT duid FROM dispatch_data ORDER BY duid")
-            rows = await cursor.fetchall()
-            return [row[0] for row in rows]
-    
-    async def update_generator_info(self, generator_data: List[Dict[str, Any]]):
-        """Update generator information"""
-        async with aiosqlite.connect(self.db_path) as db:
-            records = []
-            for gen in generator_data:
-                records.append((
-                    gen['duid'],
-                    gen.get('station_name'),
-                    gen.get('region'),
-                    gen.get('fuel_source'),
-                    gen.get('technology_type'),
-                    gen.get('capacity_mw')
-                ))
-            
-            await db.executemany("""
-                INSERT OR REPLACE INTO generator_info 
-                (duid, station_name, region, fuel_source, technology_type, capacity_mw)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, records)
-            
-            await db.commit()
-    
+        """Get list of all unique DUIDs in the database."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT DISTINCT duid FROM dispatch_data ORDER BY duid")
+        return [row['duid'] for row in rows]
+
     async def get_data_summary(self) -> Dict[str, Any]:
-        """Get summary statistics about the data"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            # Get basic counts
-            cursor = await db.execute("SELECT COUNT(*) as total_records FROM dispatch_data")
-            total_records = (await cursor.fetchone())['total_records']
-            
-            cursor = await db.execute("SELECT COUNT(DISTINCT duid) as unique_duids FROM dispatch_data")
-            unique_duids = (await cursor.fetchone())['unique_duids']
-            
-            cursor = await db.execute("SELECT MIN(settlementdate) as earliest, MAX(settlementdate) as latest FROM dispatch_data")
-            date_range = await cursor.fetchone()
-            
-            cursor = await db.execute("""
-                SELECT 
+        """Get summary statistics about the data."""
+        async with self._pool.acquire() as conn:
+            total_records = await conn.fetchval("SELECT COUNT(*) FROM dispatch_data")
+            unique_duids = await conn.fetchval("SELECT COUNT(DISTINCT duid) FROM dispatch_data")
+
+            date_range = await conn.fetchrow(
+                "SELECT MIN(settlementdate) as earliest, MAX(settlementdate) as latest FROM dispatch_data"
+            )
+
+            fuel_breakdown = await conn.fetch("""
+                SELECT
                     COALESCE(g.fuel_source, 'Unknown') as fuel_source,
                     COUNT(DISTINCT d.duid) as unit_count
                 FROM dispatch_data d
@@ -348,177 +380,141 @@ class NEMDatabase:
                 GROUP BY g.fuel_source
                 ORDER BY unit_count DESC
             """)
-            fuel_breakdown = await cursor.fetchall()
-            
-            return {
-                'total_records': total_records,
-                'unique_duids': unique_duids,
-                'earliest_date': date_range['earliest'],
-                'latest_date': date_range['latest'],
-                'fuel_breakdown': [dict(row) for row in fuel_breakdown]
-            }
-    
+
+        return {
+            'total_records': total_records or 0,
+            'unique_duids': unique_duids or 0,
+            'earliest_date': str(date_range['earliest']) if date_range and date_range['earliest'] else None,
+            'latest_date': str(date_range['latest']) if date_range and date_range['latest'] else None,
+            'fuel_breakdown': [dict(row) for row in fuel_breakdown]
+        }
+
     async def get_latest_prices(self, price_type: str = 'DISPATCH') -> pd.DataFrame:
-        """Get the most recent price data"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            cursor = await db.execute("""
-                SELECT * FROM price_data 
-                WHERE price_type = ? AND settlementdate = (
-                    SELECT MAX(settlementdate) FROM price_data WHERE price_type = ?
+        """Get the most recent price data."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM price_data
+                WHERE price_type = $1 AND settlementdate = (
+                    SELECT MAX(settlementdate) FROM price_data WHERE price_type = $2
                 )
                 ORDER BY region
-            """, (price_type, price_type))
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+            """, price_type, price_type)
 
-            return df
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
 
     async def get_latest_price_timestamp(self, price_type: str = 'PUBLIC') -> Optional[datetime]:
-        """Get the latest settlement timestamp for a given price type.
-
-        Used to determine how far back to fetch DISPATCH prices when backfilling.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                SELECT MAX(settlementdate) as latest FROM price_data WHERE price_type = ?
-            """, (price_type,))
-            row = await cursor.fetchone()
-
-            if row and row[0]:
-                return datetime.fromisoformat(row[0])
-            return None
+        """Get the latest settlement timestamp for a given price type."""
+        async with self._pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT MAX(settlementdate) FROM price_data WHERE price_type = $1",
+                price_type
+            )
+        return result
 
     async def get_price_history(self, start_date: datetime, end_date: datetime, region: Optional[str] = None, price_type: str = 'DISPATCH') -> pd.DataFrame:
-        """Get price data for a date range"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
+        """Get price data for a date range."""
+        async with self._pool.acquire() as conn:
             if region:
-                cursor = await db.execute("""
-                    SELECT * FROM price_data 
-                    WHERE price_type = ? AND region = ? AND settlementdate BETWEEN ? AND ?
+                rows = await conn.fetch("""
+                    SELECT * FROM price_data
+                    WHERE price_type = $1 AND region = $2 AND settlementdate BETWEEN $3 AND $4
                     ORDER BY settlementdate
-                """, (price_type, region, start_date, end_date))
+                """, price_type, region, start_date, end_date)
             else:
-                cursor = await db.execute("""
-                    SELECT * FROM price_data 
-                    WHERE price_type = ? AND settlementdate BETWEEN ? AND ?
+                rows = await conn.fetch("""
+                    SELECT * FROM price_data
+                    WHERE price_type = $1 AND settlementdate BETWEEN $2 AND $3
                     ORDER BY settlementdate
-                """, (price_type, start_date, end_date))
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
-            return df
-    
+                """, price_type, start_date, end_date)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
+
     async def get_latest_interconnector_flows(self) -> pd.DataFrame:
-        """Get the most recent interconnector flow data"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            cursor = await db.execute("""
-                SELECT * FROM interconnector_data 
+        """Get the most recent interconnector flow data."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM interconnector_data
                 WHERE settlementdate = (SELECT MAX(settlementdate) FROM interconnector_data)
                 ORDER BY interconnector
             """)
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
-            return df
-    
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
+
     async def get_interconnector_history(self, start_date: datetime, end_date: datetime, interconnector: Optional[str] = None) -> pd.DataFrame:
-        """Get interconnector flow data for a date range"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
+        """Get interconnector flow data for a date range."""
+        async with self._pool.acquire() as conn:
             if interconnector:
-                cursor = await db.execute("""
-                    SELECT * FROM interconnector_data 
-                    WHERE interconnector = ? AND settlementdate BETWEEN ? AND ?
+                rows = await conn.fetch("""
+                    SELECT * FROM interconnector_data
+                    WHERE interconnector = $1 AND settlementdate BETWEEN $2 AND $3
                     ORDER BY settlementdate
-                """, (interconnector, start_date, end_date))
+                """, interconnector, start_date, end_date)
             else:
-                cursor = await db.execute("""
-                    SELECT * FROM interconnector_data 
-                    WHERE settlementdate BETWEEN ? AND ?
+                rows = await conn.fetch("""
+                    SELECT * FROM interconnector_data
+                    WHERE settlementdate BETWEEN $1 AND $2
                     ORDER BY settlementdate
-                """, (start_date, end_date))
-            
-            rows = await cursor.fetchall()
-            
-            if not rows:
-                return pd.DataFrame()
-            
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-            
-            return df
-    
+                """, start_date, end_date)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
+
     async def get_generators_by_region_fuel(self, region: Optional[str] = None, fuel_source: Optional[str] = None) -> pd.DataFrame:
-        """Get generators filtered by region and/or fuel source"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            # Base query for latest dispatch data with generator info
+        """Get generators filtered by region and/or fuel source."""
+        async with self._pool.acquire() as conn:
             base_query = """
                 SELECT d.*, g.station_name, g.region, g.fuel_source, g.technology_type, g.capacity_mw
                 FROM dispatch_data d
                 LEFT JOIN generator_info g ON d.duid = g.duid
                 WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
             """
-            
+
             params = []
+            param_idx = 1
+
             if region:
-                base_query += " AND g.region = ?"
+                base_query += f" AND g.region = ${param_idx}"
                 params.append(region)
-            
+                param_idx += 1
+
             if fuel_source:
-                base_query += " AND g.fuel_source = ?"
+                base_query += f" AND g.fuel_source = ${param_idx}"
                 params.append(fuel_source)
-            
+
             base_query += " ORDER BY d.scadavalue DESC"
-            
-            cursor = await db.execute(base_query, params)
-            rows = await cursor.fetchall()
 
-            if not rows:
-                return pd.DataFrame()
+            rows = await conn.fetch(base_query, *params)
 
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        if not rows:
+            return pd.DataFrame()
 
-            return df
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
 
     async def get_region_fuel_mix(self, region: str) -> pd.DataFrame:
-        """Get current generation breakdown by fuel source for a specific region"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-
-            cursor = await db.execute("""
+        """Get current generation breakdown by fuel source for a specific region."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
                 SELECT
                     COALESCE(g.fuel_source, 'Unknown') as fuel_source,
                     SUM(d.scadavalue) as generation_mw,
@@ -527,38 +523,26 @@ class NEMDatabase:
                 FROM dispatch_data d
                 LEFT JOIN generator_info g ON d.duid = g.duid
                 WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
-                AND g.region = ?
+                AND g.region = $1
                 GROUP BY g.fuel_source
-                ORDER BY generation_mw DESC
-            """, (region,))
+                ORDER BY SUM(d.scadavalue) DESC
+            """, region)
 
-            rows = await cursor.fetchall()
+        if not rows:
+            return pd.DataFrame()
 
-            if not rows:
-                return pd.DataFrame()
+        df = pd.DataFrame([dict(row) for row in rows])
+        total = df['generation_mw'].sum()
+        df['percentage'] = (df['generation_mw'] / total * 100).round(1) if total > 0 else 0
+        return df
 
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
+    async def get_region_generation_history(self, region: str, hours: int = 24, aggregation_minutes: Optional[int] = None) -> pd.DataFrame:
+        """Get historical generation by fuel source for a specific region."""
+        if aggregation_minutes is None:
+            aggregation_minutes = calculate_aggregation_minutes(hours)
 
-            # Calculate percentage
-            total = df['generation_mw'].sum()
-            df['percentage'] = (df['generation_mw'] / total * 100).round(1) if total > 0 else 0
-
-            return df
-
-    async def get_region_generation_history(self, region: str, hours: int = 24, aggregation_minutes: int = 30) -> pd.DataFrame:
-        """Get historical generation by fuel source for a specific region.
-
-        Uses a two-step aggregation:
-        1. Sum generation by fuel source at each timestamp
-        2. Average those totals within each aggregation period
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-
-            # Use max settlementdate as reference to avoid timezone issues
-            # First get total generation per fuel per timestamp, then average within periods
-            cursor = await db.execute("""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
                 WITH timestamp_totals AS (
                     SELECT
                         d.settlementdate,
@@ -566,82 +550,55 @@ class NEMDatabase:
                         SUM(d.scadavalue) as total_mw
                     FROM dispatch_data d
                     INNER JOIN generator_info g ON d.duid = g.duid
-                    WHERE g.region = ?
-                    AND d.settlementdate >= datetime(
-                        (SELECT MAX(settlementdate) FROM dispatch_data),
-                        ? || ' hours'
+                    WHERE g.region = $1
+                    AND d.settlementdate >= (
+                        (SELECT MAX(settlementdate) FROM dispatch_data) + ($2 || ' hours')::INTERVAL
                     )
                     GROUP BY d.settlementdate, g.fuel_source
                 )
                 SELECT
-                    datetime(
-                        (strftime('%s', settlementdate) / (? * 60)) * (? * 60),
-                        'unixepoch'
+                    TO_TIMESTAMP(
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($3 * 60)) * ($3 * 60)
                     ) as period,
                     fuel_source,
                     AVG(total_mw) as generation_mw,
                     COUNT(*) as sample_count
                 FROM timestamp_totals
-                GROUP BY period, fuel_source
+                GROUP BY 1, 2
                 ORDER BY period ASC, fuel_source
-            """, (region, f'-{hours}', aggregation_minutes, aggregation_minutes))
+            """, region, f'-{hours}', aggregation_minutes)
 
-            rows = await cursor.fetchall()
+        if not rows:
+            return pd.DataFrame()
 
-            if not rows:
-                return pd.DataFrame()
-
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['period'] = pd.to_datetime(df['period'])
-
-            return df
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['period'] = pd.to_datetime(df['period'])
+        return df
 
     async def get_region_price_history(self, region: str, hours: int = 24, price_type: str = 'DISPATCH') -> pd.DataFrame:
-        """Get price history for a specific region over the last N hours"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-
-            cursor = await db.execute("""
+        """Get price history for a specific region over the last N hours."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
                 SELECT settlementdate, region, price, totaldemand, price_type
                 FROM price_data
-                WHERE region = ?
-                AND price_type = ?
-                AND settlementdate >= datetime('now', ? || ' hours')
+                WHERE region = $1
+                AND price_type = $2
+                AND settlementdate >= CURRENT_TIMESTAMP + ($3 || ' hours')::INTERVAL
                 ORDER BY settlementdate ASC
-            """, (region, price_type, f'-{hours}'))
+            """, region, price_type, f'-{hours}')
 
-            rows = await cursor.fetchall()
+        if not rows:
+            return pd.DataFrame()
 
-            if not rows:
-                return pd.DataFrame()
-
-            data = [dict(row) for row in rows]
-            df = pd.DataFrame(data)
-            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-
-            return df
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        return df
 
     async def get_merged_price_history(self, region: str, hours: int = 24) -> pd.DataFrame:
-        """Get price history merging PUBLIC and DISPATCH prices.
-
-        Uses PUBLIC prices where available, fills gaps with DISPATCH prices
-        for any timestamps where PUBLIC data is missing.
-
-        Args:
-            region: NEM region (NSW, VIC, QLD, SA, TAS)
-            hours: Number of hours of history to retrieve
-
-        Returns:
-            DataFrame with merged price data including 'source_type' column
-        """
-        # 1. Get PUBLIC prices
+        """Get price history merging PUBLIC and DISPATCH prices."""
         public_df = await self.get_region_price_history(region, hours, 'PUBLIC')
-
-        # 2. Get DISPATCH prices
         dispatch_df = await self.get_region_price_history(region, hours, 'DISPATCH')
 
-        # Handle edge cases
         if public_df.empty and dispatch_df.empty:
             return pd.DataFrame()
 
@@ -653,120 +610,150 @@ class NEMDatabase:
             public_df['source_type'] = 'PUBLIC'
             return public_df.sort_values('settlementdate').reset_index(drop=True)
 
-        # 3. Add source_type columns
         public_df['source_type'] = 'PUBLIC'
         dispatch_df['source_type'] = 'DISPATCH'
 
-        # 4. Find timestamps that exist in PUBLIC
         public_timestamps = set(public_df['settlementdate'])
-
-        # 5. Filter DISPATCH to only include timestamps NOT in PUBLIC (fill gaps anywhere)
         dispatch_fill = dispatch_df[~dispatch_df['settlementdate'].isin(public_timestamps)].copy()
 
-        # 6. Merge and sort
         merged = pd.concat([public_df, dispatch_fill], ignore_index=True)
         return merged.sort_values('settlementdate').reset_index(drop=True)
 
-    async def get_region_summary(self, region: str) -> Dict[str, Any]:
-        """Get summary statistics for a specific region"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
+    async def get_aggregated_price_history(self, region: str, hours: int = 24, aggregation_minutes: Optional[int] = None) -> pd.DataFrame:
+        """Get price history with optional time-based aggregation."""
+        if aggregation_minutes is None:
+            aggregation_minutes = calculate_aggregation_minutes(hours)
 
-            # Get latest price from TRADING
-            cursor = await db.execute("""
+        if aggregation_minutes <= 30:
+            return await self.get_merged_price_history(region, hours)
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                WITH merged_prices AS (
+                    SELECT
+                        settlementdate,
+                        price,
+                        totaldemand,
+                        CASE WHEN price_type = 'PUBLIC' THEN 1 ELSE 2 END as priority
+                    FROM price_data
+                    WHERE region = $1
+                    AND settlementdate >= (
+                        (SELECT MAX(settlementdate) FROM price_data WHERE region = $2) + ($3 || ' hours')::INTERVAL
+                    )
+                ),
+                deduped AS (
+                    SELECT settlementdate, price, totaldemand
+                    FROM merged_prices m1
+                    WHERE priority = (
+                        SELECT MIN(priority)
+                        FROM merged_prices m2
+                        WHERE m2.settlementdate = m1.settlementdate
+                    )
+                )
+                SELECT
+                    TO_TIMESTAMP(
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($4 * 60)) * ($4 * 60)
+                    ) as settlementdate,
+                    AVG(price) as price,
+                    AVG(totaldemand) as totaldemand,
+                    COUNT(*) as sample_count
+                FROM deduped
+                GROUP BY 1
+                ORDER BY settlementdate ASC
+            """, region, region, f'-{hours}', aggregation_minutes)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        df['source_type'] = 'AGGREGATED'
+        return df
+
+    async def get_region_summary(self, region: str) -> Dict[str, Any]:
+        """Get summary statistics for a specific region."""
+        async with self._pool.acquire() as conn:
+            price_row = await conn.fetchrow("""
                 SELECT price, settlementdate
                 FROM price_data
-                WHERE region = ? AND price_type = 'TRADING'
+                WHERE region = $1 AND price_type = 'TRADING'
                 ORDER BY settlementdate DESC
                 LIMIT 1
-            """, (region,))
-            price_row = await cursor.fetchone()
+            """, region)
 
-            # Get demand from DISPATCH (TRADING doesn't have REGIONSUM records)
-            cursor = await db.execute("""
+            demand_row = await conn.fetchrow("""
                 SELECT totaldemand
                 FROM price_data
-                WHERE region = ? AND price_type = 'DISPATCH'
+                WHERE region = $1 AND price_type = 'DISPATCH'
                 ORDER BY settlementdate DESC
                 LIMIT 1
-            """, (region,))
-            demand_row = await cursor.fetchone()
+            """, region)
 
-            # Get total generation for the region
-            cursor = await db.execute("""
+            gen_row = await conn.fetchrow("""
                 SELECT SUM(d.scadavalue) as total_generation
                 FROM dispatch_data d
                 LEFT JOIN generator_info g ON d.duid = g.duid
                 WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
-                AND g.region = ?
-            """, (region,))
-            gen_row = await cursor.fetchone()
+                AND g.region = $1
+            """, region)
 
-            # Get generator count by fuel type
-            cursor = await db.execute("""
+            count_row = await conn.fetchrow("""
                 SELECT COUNT(DISTINCT d.duid) as generator_count
                 FROM dispatch_data d
                 LEFT JOIN generator_info g ON d.duid = g.duid
                 WHERE d.settlementdate = (SELECT MAX(settlementdate) FROM dispatch_data)
-                AND g.region = ?
-            """, (region,))
-            count_row = await cursor.fetchone()
+                AND g.region = $1
+            """, region)
 
-            return {
-                'region': region,
-                'latest_price': price_row['price'] if price_row else None,
-                'total_demand': demand_row['totaldemand'] if demand_row else None,
-                'price_timestamp': price_row['settlementdate'] if price_row else None,
-                'total_generation': gen_row['total_generation'] if gen_row else None,
-                'generator_count': count_row['generator_count'] if count_row else 0
-            }
+        return {
+            'region': region,
+            'latest_price': price_row['price'] if price_row else None,
+            'total_demand': demand_row['totaldemand'] if demand_row else None,
+            'price_timestamp': str(price_row['settlementdate']) if price_row else None,
+            'total_generation': gen_row['total_generation'] if gen_row else None,
+            'generator_count': count_row['generator_count'] if count_row else 0
+        }
 
     async def get_data_coverage(self, table: str = 'price_data') -> Dict[str, Any]:
-        """Get data coverage information for backfill planning"""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-
-            cursor = await db.execute(f"""
+        """Get data coverage information for backfill planning."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(f"""
                 SELECT
                     MIN(settlementdate) as earliest_date,
                     MAX(settlementdate) as latest_date,
                     COUNT(*) as total_records,
-                    COUNT(DISTINCT date(settlementdate)) as days_with_data
+                    COUNT(DISTINCT settlementdate::DATE) as days_with_data
                 FROM {table}
             """)
-            row = await cursor.fetchone()
 
-            return {
-                'earliest_date': row['earliest_date'],
-                'latest_date': row['latest_date'],
-                'total_records': row['total_records'],
-                'days_with_data': row['days_with_data']
-            }
+        return {
+            'earliest_date': str(row['earliest_date']) if row and row['earliest_date'] else None,
+            'latest_date': str(row['latest_date']) if row and row['latest_date'] else None,
+            'total_records': row['total_records'] if row else 0,
+            'days_with_data': row['days_with_data'] if row else 0
+        }
 
     async def get_missing_dates(self, start_date: datetime, end_date: datetime, price_type: str = 'PUBLIC') -> List[datetime]:
-        """Find dates with no price data in the specified range"""
-        async with aiosqlite.connect(self.db_path) as db:
-            # Get dates that have data
-            cursor = await db.execute("""
-                SELECT DISTINCT date(settlementdate) as data_date
+        """Find dates with no price data in the specified range."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT settlementdate::DATE as data_date
                 FROM price_data
-                WHERE price_type = ?
-                AND date(settlementdate) BETWEEN date(?) AND date(?)
-            """, (price_type, start_date, end_date))
+                WHERE price_type = $1
+                AND settlementdate::DATE BETWEEN $2::DATE AND $3::DATE
+            """, price_type, start_date, end_date)
 
-            rows = await cursor.fetchall()
-            existing_dates = {row[0] for row in rows}
+        existing_dates = {str(row['data_date']) for row in rows}
 
-            # Generate all dates in range
-            missing = []
-            current = start_date.date() if hasattr(start_date, 'date') else start_date
-            end = end_date.date() if hasattr(end_date, 'date') else end_date
+        missing = []
+        current = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
 
-            from datetime import timedelta
-            while current <= end:
-                date_str = current.strftime('%Y-%m-%d')
-                if date_str not in existing_dates:
-                    missing.append(datetime.combine(current, datetime.min.time()))
-                current += timedelta(days=1)
+        from datetime import timedelta
+        while current <= end:
+            date_str = current.strftime('%Y-%m-%d')
+            if date_str not in existing_dates:
+                missing.append(datetime.combine(current, datetime.min.time()))
+            current += timedelta(days=1)
 
-            return missing
+        return missing

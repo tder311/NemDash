@@ -1,16 +1,25 @@
 """
 Shared pytest fixtures for NEM Dashboard tests
+
+Requires a running PostgreSQL instance for testing.
+Set DATABASE_URL environment variable to your test database.
 """
 import pytest
+import pytest_asyncio
 import tempfile
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
 import sys
 import os
+import httpx
+from contextlib import asynccontextmanager
 
 # Add the app directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+# Configure pytest-asyncio
+pytest_plugins = ('pytest_asyncio',)
 
 from app.database import NEMDatabase
 from app.nem_client import NEMDispatchClient
@@ -55,24 +64,30 @@ def price_client():
 # Database Fixtures
 # ============================================================================
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def test_db():
-    """Create a temporary database for testing"""
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
-        db_path = f.name
+    """Create a database for testing.
 
-    db = NEMDatabase(db_path)
+    Requires DATABASE_URL environment variable pointing to a PostgreSQL database.
+    Each test gets a clean database with all tables truncated.
+    """
+    db_url = os.getenv('DATABASE_URL')
+
+    if not db_url:
+        pytest.skip("DATABASE_URL environment variable not set. Set it to run database tests.")
+
+    db = NEMDatabase(db_url)
     await db.initialize()
+
+    # Clean all tables before each test to ensure isolation
+    async with db._pool.acquire() as conn:
+        await conn.execute("TRUNCATE dispatch_data, price_data, interconnector_data, generator_info RESTART IDENTITY CASCADE")
+
     yield db
-
-    # Cleanup
-    try:
-        Path(db_path).unlink(missing_ok=True)
-    except Exception:
-        pass
+    await db.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def populated_db(test_db):
     """Database with sample data pre-loaded"""
     # Insert sample dispatch data
@@ -306,3 +321,89 @@ def sample_interconnector_df():
             'marginalvalue': 12.30
         },
     ])
+
+
+# ============================================================================
+# Async API Client Fixtures
+# ============================================================================
+
+@pytest_asyncio.fixture
+async def async_client(populated_db):
+    """
+    Async HTTP client for integration tests.
+
+    Uses httpx.AsyncClient with ASGITransport to run the FastAPI app
+    on the same event loop as the database, avoiding event loop conflicts.
+    """
+    from app.main import app
+    import app.main as main_module
+
+    # Set the database on the main module (same event loop)
+    main_module.db = populated_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test"
+    ) as client:
+        yield client
+
+    # Clean up
+    main_module.db = None
+
+
+@pytest_asyncio.fixture
+async def populated_db_extended(test_db):
+    """Database with extended multi-day test data for aggregation tests."""
+    from datetime import timedelta
+    from tests.fixtures.extended_data import (
+        generate_dispatch_data,
+        generate_price_data,
+        generate_generator_info,
+    )
+
+    # Generate 7 days of test data (recent, relative to now)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=7)
+
+    # Insert dispatch data
+    dispatch_df = generate_dispatch_data(start_date, days=7, region='NSW')
+    await test_db.insert_dispatch_data(dispatch_df)
+
+    # Insert price data (PUBLIC and DISPATCH types)
+    public_price_df = generate_price_data(
+        start_date, days=7, region='NSW', price_type='PUBLIC'
+    )
+    await test_db.insert_price_data(public_price_df)
+
+    dispatch_price_df = generate_price_data(
+        start_date, days=7, region='NSW', price_type='DISPATCH'
+    )
+    await test_db.insert_price_data(dispatch_price_df)
+
+    # Add generator info
+    await test_db.update_generator_info(generate_generator_info('NSW'))
+
+    return test_db
+
+
+@pytest_asyncio.fixture
+async def async_client_extended(populated_db_extended):
+    """
+    Async HTTP client for extended time range tests.
+
+    Uses extended test data with multiple days of dispatch and price data.
+    """
+    from app.main import app
+    import app.main as main_module
+
+    # Set the database on the main module (same event loop)
+    main_module.db = populated_db_extended
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test"
+    ) as client:
+        yield client
+
+    # Clean up
+    main_module.db = None

@@ -15,7 +15,8 @@ NPM := npm
         run-backend run-frontend dev \
         check check-python check-node check-deps \
         setup-env build clean test test-backend test-frontend test-e2e test-all \
-        test-coverage health import-generators install-test-deps install-playwright
+        test-coverage health import-generators install-test-deps install-playwright \
+        db db-stop
 
 ##@ General
 
@@ -75,7 +76,7 @@ check-node: ## Verify Node.js and npm installation
 
 check-deps: check ## Check if dependencies are installed
 	@echo "Checking backend dependencies..."
-	@cd $(BACKEND_DIR) && $(PYTHON) -c "import fastapi, uvicorn, pandas" 2>/dev/null || \
+	@cd $(BACKEND_DIR) && $(PYTHON) -c "import fastapi, uvicorn, pandas, asyncpg" 2>/dev/null || \
 		(echo "Backend dependencies missing. Run 'make install-backend'" && exit 1)
 	@echo "Backend dependencies OK"
 	@echo "Checking frontend dependencies..."
@@ -135,6 +136,21 @@ clean: ## Remove build artifacts and caches
 	@echo "Clean complete"
 
 ##@ Database
+
+db: ## Start PostgreSQL with docker-compose
+	@echo "Starting PostgreSQL..."
+	@cd $(BACKEND_DIR) && docker compose up -d 2>/dev/null || docker-compose up -d
+	@echo "Waiting for PostgreSQL to be ready..."
+	@for i in $$(seq 1 30); do \
+		(cd $(BACKEND_DIR) && docker compose exec -T postgres pg_isready -U postgres 2>/dev/null || \
+		docker-compose exec -T postgres pg_isready -U postgres 2>/dev/null) && break; \
+		sleep 1; \
+	done
+	@echo "PostgreSQL is ready!"
+
+db-stop: ## Stop PostgreSQL
+	@echo "Stopping PostgreSQL..."
+	@cd $(BACKEND_DIR) && docker compose down 2>/dev/null || docker-compose down
 
 import-generators: ## Import generator data from CSV
 	@echo "Importing generator data..."

@@ -15,8 +15,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DataIngester:
-    def __init__(self, db_path: str, nem_base_url: str = "https://www.nemweb.com.au"):
-        self.db = NEMDatabase(db_path)
+    def __init__(self, db_url: str, nem_base_url: str = "https://www.nemweb.com.au"):
+        """Initialize the data ingester.
+
+        Args:
+            db_url: PostgreSQL database URL (e.g., 'postgresql://user:pass@localhost:5432/nem_dashboard')
+            nem_base_url: Base URL for NEMWEB API
+        """
+        self.db = NEMDatabase(db_url)
         self.nem_client = NEMDispatchClient(nem_base_url)
         self.price_client = NEMPriceClient(nem_base_url)
         self.is_running = False

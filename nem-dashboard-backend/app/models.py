@@ -107,6 +107,7 @@ class RegionPriceHistoryResponse(BaseModel):
     count: int
     hours: int
     price_type: str
+    aggregation_minutes: Optional[int] = None
     message: str
 
 

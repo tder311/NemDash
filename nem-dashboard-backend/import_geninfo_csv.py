@@ -5,7 +5,6 @@ Import generator information from the provided GenInfo.csv file
 
 import asyncio
 import pandas as pd
-import sqlite3
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
@@ -14,9 +13,14 @@ from app.database import NEMDatabase
 
 async def import_geninfo_csv():
     """Import generator info from CSV file"""
-    
+
     csv_path = './data/GenInfo.csv'
-    db_path = './data/nem_dispatch.db'
+    db_url = os.getenv('DATABASE_URL')
+
+    if not db_url:
+        print("ERROR: DATABASE_URL environment variable is required.")
+        print("Example: DATABASE_URL=postgresql://postgres:localdev@localhost:5432/nem_dashboard")
+        return
     
     print("=== Importing Generator Info from CSV ===")
     
@@ -135,60 +139,57 @@ async def import_geninfo_csv():
         print(f"  {gen['duid']:>12s} | {gen['region']:>3s} | {gen['fuel_source']:>8s} | {gen['capacity_mw']:>6.1f} MW | {gen['station_name']}")
     
     # Update database
-    db = NEMDatabase(db_path)
+    db = NEMDatabase(db_url)
     await db.initialize()
-    
+
     await db.update_generator_info(generators)
-    print(f"✅ Updated database with {len(generators)} generator records")
-    
-    # Show final statistics
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT 
-            fuel_source,
-            COUNT(*) as count,
-            ROUND(SUM(capacity_mw), 0) as total_capacity
-        FROM generator_info 
-        WHERE fuel_source != 'Unknown'
-        GROUP BY fuel_source 
-        ORDER BY total_capacity DESC
-    """)
-    
-    print(f"\nUpdated Generator Summary by Fuel Source:")
-    for fuel, count, capacity in cursor.fetchall():
-        print(f"  {fuel:>12s}: {count:>3d} units, {capacity:>7.0f} MW")
-    
-    cursor.execute("""
-        SELECT 
-            region,
-            COUNT(*) as count,
-            ROUND(SUM(capacity_mw), 0) as total_capacity
-        FROM generator_info 
-        WHERE region != 'Unknown'
-        GROUP BY region 
-        ORDER BY total_capacity DESC
-    """)
-    
-    print(f"\nUpdated Generator Summary by Region:")
-    for region, count, capacity in cursor.fetchall():
-        print(f"  {region:>8s}: {count:>3d} units, {capacity:>7.0f} MW")
-    
-    # Final quality check
-    cursor.execute("SELECT COUNT(*) FROM generator_info WHERE fuel_source = 'Unknown'")
-    unknown_fuel = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM generator_info WHERE region = 'Unknown'")
-    unknown_region = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM generator_info")
-    total_generators = cursor.fetchone()[0]
-    
-    print(f"\nFinal Classification Quality:")
-    print(f"  Unknown fuel source: {unknown_fuel} units ({unknown_fuel/total_generators*100:.1f}%)")
-    print(f"  Unknown region: {unknown_region} units ({unknown_region/total_generators*100:.1f}%)")
-    print(f"  Successfully classified: {((total_generators-unknown_fuel)/total_generators*100):.1f}% fuel, {((total_generators-unknown_region)/total_generators*100):.1f}% region")
-    
-    conn.close()
+    print(f"Updated database with {len(generators)} generator records")
+
+    # Show final statistics using asyncpg
+    async with db._pool.acquire() as conn:
+        # Summary by fuel source
+        rows = await conn.fetch("""
+            SELECT
+                fuel_source,
+                COUNT(*) as count,
+                ROUND(SUM(capacity_mw)::numeric, 0) as total_capacity
+            FROM generator_info
+            WHERE fuel_source != 'Unknown'
+            GROUP BY fuel_source
+            ORDER BY total_capacity DESC
+        """)
+
+        print(f"\nUpdated Generator Summary by Fuel Source:")
+        for row in rows:
+            print(f"  {row['fuel_source']:>12s}: {row['count']:>3d} units, {float(row['total_capacity']):>7.0f} MW")
+
+        # Summary by region
+        rows = await conn.fetch("""
+            SELECT
+                region,
+                COUNT(*) as count,
+                ROUND(SUM(capacity_mw)::numeric, 0) as total_capacity
+            FROM generator_info
+            WHERE region != 'Unknown'
+            GROUP BY region
+            ORDER BY total_capacity DESC
+        """)
+
+        print(f"\nUpdated Generator Summary by Region:")
+        for row in rows:
+            print(f"  {row['region']:>8s}: {row['count']:>3d} units, {float(row['total_capacity']):>7.0f} MW")
+
+        # Final quality check
+        unknown_fuel = await conn.fetchval("SELECT COUNT(*) FROM generator_info WHERE fuel_source = 'Unknown'")
+        unknown_region = await conn.fetchval("SELECT COUNT(*) FROM generator_info WHERE region = 'Unknown'")
+        total_generators = await conn.fetchval("SELECT COUNT(*) FROM generator_info")
+
+        print(f"\nFinal Classification Quality:")
+        print(f"  Unknown fuel source: {unknown_fuel} units ({unknown_fuel/total_generators*100:.1f}%)")
+        print(f"  Unknown region: {unknown_region} units ({unknown_region/total_generators*100:.1f}%)")
+        print(f"  Successfully classified: {((total_generators-unknown_fuel)/total_generators*100):.1f}% fuel, {((total_generators-unknown_region)/total_generators*100):.1f}% region")
+
+    await db.close()
 
 if __name__ == "__main__":
     asyncio.run(import_geninfo_csv())

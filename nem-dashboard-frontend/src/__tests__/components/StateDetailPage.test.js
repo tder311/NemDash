@@ -457,11 +457,14 @@ describe('StateDetailPage time range options', () => {
     });
 
     const options = screen.getAllByRole('option');
-    expect(options).toHaveLength(5);
+    expect(options).toHaveLength(8);
     expect(options[0]).toHaveValue('6');
     expect(options[1]).toHaveValue('12');
     expect(options[2]).toHaveValue('24');
     expect(options[3]).toHaveValue('48');
     expect(options[4]).toHaveValue('168');
+    expect(options[5]).toHaveValue('720');
+    expect(options[6]).toHaveValue('2160');
+    expect(options[7]).toHaveValue('8760');
   });
 });
