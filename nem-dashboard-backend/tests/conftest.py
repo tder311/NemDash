@@ -69,6 +69,7 @@ async def test_db():
     """Create a database for testing.
 
     Requires DATABASE_URL environment variable pointing to a PostgreSQL database.
+    Each test gets a clean database with all tables truncated.
     """
     db_url = os.getenv('DATABASE_URL')
 
@@ -77,6 +78,11 @@ async def test_db():
 
     db = NEMDatabase(db_url)
     await db.initialize()
+
+    # Clean all tables before each test to ensure isolation
+    async with db._pool.acquire() as conn:
+        await conn.execute("TRUNCATE dispatch_data, price_data, interconnector_data, generator_info RESTART IDENTITY CASCADE")
+
     yield db
     await db.close()
 
