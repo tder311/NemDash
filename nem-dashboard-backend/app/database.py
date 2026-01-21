@@ -583,7 +583,7 @@ class NEMDatabase:
                 FROM price_data
                 WHERE region = $1
                 AND price_type = $2
-                AND settlementdate >= CURRENT_TIMESTAMP + ($3 || ' hours')::INTERVAL
+                AND settlementdate >= (SELECT MAX(settlementdate) FROM price_data WHERE region = $1 AND price_type = $2) + ($3 || ' hours')::INTERVAL
                 ORDER BY settlementdate ASC
             """, region, price_type, f'-{hours}')
 
