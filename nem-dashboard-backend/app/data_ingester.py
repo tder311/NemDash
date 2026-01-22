@@ -423,7 +423,7 @@ class DataIngester:
 
         # PRIORITY 2: Start historical backfill in background
         # This runs concurrently with the main ingestion loop
-        backfill_task = asyncio.create_task(self._run_historical_backfill(backfill_start_date))
+        _backfill_task = asyncio.create_task(self._run_historical_backfill(backfill_start_date))  # noqa: F841
 
         # Initial data fetch (will fetch files newer than the timestamps above)
         await self.ingest_current_data()

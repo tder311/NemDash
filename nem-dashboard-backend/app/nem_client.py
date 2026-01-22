@@ -263,7 +263,7 @@ class NEMDispatchClient:
                         settlement_date = parts[4].strip('"')
                         duid = parts[5].strip()
                         scada_value = self._safe_float(parts[6])
-                        last_changed = parts[7].strip('"') if len(parts) > 7 else ""
+                        _last_changed = parts[7].strip('"') if len(parts) > 7 else ""  # noqa: F841
                         
                         data.append({
                             'settlementdate': settlement_date,
