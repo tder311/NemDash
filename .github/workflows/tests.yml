@@ -5,6 +5,7 @@ on:
     branches: [main, 'tder311/*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   backend-tests:
