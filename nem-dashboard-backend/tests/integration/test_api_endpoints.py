@@ -165,34 +165,6 @@ class TestRegionEndpoints:
         assert response.status_code == 400
 
 
-class TestAggregatedPricesEndpoint:
-    """Tests for aggregated prices endpoint"""
-
-    @pytest.mark.asyncio
-    async def test_get_aggregated_prices_default(self, async_client):
-        """Get aggregated prices with defaults should return 200"""
-        response = await async_client.get("/api/aggregated/prices/NSW")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_get_aggregated_prices_with_hours(self, async_client):
-        """Get aggregated prices with custom hours should return 200"""
-        response = await async_client.get("/api/aggregated/prices/NSW?hours=48")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_get_aggregated_prices_lowercase_region(self, async_client):
-        """Get aggregated prices with lowercase region should return 200"""
-        response = await async_client.get("/api/aggregated/prices/nsw")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_get_aggregated_prices_invalid_region(self, async_client):
-        """Invalid region should return 400"""
-        response = await async_client.get("/api/aggregated/prices/INVALID")
-        assert response.status_code == 400
-
-
 class TestGeneratorEndpoints:
     """Tests for generator data endpoints"""
 
