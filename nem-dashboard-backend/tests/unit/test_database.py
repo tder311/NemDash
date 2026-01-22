@@ -25,7 +25,6 @@ class TestNEMDatabaseInit:
 
         assert 'dispatch_data' in tables
         assert 'price_data' in tables
-        assert 'interconnector_data' in tables
         assert 'generator_info' in tables
 
     @pytest.mark.asyncio
@@ -41,7 +40,6 @@ class TestNEMDatabaseInit:
         # Check for expected indexes
         assert any('dispatch_settlement' in idx for idx in indexes)
         assert any('price_region' in idx for idx in indexes)
-        assert any('interconnector_settlement' in idx for idx in indexes)
 
     @pytest.mark.asyncio
     async def test_initialize_idempotent(self, test_db):
@@ -55,8 +53,8 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables
-        assert count == 4
+        # Should still have same number of application tables (3: dispatch_data, price_data, generator_info)
+        assert count == 3
 
 
 class TestDispatchDataInsert:
