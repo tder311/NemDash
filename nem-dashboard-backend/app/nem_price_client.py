@@ -6,7 +6,7 @@ import asyncio
 import httpx
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional
 import logging
 import zipfile
 import io
@@ -85,50 +85,40 @@ class NEMPriceClient:
         except Exception as e:
             logger.error(f"Error fetching trading prices: {e}")
             return None
-    
-    async def get_interconnector_flows(self) -> Optional[pd.DataFrame]:
-        """Fetch current interconnector flows from Dispatch IRSR"""
-        try:
-            irsr_url = f"{self.base_url}/Reports/Current/Dispatch_IRSR/"
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(irsr_url)
-                response.raise_for_status()
-                
-                # Parse directory listing for latest IRSR file
-                latest_file = self._parse_latest_irsr_file(response.text)
-                if not latest_file:
-                    logger.warning("No IRSR file found")
-                    return None
-                
-                # Download the IRSR file
-                file_url = f"{irsr_url}{latest_file}"
-                logger.info(f"Fetching IRSR file: {latest_file}")
-                file_response = await client.get(file_url)
-                file_response.raise_for_status()
-                
-                return self._parse_irsr_zip(file_response.content)
-                
-        except Exception as e:
-            logger.error(f"Error fetching interconnector flows: {e}")
-            return None
-    
+
     async def get_daily_prices(self, date: datetime) -> Optional[pd.DataFrame]:
         """Fetch daily price history from Public Prices.
 
-        NEMWEB PUBLIC_PRICES files use market day boundaries (04:05 to 04:00 next day).
-        To get a complete calendar day, we need TWO files:
-        - Previous day's file: Contains 00:00-04:00 of target date
-        - Target day's file: Contains 04:05-23:55 of target date
+        Tries Current directory first (last ~7-14 days), then falls back to
+        Archive directory (monthly ZIP files) for older dates.
 
-        This function fetches both files and filters to the target calendar day.
+        NEMWEB PUBLIC_PRICES files use market day boundaries (04:05 to 04:00 next day).
+        To get a complete calendar day, we need data from two market days.
         """
         try:
-            from datetime import timedelta
-
             target_date = date.date() if hasattr(date, 'date') else date
-            prev_date = target_date - timedelta(days=1)
 
+            # Try Current directory first (recent data)
+            df = await self._get_daily_prices_from_current(target_date)
+            if df is not None and not df.empty:
+                return df
+
+            # Fallback to Archive for older data
+            df = await self._get_daily_prices_from_archive(target_date)
+            if df is not None and not df.empty:
+                return df
+
+            logger.warning(f"No public prices found for {target_date} in Current or Archive")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error fetching daily prices for {date}: {e}")
+            return None
+
+    async def _get_daily_prices_from_current(self, target_date) -> Optional[pd.DataFrame]:
+        """Fetch daily prices from Current directory (last ~7-14 days)."""
+        try:
+            prev_date = target_date - timedelta(days=1)
             public_prices_url = f"{self.base_url}/Reports/Current/Public_Prices/"
 
             all_dfs = []
@@ -145,7 +135,6 @@ class NEMPriceClient:
                     matches = re.findall(pattern, directory_html)
 
                     if not matches:
-                        logger.debug(f"No public prices file found for {date_str}")
                         continue
 
                     latest_file = sorted(matches)[-1]  # Get latest version
@@ -160,51 +149,194 @@ class NEMPriceClient:
                         all_dfs.append(df)
 
             if not all_dfs:
-                logger.warning(f"No public prices files found for {target_date}")
                 return None
 
-            # Combine all fetched data
-            combined_df = pd.concat(all_dfs, ignore_index=True)
-
-            # Filter to only the target calendar day
-            combined_df['settlementdate'] = pd.to_datetime(combined_df['settlementdate'])
-            target_date_str = target_date.strftime('%Y-%m-%d')
-            filtered_df = combined_df[
-                combined_df['settlementdate'].dt.date.astype(str) == target_date_str
-            ].copy()
-
-            # Remove duplicates (same timestamp from both files at 04:00 boundary)
-            filtered_df = filtered_df.drop_duplicates(
-                subset=['settlementdate', 'region'],
-                keep='last'
-            ).reset_index(drop=True)
-
-            logger.info(f"Retrieved {len(filtered_df)} price records for {target_date}")
-            return filtered_df
+            return self._filter_to_target_date(all_dfs, target_date)
 
         except Exception as e:
-            logger.error(f"Error fetching daily prices for {date}: {e}")
+            logger.debug(f"Could not fetch from Current for {target_date}: {e}")
+            return None
+
+    async def _get_daily_prices_from_archive(self, target_date) -> Optional[pd.DataFrame]:
+        """Fetch daily prices from Archive (monthly ZIP files).
+
+        Archive files are monthly ZIPs named PUBLIC_PRICES_YYYYMM01.zip
+        containing nested daily ZIPs for each day.
+        """
+        try:
+            prev_date = target_date - timedelta(days=1)
+            archive_url = f"{self.base_url}/Reports/Archive/Public_Prices/"
+
+            # Determine which monthly archives we need (might span two months)
+            months_needed = set()
+            for d in [prev_date, target_date]:
+                month_key = d.strftime("%Y%m")
+                months_needed.add(month_key)
+
+            all_dfs = []
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                for month_key in months_needed:
+                    archive_filename = f"PUBLIC_PRICES_{month_key}01.zip"
+                    file_url = f"{archive_url}{archive_filename}"
+
+                    try:
+                        logger.info(f"Fetching archive file: {archive_filename}")
+                        response = await client.get(file_url)
+                        response.raise_for_status()
+
+                        # Archive is a monthly ZIP containing nested daily ZIPs
+                        dfs = self._parse_archive_monthly_zip(response.content, target_date, prev_date)
+                        all_dfs.extend(dfs)
+
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 404:
+                            logger.debug(f"Archive not found: {archive_filename}")
+                        else:
+                            logger.warning(f"Error fetching archive {archive_filename}: {e}")
+                        continue
+
+            if not all_dfs:
+                return None
+
+            return self._filter_to_target_date(all_dfs, target_date)
+
+        except Exception as e:
+            logger.debug(f"Could not fetch from Archive for {target_date}: {e}")
+            return None
+
+    def _parse_archive_monthly_zip(self, zip_content: bytes, target_date, prev_date) -> list:
+        """Parse monthly archive ZIP containing nested daily ZIPs."""
+        dfs = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_content)) as outer_zip:
+                # Look for daily ZIPs matching our target dates
+                for inner_name in outer_zip.namelist():
+                    if not inner_name.endswith('.zip'):
+                        continue
+
+                    # Check if this inner ZIP is for one of our target dates
+                    # Pattern: PUBLIC_PRICES_YYYYMMDD0000_*.zip
+                    for check_date in [prev_date, target_date]:
+                        date_str = check_date.strftime("%Y%m%d")
+                        if f"PUBLIC_PRICES_{date_str}0000" in inner_name:
+                            try:
+                                inner_content = outer_zip.read(inner_name)
+                                df = self._parse_public_prices_zip(inner_content)
+                                if df is not None and not df.empty:
+                                    dfs.append(df)
+                            except Exception as e:
+                                logger.debug(f"Error parsing {inner_name}: {e}")
+                            break
+        except Exception as e:
+            logger.error(f"Error parsing archive monthly ZIP: {e}")
+
+        return dfs
+
+    def _filter_to_target_date(self, dfs: list, target_date) -> Optional[pd.DataFrame]:
+        """Filter combined dataframes to target calendar day."""
+        combined_df = pd.concat(dfs, ignore_index=True)
+
+        # Filter to only the target calendar day
+        combined_df['settlementdate'] = pd.to_datetime(combined_df['settlementdate'])
+        target_date_str = target_date.strftime('%Y-%m-%d')
+        filtered_df = combined_df[
+            combined_df['settlementdate'].dt.date.astype(str) == target_date_str
+        ].copy()
+
+        # Remove duplicates (same timestamp from both files at 04:00 boundary)
+        filtered_df = filtered_df.drop_duplicates(
+            subset=['settlementdate', 'region'],
+            keep='last'
+        ).reset_index(drop=True)
+
+        logger.info(f"Retrieved {len(filtered_df)} price records for {target_date}")
+        return filtered_df if not filtered_df.empty else None
+
+    async def get_monthly_archive_prices(self, year: int, month: int) -> Optional[pd.DataFrame]:
+        """Fetch all PUBLIC prices for an entire month from Archive.
+
+        Downloads the monthly archive once and extracts all daily data.
+        Much more efficient than fetching day-by-day.
+
+        Args:
+            year: Year (e.g., 2025)
+            month: Month (1-12)
+
+        Returns:
+            DataFrame with all price records for the month, or None if not found
+        """
+        try:
+            archive_url = f"{self.base_url}/Reports/Archive/Public_Prices/"
+            archive_filename = f"PUBLIC_PRICES_{year}{month:02d}01.zip"
+            file_url = f"{archive_url}{archive_filename}"
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                logger.info(f"Fetching monthly archive: {archive_filename}")
+                response = await client.get(file_url)
+                response.raise_for_status()
+
+                # Parse all daily ZIPs from the monthly archive
+                all_dfs = []
+                with zipfile.ZipFile(io.BytesIO(response.content)) as outer_zip:
+                    for inner_name in outer_zip.namelist():
+                        if not inner_name.endswith('.zip'):
+                            continue
+                        try:
+                            inner_content = outer_zip.read(inner_name)
+                            df = self._parse_public_prices_zip(inner_content)
+                            if df is not None and not df.empty:
+                                all_dfs.append(df)
+                        except Exception as e:
+                            logger.debug(f"Error parsing {inner_name}: {e}")
+                            continue
+
+                if not all_dfs:
+                    logger.warning(f"No price data found in archive {archive_filename}")
+                    return None
+
+                combined_df = pd.concat(all_dfs, ignore_index=True)
+                combined_df['settlementdate'] = pd.to_datetime(combined_df['settlementdate'])
+
+                # Remove duplicates
+                combined_df = combined_df.drop_duplicates(
+                    subset=['settlementdate', 'region'],
+                    keep='last'
+                ).reset_index(drop=True)
+
+                logger.info(f"Retrieved {len(combined_df)} price records from {archive_filename}")
+                return combined_df
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"Archive not found: {archive_filename}")
+            else:
+                logger.warning(f"Error fetching archive {archive_filename}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching monthly archive {year}-{month:02d}: {e}")
             return None
 
     async def get_all_current_dispatch_prices(
         self,
         since: Optional[datetime] = None,
-        max_concurrent: int = 10
+        request_delay: float = 0.05
     ) -> Optional[pd.DataFrame]:
         """Fetch dispatch price files from Current directory.
 
         Args:
             since: Only fetch files with timestamps after this datetime.
                    If None, fetches all files (~288 files, ~3 days).
-            max_concurrent: Maximum concurrent HTTP requests (default 10)
+            request_delay: Delay between requests in seconds (default 0.05s to avoid rate limiting)
 
         Returns:
             DataFrame with dispatch price data, or None if no files found/error
         """
         try:
             dispatch_url = f"{self.base_url}/Reports/Current/DispatchIS_Reports/"
+            headers = {"User-Agent": "NEM-Dashboard/1.0"}
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
                 # 1. Get directory listing
                 response = await client.get(dispatch_url)
                 response.raise_for_status()
@@ -218,9 +350,14 @@ class NEMPriceClient:
                     return None
 
                 # Build list of (filename, timestamp) tuples
+                # Use a set to dedupe - HTML shows each filename twice (in href and link text)
+                seen_files = set()
                 all_files = []
                 for match in re.finditer(r'(PUBLIC_DISPATCHIS_(\d{12})_\d{16}\.zip)', response.text):
                     filename = match.group(1)
+                    if filename in seen_files:
+                        continue
+                    seen_files.add(filename)
                     timestamp_str = match.group(2)  # YYYYMMDDHHmm
                     try:
                         file_timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M')
@@ -233,9 +370,10 @@ class NEMPriceClient:
                     files_to_fetch = [
                         (f, t) for f, t in all_files if t > since
                     ]
-                    logger.info(f"Filtering: {len(all_files)} total files, {len(files_to_fetch)} newer than {since}")
+                    logger.info(f"Dispatch prices: {len(all_files)} total files, {len(files_to_fetch)} newer than {since}")
                 else:
                     files_to_fetch = all_files
+                    logger.info(f"Fetching all {len(all_files)} dispatch price files sequentially")
 
                 if not files_to_fetch:
                     logger.info("No new dispatch price files to fetch")
@@ -243,14 +381,32 @@ class NEMPriceClient:
 
                 # Sort by timestamp (oldest first)
                 files_to_fetch.sort(key=lambda x: x[1])
-                filenames = [f for f, _ in files_to_fetch]
 
-                logger.info(f"Fetching {len(filenames)} dispatch price files concurrently")
+                # 4. Fetch files sequentially with small delay to avoid rate limiting
+                all_dfs = []
+                for i, (filename, _) in enumerate(files_to_fetch):
+                    file_url = f"{dispatch_url}{filename}"
+                    try:
+                        file_response = await client.get(file_url)
+                        file_response.raise_for_status()
+                        df = self._parse_dispatch_price_zip(file_response.content)
+                        if df is not None and not df.empty:
+                            all_dfs.append(df)
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 403:
+                            logger.error(f"403 Forbidden fetching {filename}")
+                        else:
+                            logger.debug(f"HTTP error fetching {filename}: {e}")
+                    except Exception as e:
+                        logger.debug(f"Error fetching {filename}: {e}")
 
-                # 4. Fetch files concurrently in batches
-                all_dfs = await self._fetch_files_concurrent(
-                    client, dispatch_url, filenames, max_concurrent
-                )
+                    # Small delay between requests to avoid rate limiting
+                    if i < len(files_to_fetch) - 1:
+                        await asyncio.sleep(request_delay)
+
+                    # Progress logging every 100 files
+                    if (i + 1) % 100 == 0:
+                        logger.info(f"Dispatch price backfill progress: {i + 1}/{len(files_to_fetch)} files")
 
                 if not all_dfs:
                     logger.warning("No valid data found in any dispatch price files")
@@ -265,50 +421,111 @@ class NEMPriceClient:
                     keep='last'
                 )
 
-                logger.info(f"Successfully fetched {len(combined_df)} dispatch price records")
+                logger.info(f"Successfully fetched {len(combined_df)} dispatch price records from {len(all_dfs)} files")
                 return combined_df
 
         except Exception as e:
             logger.error(f"Error fetching all current dispatch prices: {e}")
             return None
 
-    async def _fetch_files_concurrent(
+    async def get_all_current_trading_prices(
         self,
-        client: httpx.AsyncClient,
-        base_url: str,
-        filenames: List[str],
-        max_concurrent: int
-    ) -> List[pd.DataFrame]:
-        """Fetch multiple files concurrently with rate limiting.
+        since: Optional[datetime] = None,
+        request_delay: float = 0.05
+    ) -> Optional[pd.DataFrame]:
+        """Fetch trading price files from Current directory.
 
         Args:
-            client: HTTP client to use
-            base_url: Base URL for files
-            filenames: List of filenames to fetch
-            max_concurrent: Maximum concurrent requests
+            since: Only fetch files with timestamps after this datetime.
+            request_delay: Delay between requests in seconds (default 0.05s to avoid rate limiting)
 
         Returns:
-            List of parsed DataFrames
+            DataFrame with trading price data, or None if no files found/error
         """
-        semaphore = asyncio.Semaphore(max_concurrent)
+        try:
+            trading_url = f"{self.base_url}/Reports/Current/TradingIS_Reports/"
+            headers = {"User-Agent": "NEM-Dashboard/1.0"}
 
-        async def fetch_one(filename: str) -> Optional[pd.DataFrame]:
-            async with semaphore:
-                try:
-                    file_url = f"{base_url}{filename}"
-                    file_response = await client.get(file_url)
-                    file_response.raise_for_status()
-                    return self._parse_dispatch_price_zip(file_response.content)
-                except Exception as e:
-                    logger.warning(f"Error fetching {filename}: {e}")
+            async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
+                response = await client.get(trading_url)
+                response.raise_for_status()
+
+                # Find all trading price files
+                # Use a set to dedupe - HTML shows each filename twice (in href and link text)
+                seen_files = set()
+                all_files = []
+                for match in re.finditer(r'(PUBLIC_TRADINGIS_(\d{12})_\d{16}\.zip)', response.text):
+                    filename = match.group(1)
+                    if filename in seen_files:
+                        continue
+                    seen_files.add(filename)
+                    timestamp_str = match.group(2)
+                    try:
+                        file_timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M')
+                        all_files.append((filename, file_timestamp))
+                    except ValueError:
+                        continue
+
+                if not all_files:
+                    logger.warning("No trading price files found in Current directory")
                     return None
 
-        # Fetch all files concurrently
-        tasks = [fetch_one(f) for f in filenames]
-        results = await asyncio.gather(*tasks)
+                # Filter by timestamp if provided
+                if since:
+                    files_to_fetch = [(f, t) for f, t in all_files if t > since]
+                    logger.info(f"Trading prices: {len(all_files)} total files, {len(files_to_fetch)} newer than {since}")
+                else:
+                    files_to_fetch = all_files
+                    logger.info(f"Fetching all {len(all_files)} trading price files sequentially")
 
-        # Filter out None results
-        return [df for df in results if df is not None and not df.empty]
+                if not files_to_fetch:
+                    logger.info("No new trading price files to fetch")
+                    return None
+
+                files_to_fetch.sort(key=lambda x: x[1])
+
+                # Fetch files sequentially with small delay to avoid rate limiting
+                all_dfs = []
+                for i, (filename, _) in enumerate(files_to_fetch):
+                    file_url = f"{trading_url}{filename}"
+                    try:
+                        file_response = await client.get(file_url)
+                        file_response.raise_for_status()
+                        df = self._parse_trading_price_zip(file_response.content)
+                        if df is not None and not df.empty:
+                            all_dfs.append(df)
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 403:
+                            logger.error(f"403 Forbidden fetching {filename}")
+                        else:
+                            logger.debug(f"HTTP error fetching {filename}: {e}")
+                    except Exception as e:
+                        logger.debug(f"Error fetching {filename}: {e}")
+
+                    # Small delay between requests to avoid rate limiting
+                    if i < len(files_to_fetch) - 1:
+                        await asyncio.sleep(request_delay)
+
+                    # Progress logging every 100 files
+                    if (i + 1) % 100 == 0:
+                        logger.info(f"Trading price backfill progress: {i + 1}/{len(files_to_fetch)} files")
+
+                if not all_dfs:
+                    logger.warning("No valid data found in any trading price files")
+                    return None
+
+                combined_df = pd.concat(all_dfs, ignore_index=True)
+                combined_df = combined_df.drop_duplicates(
+                    subset=['settlementdate', 'region'],
+                    keep='last'
+                )
+
+                logger.info(f"Successfully fetched {len(combined_df)} trading price records from {len(all_dfs)} files")
+                return combined_df
+
+        except Exception as e:
+            logger.error(f"Error fetching all current trading prices: {e}")
+            return None
 
     def _parse_latest_dispatch_price_file(self, html_content: str) -> Optional[str]:
         """Parse directory listing for latest dispatch price file"""
@@ -323,27 +540,7 @@ class NEMPriceClient:
         pattern = r'PUBLIC_TRADINGIS_\d{12}_\d{16}\.zip'
         matches = re.findall(pattern, html_content)
         return sorted(matches)[-1] if matches else None
-    
-    def _parse_latest_irsr_file(self, html_content: str) -> Optional[str]:
-        """Parse directory listing for latest IRSR file"""
-        # Try multiple patterns as IRSR files may have different naming conventions
-        patterns = [
-            r'PUBLIC_IRSR_\d{12}_\d{16}\.zip',
-            r'PUBLIC_DISPATCH_IRSR_\d{12}_\d{16}\.zip',
-            r'PUBLIC_DISPATCHIRSR_\d{12}_\d{16}\.zip',
-        ]
-        for pattern in patterns:
-            matches = re.findall(pattern, html_content)
-            if matches:
-                return sorted(matches)[-1]
 
-        # Log available files for debugging if no match found
-        all_zips = re.findall(r'PUBLIC_[A-Z_]+_\d{12}_\d{16}\.zip', html_content)
-        if all_zips:
-            logger.debug(f"Available ZIP files in IRSR directory: {set(f.split('_')[1] for f in all_zips[:5])}")
-
-        return None
-    
     def _parse_dispatch_price_zip(self, zip_content: bytes) -> Optional[pd.DataFrame]:
         """Parse dispatch price ZIP file"""
         try:
@@ -373,22 +570,7 @@ class NEMPriceClient:
         except Exception as e:
             logger.error(f"Error parsing trading price ZIP: {e}")
             return None
-    
-    def _parse_irsr_zip(self, zip_content: bytes) -> Optional[pd.DataFrame]:
-        """Parse IRSR (interconnector) ZIP file"""
-        try:
-            with zipfile.ZipFile(io.BytesIO(zip_content)) as zip_file:
-                csv_files = [f for f in zip_file.namelist() if f.endswith('.CSV')]
-                if not csv_files:
-                    return None
-                
-                csv_content = zip_file.read(csv_files[0])
-                return self._parse_interconnector_csv(csv_content)
-                
-        except Exception as e:
-            logger.error(f"Error parsing IRSR ZIP: {e}")
-            return None
-    
+
     def _parse_public_prices_zip(self, zip_content: bytes) -> Optional[pd.DataFrame]:
         """Parse public prices ZIP file"""
         try:
@@ -541,54 +723,9 @@ class NEMPriceClient:
                 
         except Exception as e:
             logger.error(f"Error parsing {price_type} price CSV: {e}")
-        
+
         return None
-    
-    def _parse_interconnector_csv(self, csv_content: bytes) -> Optional[pd.DataFrame]:
-        """Parse interconnector CSV content"""
-        try:
-            csv_text = csv_content.decode('utf-8')
-            lines = csv_text.split('\n')
-            
-            # Look for interconnector flow records
-            flow_lines = []
-            for line in lines:
-                if 'D,INTERCONNECTORRES,' in line:
-                    flow_lines.append(line)
-            
-            if not flow_lines:
-                logger.warning("No interconnector flow records found")
-                return None
-            
-            # Parse interconnector data
-            data = []
-            for line in flow_lines:
-                parts = line.split(',')
-                if len(parts) >= 10:
-                    try:
-                        data.append({
-                            'settlementdate': parts[4].strip('"'),
-                            'interconnector': parts[5].strip('"'),
-                            'meteredmwflow': self._safe_float(parts[6]),
-                            'mwflow': self._safe_float(parts[7]),
-                            'mwloss': self._safe_float(parts[8]),
-                            'marginalvalue': self._safe_float(parts[9])
-                        })
-                    except Exception as e:
-                        logger.warning(f"Error parsing interconnector line: {e}")
-                        continue
-            
-            if data:
-                df = pd.DataFrame(data)
-                df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-                logger.info(f"Successfully parsed {len(df)} interconnector records")
-                return df
-                
-        except Exception as e:
-            logger.error(f"Error parsing interconnector CSV: {e}")
-        
-        return None
-    
+
     def _safe_float(self, value: str) -> float:
         """Safely convert string to float"""
         try:

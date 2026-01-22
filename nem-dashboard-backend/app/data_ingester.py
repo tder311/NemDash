@@ -26,6 +26,12 @@ class DataIngester:
         self.nem_client = NEMDispatchClient(nem_base_url)
         self.price_client = NEMPriceClient(nem_base_url)
         self.is_running = False
+
+        # Track last fetched timestamps to avoid gaps
+        # These are initialized from DB on startup in run_continuous_ingestion()
+        self.last_dispatch_timestamp: Optional[datetime] = None
+        self.last_dispatch_price_timestamp: Optional[datetime] = None
+        self.last_trading_price_timestamp: Optional[datetime] = None
         
     async def initialize(self):
         """Initialize the database"""
@@ -33,77 +39,46 @@ class DataIngester:
         logger.info("Database initialized")
     
     async def ingest_current_data(self) -> bool:
-        """Fetch and ingest current dispatch data, prices, and interconnector flows"""
+        """Fetch and ingest new dispatch data and prices since last fetch.
+
+        Only fetches files newer than the last successful fetch timestamp.
+        PUBLIC prices are handled by background backfill, not here.
+        """
         success = True
-        
+
         try:
-            # Fetch dispatch data
-            logger.info("Fetching current dispatch data...")
-            dispatch_df = await self.nem_client.get_current_dispatch_data()
-            
+            # Fetch dispatch data since last fetch
+            dispatch_df = await self.nem_client.get_all_current_dispatch_data(
+                since=self.last_dispatch_timestamp
+            )
+
             if dispatch_df is not None and not dispatch_df.empty:
                 records_inserted = await self.db.insert_dispatch_data(dispatch_df)
-                logger.info(f"Inserted {records_inserted} dispatch records")
-            else:
-                logger.warning("No current dispatch data available")
-                success = False
-            
-            # Fetch dispatch prices
-            logger.info("Fetching current dispatch prices...")
-            price_df = await self.price_client.get_current_dispatch_prices()
-            
+                self.last_dispatch_timestamp = dispatch_df['settlementdate'].max()
+                logger.info(f"Ingested {records_inserted} new dispatch records, latest: {self.last_dispatch_timestamp}")
+
+            # Fetch dispatch prices since last fetch
+            price_df = await self.price_client.get_all_current_dispatch_prices(
+                since=self.last_dispatch_price_timestamp
+            )
+
             if price_df is not None and not price_df.empty:
                 price_records = await self.db.insert_price_data(price_df)
-                logger.info(f"Inserted {price_records} dispatch price records")
-            else:
-                logger.warning("No current dispatch price data available")
-            
-            # Fetch trading prices
-            logger.info("Fetching current trading prices...")
-            trading_df = await self.price_client.get_trading_prices()
-            
+                self.last_dispatch_price_timestamp = price_df['settlementdate'].max()
+                logger.info(f"Ingested {price_records} new dispatch price records, latest: {self.last_dispatch_price_timestamp}")
+
+            # Fetch trading prices since last fetch
+            trading_df = await self.price_client.get_all_current_trading_prices(
+                since=self.last_trading_price_timestamp
+            )
+
             if trading_df is not None and not trading_df.empty:
                 trading_records = await self.db.insert_price_data(trading_df)
-                logger.info(f"Inserted {trading_records} trading price records")
-            else:
-                logger.warning("No current trading price data available")
-            
-            # Fetch today's and yesterday's public prices (complete historical data)
-            today = datetime.now()
-            yesterday = today - timedelta(days=1)
-            
-            # Try to fetch yesterday's public prices (for early morning hours)
-            logger.info("Fetching yesterday's public prices for complete data...")
-            yesterday_df = await self.price_client.get_daily_prices(yesterday)
-            
-            if yesterday_df is not None and not yesterday_df.empty:
-                yesterday_records = await self.db.insert_price_data(yesterday_df)
-                logger.info(f"Inserted {yesterday_records} public price records for yesterday")
-            else:
-                logger.warning("No public price data available for yesterday")
-            
-            # Fetch today's public prices
-            logger.info("Fetching today's public prices...")
-            public_df = await self.price_client.get_daily_prices(today)
-            
-            if public_df is not None and not public_df.empty:
-                public_records = await self.db.insert_price_data(public_df)
-                logger.info(f"Inserted {public_records} public price records for today")
-            else:
-                logger.warning("No public price data available for today")
-            
-            # Fetch interconnector flows
-            logger.info("Fetching current interconnector flows...")
-            interconnector_df = await self.price_client.get_interconnector_flows()
-            
-            if interconnector_df is not None and not interconnector_df.empty:
-                interconnector_records = await self.db.insert_interconnector_data(interconnector_df)
-                logger.info(f"Inserted {interconnector_records} interconnector flow records")
-            else:
-                logger.warning("No current interconnector flow data available")
-            
+                self.last_trading_price_timestamp = trading_df['settlementdate'].max()
+                logger.info(f"Ingested {trading_records} new trading price records, latest: {self.last_trading_price_timestamp}")
+
             return success
-                
+
         except Exception as e:
             logger.error(f"Error ingesting current data: {e}")
             return False
@@ -170,13 +145,19 @@ class DataIngester:
         logger.info(f"Historical price ingestion complete. Total records: {total_records}")
         return total_records
 
-    async def backfill_missing_data(self, days_back: int = 30, max_gaps_per_run: int = 10) -> int:
-        """Automatically backfill missing historical price data on startup"""
-        logger.info(f"Starting automatic backfill check for last {days_back} days...")
+    async def backfill_missing_data(self, start_date: datetime) -> int:
+        """Backfill missing historical price data (runs in background).
+
+        Fetches entire months at once from Archive for efficiency,
+        instead of downloading the same monthly ZIP file for each day.
+
+        Args:
+            start_date: Backfill all data from this date onwards
+        """
+        logger.info(f"Starting automatic backfill check from {start_date.strftime('%Y-%m-%d')}...")
 
         try:
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=days_back)
 
             # Find missing dates
             missing_dates = await self.db.get_missing_dates(start_date, end_date, price_type='PUBLIC')
@@ -185,32 +166,58 @@ class DataIngester:
                 logger.info("No missing dates found - data is complete")
                 return 0
 
-            logger.info(f"Found {len(missing_dates)} missing dates in the last {days_back} days")
+            logger.info(f"Found {len(missing_dates)} missing dates since {start_date.strftime('%Y-%m-%d')}")
 
-            # Limit the number of gaps to fill per run to avoid long startup times
-            dates_to_fill = missing_dates[:max_gaps_per_run]
-            if len(missing_dates) > max_gaps_per_run:
-                logger.info(f"Limiting backfill to {max_gaps_per_run} dates per run")
+            # Group missing dates by month for efficient fetching
+            months_with_missing = {}
+            for date in missing_dates:
+                month_key = (date.year, date.month)
+                if month_key not in months_with_missing:
+                    months_with_missing[month_key] = []
+                months_with_missing[month_key].append(date)
+
+            logger.info(f"Missing data spans {len(months_with_missing)} months")
 
             total_records = 0
-            for date in dates_to_fill:
+            months_processed = 0
+            total_months = len(months_with_missing)
+
+            # Determine cutoff for recent data (use Current directory for last ~14 days)
+            recent_cutoff = (datetime.now() - timedelta(days=14)).date()
+
+            for (year, month), dates in sorted(months_with_missing.items()):
                 try:
-                    logger.info(f"Backfilling prices for {date.strftime('%Y-%m-%d')}")
-                    price_df = await self.price_client.get_daily_prices(date)
+                    # Check if this month is recent enough for Current directory
+                    month_end = datetime(year, month, 1) + timedelta(days=32)
+                    month_end = month_end.replace(day=1) - timedelta(days=1)  # Last day of month
 
-                    if price_df is not None and not price_df.empty:
-                        records = await self.db.insert_price_data(price_df)
-                        total_records += records
-                        logger.info(f"Backfilled {records} price records for {date.strftime('%Y-%m-%d')}")
+                    if month_end.date() >= recent_cutoff:
+                        # Recent month - fetch day by day from Current directory
+                        for date in dates:
+                            price_df = await self.price_client.get_daily_prices(date)
+                            if price_df is not None and not price_df.empty:
+                                records = await self.db.insert_price_data(price_df)
+                                total_records += records
+                            await asyncio.sleep(0.5)
+                    else:
+                        # Historical month - fetch entire month from Archive at once
+                        price_df = await self.price_client.get_monthly_archive_prices(year, month)
+                        if price_df is not None and not price_df.empty:
+                            records = await self.db.insert_price_data(price_df)
+                            total_records += records
+                            logger.info(f"Backfilled {year}-{month:02d}: {records} records")
 
-                    # Delay between requests to respect NEMWEB rate limits
+                    months_processed += 1
+                    logger.info(f"Price backfill progress: {months_processed}/{total_months} months ({total_records} records)")
+
+                    # Delay between months to respect NEMWEB rate limits
                     await asyncio.sleep(1)
 
                 except Exception as e:
-                    logger.error(f"Error backfilling {date.strftime('%Y-%m-%d')}: {e}")
+                    logger.error(f"Error backfilling {year}-{month:02d}: {e}")
                     continue
 
-            logger.info(f"Backfill complete. Total records added: {total_records}")
+            logger.info(f"Price backfill complete. Total records added: {total_records}")
             return total_records
 
         except Exception as e:
@@ -250,33 +257,23 @@ class DataIngester:
             logger.error(f"Error during DISPATCH price backfill: {e}")
             return 0
 
-    async def backfill_dispatch_data(self, days_back: int = 7) -> int:
-        """Backfill dispatch SCADA data for generation history charts.
+    async def backfill_dispatch_data(self, start_date: datetime) -> int:
+        """Backfill dispatch SCADA data from historical archives.
 
-        Fetches dispatch data from:
-        1. NEMWEB Current directory (~3 days rolling window) for recent data
-        2. NEMWEB Archive for older historical data (up to days_back)
+        Note: Recent data from Current directory (~3 days) should already be loaded
+        before calling this method. This only fetches older data from archives.
 
-        This enables historical generation by fuel source charts for up to 7 days.
+        Args:
+            start_date: Backfill all dispatch data from this date onwards
         """
         total_records = 0
 
         try:
-            # Step 1: Fetch recent data from Current directory (~3 days)
-            logger.info("Fetching dispatch data from Current directory...")
-            df = await self.nem_client.get_all_current_dispatch_data(since=None)
-
-            if df is not None and not df.empty:
-                records = await self.db.insert_dispatch_data(df)
-                total_records += records
-                logger.info(f"Backfilled {records} dispatch records from Current directory")
-
-            # Step 2: Backfill older data from historical archives
+            # Backfill older data from historical archives
             # Archives are available with ~2 day delay, so we can fill gaps older than ~3 days
-            logger.info(f"Checking for missing dispatch data in last {days_back} days...")
+            logger.info(f"Checking for missing dispatch data since {start_date.strftime('%Y-%m-%d')}...")
 
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=days_back)
 
             # Find dates that need backfilling from archives
             missing_dates = await self._get_missing_dispatch_dates(start_date, end_date)
@@ -339,26 +336,98 @@ class DataIngester:
 
         return missing
 
+    async def _run_historical_backfill(self, start_date: datetime):
+        """Run historical backfill in background. Called after site is already usable."""
+        logger.info(f"Starting background historical backfill from {start_date.strftime('%Y-%m-%d')}...")
+
+        try:
+            # Backfill missing historical PUBLIC price data
+            await self.backfill_missing_data(start_date=start_date)
+
+            # Backfill dispatch SCADA data from archives (older than ~3 days)
+            await self.backfill_dispatch_data(start_date=start_date)
+
+            logger.info("Background historical backfill complete")
+        except Exception as e:
+            logger.error(f"Error in background backfill: {e}")
+
     async def run_continuous_ingestion(self, interval_minutes: int = 5):
         """Run continuous data ingestion"""
         self.is_running = True
         logger.info(f"Starting continuous ingestion with {interval_minutes} minute intervals")
 
-        # Backfill missing historical PUBLIC price data on startup
-        backfill_days = int(os.getenv('BACKFILL_DAYS_ON_STARTUP', '30'))
-        await self.backfill_missing_data(days_back=backfill_days)
+        # Parse backfill start date from environment
+        backfill_start_str = os.getenv('BACKFILL_START_DATE', '2025-01-01')
+        try:
+            backfill_start_date = datetime.strptime(backfill_start_str, '%Y-%m-%d')
+        except ValueError:
+            logger.warning(f"Invalid BACKFILL_START_DATE '{backfill_start_str}', using 2025-01-01")
+            backfill_start_date = datetime(2025, 1, 1)
 
-        # Backfill DISPATCH prices from Current directory (~3 days)
-        # This bridges the gap between 4am (when PUBLIC prices end) and now
-        await self.backfill_dispatch_prices()
+        logger.info(f"Backfill start date: {backfill_start_date.strftime('%Y-%m-%d')}")
 
-        # Backfill dispatch SCADA data for generation history charts
-        dispatch_backfill_days = int(os.getenv('DISPATCH_BACKFILL_DAYS', '7'))
-        await self.backfill_dispatch_data(days_back=dispatch_backfill_days)
+        # FIRST: Initialize timestamps from database to avoid re-fetching existing data
+        self.last_dispatch_timestamp = await self.db.get_latest_dispatch_timestamp()
+        self.last_dispatch_price_timestamp = await self.db.get_latest_price_timestamp('DISPATCH')
+        self.last_trading_price_timestamp = await self.db.get_latest_price_timestamp('TRADING')
 
-        # Initial data fetch
+        logger.info(f"Existing data timestamps - dispatch: {self.last_dispatch_timestamp}, "
+                    f"dispatch_price: {self.last_dispatch_price_timestamp}, "
+                    f"trading_price: {self.last_trading_price_timestamp}")
+
+        # Fetch recent data from Current directories (only files newer than existing data)
+        logger.info("Fetching new data from Current directories...")
+
+        # Fetch dispatch SCADA data (only new files)
+        dispatch_df = await self.nem_client.get_all_current_dispatch_data(since=self.last_dispatch_timestamp)
+        if dispatch_df is not None and not dispatch_df.empty:
+            records = await self.db.insert_dispatch_data(dispatch_df)
+            self.last_dispatch_timestamp = dispatch_df['settlementdate'].max()
+            logger.info(f"Loaded {records} new dispatch records from Current directory")
+        else:
+            logger.info("No new dispatch data to fetch")
+
+        # Fetch DISPATCH prices (only new files)
+        dispatch_price_df = await self.price_client.get_all_current_dispatch_prices(since=self.last_dispatch_price_timestamp)
+        if dispatch_price_df is not None and not dispatch_price_df.empty:
+            records = await self.db.insert_price_data(dispatch_price_df)
+            self.last_dispatch_price_timestamp = dispatch_price_df['settlementdate'].max()
+            logger.info(f"Loaded {records} new dispatch price records from Current directory")
+        else:
+            logger.info("No new dispatch price data to fetch")
+
+        # Fetch TRADING prices (only new files)
+        trading_df = await self.price_client.get_all_current_trading_prices(since=self.last_trading_price_timestamp)
+        if trading_df is not None and not trading_df.empty:
+            records = await self.db.insert_price_data(trading_df)
+            self.last_trading_price_timestamp = trading_df['settlementdate'].max()
+            logger.info(f"Loaded {records} new trading price records from Current directory")
+        else:
+            logger.info("No new trading price data to fetch")
+
+        # Fetch today's and yesterday's PUBLIC prices for immediate use (if missing)
+        today = datetime.now()
+        yesterday = today - timedelta(days=1)
+
+        yesterday_df = await self.price_client.get_daily_prices(yesterday)
+        if yesterday_df is not None and not yesterday_df.empty:
+            records = await self.db.insert_price_data(yesterday_df)
+            logger.info(f"Loaded {records} PUBLIC price records for yesterday")
+
+        today_df = await self.price_client.get_daily_prices(today)
+        if today_df is not None and not today_df.empty:
+            records = await self.db.insert_price_data(today_df)
+            logger.info(f"Loaded {records} PUBLIC price records for today")
+
+        logger.info("Site is now usable with recent data. Starting background historical backfill...")
+
+        # PRIORITY 2: Start historical backfill in background
+        # This runs concurrently with the main ingestion loop
+        backfill_task = asyncio.create_task(self._run_historical_backfill(backfill_start_date))
+
+        # Initial data fetch (will fetch files newer than the timestamps above)
         await self.ingest_current_data()
-        
+
         while self.is_running:
             try:
                 await asyncio.sleep(interval_minutes * 60)
