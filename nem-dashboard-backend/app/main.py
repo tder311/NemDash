@@ -21,7 +21,8 @@ from .models import (
     RegionGenerationHistoryResponse,
     RegionSummaryResponse,
     DataCoverageResponse,
-    DatabaseHealthResponse
+    DatabaseHealthResponse,
+    PASADataResponse
 )
 
 # Configure logging
@@ -655,6 +656,133 @@ async def get_database_health(
 
     except Exception as e:
         logger.error(f"Error getting database health: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# PASA (Projected Assessment of System Adequacy) endpoints
+@app.get("/api/pasa/pdpasa/{region}", response_model=PASADataResponse)
+async def get_region_pdpasa(region: str):
+    """Get the latest PDPASA (Pre-Dispatch PASA) forecast for a specific region.
+
+    PDPASA provides short-term reserve forecasts (approximately 6 hours ahead)
+    at 30-minute intervals. Includes demand forecasts, available capacity,
+    surplus reserve, and LOR (Lack of Reserve) conditions.
+
+    LOR Levels:
+    - 0: No LOR - Adequate reserves
+    - 1: LOR1 - Low Reserve Condition
+    - 2: LOR2 - Lack of Reserve 2
+    - 3: LOR3 - Lack of Reserve 3 (Load Shedding Imminent)
+    """
+    valid_regions = ['NSW1', 'VIC1', 'QLD1', 'SA1', 'TAS1']
+    region = region.upper()
+
+    # Allow both formats: NSW or NSW1
+    if region in ['NSW', 'VIC', 'QLD', 'SA', 'TAS']:
+        region = region + '1'
+
+    if region not in valid_regions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid region. Must be one of: {', '.join(valid_regions)} (or without the '1' suffix)"
+        )
+
+    try:
+        data = await db.get_latest_pdpasa(region)
+
+        if not data:
+            return PASADataResponse(
+                data=[],
+                run_datetime=None,
+                region=region,
+                count=0,
+                message=f"No PDPASA data available for {region}"
+            )
+
+        # Convert datetime objects to ISO strings
+        for record in data:
+            if 'run_datetime' in record and record['run_datetime']:
+                record['run_datetime'] = record['run_datetime'].isoformat()
+            if 'interval_datetime' in record and record['interval_datetime']:
+                record['interval_datetime'] = record['interval_datetime'].isoformat()
+            if 'created_at' in record and record['created_at']:
+                record['created_at'] = record['created_at'].isoformat()
+
+        run_datetime = data[0].get('run_datetime') if data else None
+
+        return PASADataResponse(
+            data=data,
+            run_datetime=run_datetime,
+            region=region,
+            count=len(data),
+            message=f"Retrieved {len(data)} PDPASA records for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting PDPASA data for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/pasa/stpasa/{region}", response_model=PASADataResponse)
+async def get_region_stpasa(region: str):
+    """Get the latest STPASA (Short Term PASA) forecast for a specific region.
+
+    STPASA provides medium-term reserve forecasts (approximately 6 days ahead)
+    at 30-minute intervals. Includes demand forecasts, available capacity,
+    surplus reserve, and LOR (Lack of Reserve) conditions.
+
+    LOR Levels:
+    - 0: No LOR - Adequate reserves
+    - 1: LOR1 - Low Reserve Condition
+    - 2: LOR2 - Lack of Reserve 2
+    - 3: LOR3 - Lack of Reserve 3 (Load Shedding Imminent)
+    """
+    valid_regions = ['NSW1', 'VIC1', 'QLD1', 'SA1', 'TAS1']
+    region = region.upper()
+
+    # Allow both formats: NSW or NSW1
+    if region in ['NSW', 'VIC', 'QLD', 'SA', 'TAS']:
+        region = region + '1'
+
+    if region not in valid_regions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid region. Must be one of: {', '.join(valid_regions)} (or without the '1' suffix)"
+        )
+
+    try:
+        data = await db.get_latest_stpasa(region)
+
+        if not data:
+            return PASADataResponse(
+                data=[],
+                run_datetime=None,
+                region=region,
+                count=0,
+                message=f"No STPASA data available for {region}"
+            )
+
+        # Convert datetime objects to ISO strings
+        for record in data:
+            if 'run_datetime' in record and record['run_datetime']:
+                record['run_datetime'] = record['run_datetime'].isoformat()
+            if 'interval_datetime' in record and record['interval_datetime']:
+                record['interval_datetime'] = record['interval_datetime'].isoformat()
+            if 'created_at' in record and record['created_at']:
+                record['created_at'] = record['created_at'].isoformat()
+
+        run_datetime = data[0].get('run_datetime') if data else None
+
+        return PASADataResponse(
+            data=data,
+            run_datetime=run_datetime,
+            region=region,
+            count=len(data),
+            message=f"Retrieved {len(data)} STPASA records for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting STPASA data for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

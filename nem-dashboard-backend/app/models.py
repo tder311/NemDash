@@ -165,3 +165,30 @@ class DatabaseHealthResponse(BaseModel):
     gaps: List[TableGaps]
     checked_hours: int
     checked_at: str
+
+
+class PASARegionRecord(BaseModel):
+    id: Optional[int] = None
+    run_datetime: str
+    interval_datetime: str
+    regionid: str
+    demand10: Optional[float] = None
+    demand50: Optional[float] = None
+    demand90: Optional[float] = None
+    reservereq: Optional[float] = None
+    capacityreq: Optional[float] = None
+    aggregatecapacityavailable: Optional[float] = None
+    aggregatepasaavailability: Optional[float] = None
+    surplusreserve: Optional[float] = None
+    lorcondition: Optional[int] = None
+    calculatedlor1level: Optional[float] = None
+    calculatedlor2level: Optional[float] = None
+    created_at: Optional[str] = None
+
+
+class PASADataResponse(BaseModel):
+    data: List[Dict[str, Any]]
+    run_datetime: Optional[str] = None
+    region: str
+    count: int
+    message: str

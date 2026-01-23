@@ -9,6 +9,7 @@ import pandas as pd
 
 from .nem_client import NEMDispatchClient
 from .nem_price_client import NEMPriceClient
+from .nem_pasa_client import NEMPASAClient
 from .database import NEMDatabase
 
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +26,7 @@ class DataIngester:
         self.db = NEMDatabase(db_url)
         self.nem_client = NEMDispatchClient(nem_base_url)
         self.price_client = NEMPriceClient(nem_base_url)
+        self.pasa_client = NEMPASAClient(nem_base_url)
         self.is_running = False
 
         # Track last fetched timestamps to avoid gaps
@@ -32,6 +34,9 @@ class DataIngester:
         self.last_dispatch_timestamp: Optional[datetime] = None
         self.last_dispatch_price_timestamp: Optional[datetime] = None
         self.last_trading_price_timestamp: Optional[datetime] = None
+        self.last_pdpasa_run: Optional[datetime] = None
+        self.last_stpasa_run: Optional[datetime] = None
+        self.pasa_ingestion_counter: int = 0  # Track cycles for PASA ingestion (every 6 cycles = 30 min)
         
     async def initialize(self):
         """Initialize the database"""
@@ -82,7 +87,50 @@ class DataIngester:
         except Exception as e:
             logger.error(f"Error ingesting current data: {e}")
             return False
-    
+
+    async def ingest_pasa_data(self) -> bool:
+        """Fetch and ingest latest PASA (PDPASA and STPASA) data.
+
+        PASA data is published every 30 minutes, so this should be called
+        less frequently than dispatch/price data.
+        """
+        success = True
+
+        try:
+            # Fetch PDPASA
+            pdpasa_df = await self.pasa_client.get_latest_pdpasa()
+
+            if pdpasa_df is not None and not pdpasa_df.empty:
+                # Check if we already have this run
+                current_run = pdpasa_df['run_datetime'].iloc[0] if 'run_datetime' in pdpasa_df.columns else None
+
+                if current_run is not None and (self.last_pdpasa_run is None or current_run > self.last_pdpasa_run):
+                    records_inserted = await self.db.insert_pdpasa_data(pdpasa_df)
+                    self.last_pdpasa_run = current_run
+                    logger.info(f"Ingested {records_inserted} PDPASA records, run: {self.last_pdpasa_run}")
+                else:
+                    logger.debug(f"PDPASA data already ingested for run: {current_run}")
+
+            # Fetch STPASA
+            stpasa_df = await self.pasa_client.get_latest_stpasa()
+
+            if stpasa_df is not None and not stpasa_df.empty:
+                # Check if we already have this run
+                current_run = stpasa_df['run_datetime'].iloc[0] if 'run_datetime' in stpasa_df.columns else None
+
+                if current_run is not None and (self.last_stpasa_run is None or current_run > self.last_stpasa_run):
+                    records_inserted = await self.db.insert_stpasa_data(stpasa_df)
+                    self.last_stpasa_run = current_run
+                    logger.info(f"Ingested {records_inserted} STPASA records, run: {self.last_stpasa_run}")
+                else:
+                    logger.debug(f"STPASA data already ingested for run: {current_run}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Error ingesting PASA data: {e}")
+            return False
+
     async def ingest_historical_data(self, start_date: datetime, end_date: Optional[datetime] = None) -> int:
         """Fetch and ingest historical dispatch data for a date range"""
         if end_date is None:
@@ -370,10 +418,13 @@ class DataIngester:
         self.last_dispatch_timestamp = await self.db.get_latest_dispatch_timestamp()
         self.last_dispatch_price_timestamp = await self.db.get_latest_price_timestamp('DISPATCH')
         self.last_trading_price_timestamp = await self.db.get_latest_price_timestamp('TRADING')
+        self.last_pdpasa_run = await self.db.get_latest_pdpasa_run_datetime()
+        self.last_stpasa_run = await self.db.get_latest_stpasa_run_datetime()
 
         logger.info(f"Existing data timestamps - dispatch: {self.last_dispatch_timestamp}, "
                     f"dispatch_price: {self.last_dispatch_price_timestamp}, "
-                    f"trading_price: {self.last_trading_price_timestamp}")
+                    f"trading_price: {self.last_trading_price_timestamp}, "
+                    f"pdpasa: {self.last_pdpasa_run}, stpasa: {self.last_stpasa_run}")
 
         # Fetch recent data from Current directories (only files newer than existing data)
         logger.info("Fetching new data from Current directories...")
@@ -419,6 +470,10 @@ class DataIngester:
             records = await self.db.insert_price_data(today_df)
             logger.info(f"Loaded {records} PUBLIC price records for today")
 
+        # Fetch PASA data for immediate use
+        logger.info("Fetching PASA data...")
+        await self.ingest_pasa_data()
+
         logger.info("Site is now usable with recent data. Starting background historical backfill...")
 
         # PRIORITY 2: Start historical backfill in background
@@ -433,6 +488,12 @@ class DataIngester:
                 await asyncio.sleep(interval_minutes * 60)
                 if self.is_running:
                     await self.ingest_current_data()
+
+                    # Ingest PASA data every 6 cycles (~30 minutes when interval=5 min)
+                    self.pasa_ingestion_counter += 1
+                    if self.pasa_ingestion_counter >= 6:
+                        await self.ingest_pasa_data()
+                        self.pasa_ingestion_counter = 0
             except Exception as e:
                 logger.error(f"Error in continuous ingestion: {e}")
                 await asyncio.sleep(60)  # Wait 1 minute before retrying

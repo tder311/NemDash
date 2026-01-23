@@ -53,8 +53,8 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables (3: dispatch_data, price_data, generator_info)
-        assert count == 3
+        # Should still have same number of application tables (5: dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data)
+        assert count == 5
 
 
 class TestDispatchDataInsert:
@@ -629,3 +629,203 @@ class TestDispatchTimestampQueries:
 
         assert isinstance(result, set)
         assert '2025-01-15' in result
+
+
+class TestPDPASADataInsert:
+    """Tests for insert_pdpasa_data method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_pdpasa_data(self, test_db):
+        """Test inserting PDPASA data DataFrame"""
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 0),
+            'interval_datetime': datetime(2025, 1, 15, 10, 30),
+            'regionid': 'NSW1',
+            'demand10': 7200.0,
+            'demand50': 7500.0,
+            'demand90': 7800.0,
+            'reservereq': 1500.0,
+            'capacityreq': 9000.0,
+            'aggregatecapacityavailable': 10500.0,
+            'aggregatepasaavailability': 10000.0,
+            'surplusreserve': 1500.0,
+            'lorcondition': 0,
+            'calculatedlor1level': 2000.0,
+            'calculatedlor2level': 1500.0
+        }])
+
+        count = await test_db.insert_pdpasa_data(df)
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_pdpasa_data_empty_df(self, test_db):
+        """Test that empty DataFrame returns 0"""
+        df = pd.DataFrame()
+        count = await test_db.insert_pdpasa_data(df)
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_pdpasa_data_upsert(self, test_db):
+        """Test that duplicate records are replaced (upsert)"""
+        df1 = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 0),
+            'interval_datetime': datetime(2025, 1, 15, 10, 30),
+            'regionid': 'NSW1',
+            'demand50': 7500.0,
+            'lorcondition': 0
+        }])
+        await test_db.insert_pdpasa_data(df1)
+
+        # Insert same record with updated values
+        df2 = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 0),
+            'interval_datetime': datetime(2025, 1, 15, 10, 30),
+            'regionid': 'NSW1',
+            'demand50': 8000.0,
+            'lorcondition': 1
+        }])
+        await test_db.insert_pdpasa_data(df2)
+
+        # Should have only 1 record with updated values
+        result = await test_db.get_latest_pdpasa('NSW1')
+        assert len(result) == 1
+        assert result[0]['demand50'] == 8000.0
+        assert result[0]['lorcondition'] == 1
+
+
+class TestSTPASADataInsert:
+    """Tests for insert_stpasa_data method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_stpasa_data(self, test_db):
+        """Test inserting STPASA data DataFrame"""
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 6, 0),
+            'interval_datetime': datetime(2025, 1, 16, 0, 0),
+            'regionid': 'VIC1',
+            'demand10': 4500.0,
+            'demand50': 4900.0,
+            'demand90': 5300.0,
+            'reservereq': 1200.0,
+            'capacityreq': 6100.0,
+            'aggregatecapacityavailable': 7200.0,
+            'aggregatepasaavailability': 6900.0,
+            'surplusreserve': 1100.0,
+            'lorcondition': 0,
+            'calculatedlor1level': 1800.0,
+            'calculatedlor2level': 1400.0
+        }])
+
+        count = await test_db.insert_stpasa_data(df)
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_stpasa_data_empty_df(self, test_db):
+        """Test that empty DataFrame returns 0"""
+        df = pd.DataFrame()
+        count = await test_db.insert_stpasa_data(df)
+        assert count == 0
+
+
+class TestPASAQueries:
+    """Tests for PASA data query methods"""
+
+    @pytest.mark.asyncio
+    async def test_get_latest_pdpasa(self, test_db):
+        """Test retrieving latest PDPASA data for a region"""
+        # Insert PDPASA data for multiple runs
+        df1 = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 0),
+            'interval_datetime': datetime(2025, 1, 15, 10, 30),
+            'regionid': 'NSW1',
+            'demand50': 7500.0,
+            'lorcondition': 0
+        }])
+        await test_db.insert_pdpasa_data(df1)
+
+        df2 = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 30),  # Later run
+            'interval_datetime': datetime(2025, 1, 15, 11, 0),
+            'regionid': 'NSW1',
+            'demand50': 7600.0,
+            'lorcondition': 1
+        }])
+        await test_db.insert_pdpasa_data(df2)
+
+        result = await test_db.get_latest_pdpasa('NSW1')
+
+        # Should return data from the latest run only
+        assert len(result) == 1
+        assert result[0]['demand50'] == 7600.0
+        assert result[0]['lorcondition'] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_latest_pdpasa_empty(self, test_db):
+        """Test retrieving PDPASA for region with no data"""
+        result = await test_db.get_latest_pdpasa('NOREGION')
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_get_latest_stpasa(self, test_db):
+        """Test retrieving latest STPASA data for a region"""
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 6, 0),
+            'interval_datetime': datetime(2025, 1, 16, 0, 0),
+            'regionid': 'QLD1',
+            'demand50': 6500.0,
+            'lorcondition': 0
+        }])
+        await test_db.insert_stpasa_data(df)
+
+        result = await test_db.get_latest_stpasa('QLD1')
+
+        assert len(result) == 1
+        assert result[0]['demand50'] == 6500.0
+
+    @pytest.mark.asyncio
+    async def test_get_latest_stpasa_empty(self, test_db):
+        """Test retrieving STPASA for region with no data"""
+        result = await test_db.get_latest_stpasa('NOREGION')
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_get_latest_pdpasa_run_datetime(self, test_db):
+        """Test getting latest PDPASA run datetime"""
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 30),
+            'interval_datetime': datetime(2025, 1, 15, 11, 0),
+            'regionid': 'SA1',
+            'demand50': 2100.0
+        }])
+        await test_db.insert_pdpasa_data(df)
+
+        result = await test_db.get_latest_pdpasa_run_datetime()
+
+        assert result == datetime(2025, 1, 15, 10, 30)
+
+    @pytest.mark.asyncio
+    async def test_get_latest_pdpasa_run_datetime_empty(self, test_db):
+        """Test getting latest PDPASA run datetime when no data"""
+        result = await test_db.get_latest_pdpasa_run_datetime()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_latest_stpasa_run_datetime(self, test_db):
+        """Test getting latest STPASA run datetime"""
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 12, 0),
+            'interval_datetime': datetime(2025, 1, 16, 6, 0),
+            'regionid': 'TAS1',
+            'demand50': 1100.0
+        }])
+        await test_db.insert_stpasa_data(df)
+
+        result = await test_db.get_latest_stpasa_run_datetime()
+
+        assert result == datetime(2025, 1, 15, 12, 0)
+
+    @pytest.mark.asyncio
+    async def test_get_latest_stpasa_run_datetime_empty(self, test_db):
+        """Test getting latest STPASA run datetime when no data"""
+        result = await test_db.get_latest_stpasa_run_datetime()
+        assert result is None

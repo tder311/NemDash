@@ -77,7 +77,7 @@ async def test_db():
 
     # Clean all tables before each test to ensure isolation
     async with db._pool.acquire() as conn:
-        await conn.execute("TRUNCATE dispatch_data, price_data, generator_info RESTART IDENTITY CASCADE")
+        await conn.execute("TRUNCATE dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data RESTART IDENTITY CASCADE")
 
     yield db
     await db.close()
@@ -382,8 +382,12 @@ def mock_db():
     db.close = AsyncMock()
     db.insert_dispatch_data = AsyncMock(return_value=5)
     db.insert_price_data = AsyncMock(return_value=5)
+    db.insert_pdpasa_data = AsyncMock(return_value=100)
+    db.insert_stpasa_data = AsyncMock(return_value=100)
     db.get_latest_dispatch_timestamp = AsyncMock(return_value=None)
     db.get_latest_price_timestamp = AsyncMock(return_value=None)
+    db.get_latest_pdpasa_run_datetime = AsyncMock(return_value=None)
+    db.get_latest_stpasa_run_datetime = AsyncMock(return_value=None)
     db.get_missing_dates = AsyncMock(return_value=[])
     db.get_dispatch_dates_with_data = AsyncMock(return_value=set())
     db.get_data_summary = AsyncMock(return_value={
@@ -421,27 +425,39 @@ def mock_price_client():
 
 
 @pytest.fixture
-def mock_ingester(mock_db, mock_nem_client, mock_price_client):
+def mock_pasa_client():
+    """Fully mocked NEMPASAClient instance."""
+    client = MagicMock()
+    client.get_latest_pdpasa = AsyncMock(return_value=None)
+    client.get_latest_stpasa = AsyncMock(return_value=None)
+    return client
+
+
+@pytest.fixture
+def mock_ingester(mock_db, mock_nem_client, mock_price_client, mock_pasa_client):
     """DataIngester with fully mocked dependencies.
 
-    This fixture patches all three dependencies (NEMDatabase, NEMDispatchClient,
-    NEMPriceClient) at construction time, so no real connections are made.
+    This fixture patches all four dependencies (NEMDatabase, NEMDispatchClient,
+    NEMPriceClient, NEMPASAClient) at construction time, so no real connections are made.
     Tests using this fixture run in milliseconds instead of minutes.
     """
     from app.data_ingester import DataIngester
 
     with patch('app.data_ingester.NEMDatabase') as MockDB, \
          patch('app.data_ingester.NEMDispatchClient') as MockNEMClient, \
-         patch('app.data_ingester.NEMPriceClient') as MockPriceClient:
+         patch('app.data_ingester.NEMPriceClient') as MockPriceClient, \
+         patch('app.data_ingester.NEMPASAClient') as MockPASAClient:
 
         MockDB.return_value = mock_db
         MockNEMClient.return_value = mock_nem_client
         MockPriceClient.return_value = mock_price_client
+        MockPASAClient.return_value = mock_pasa_client
 
         ingester = DataIngester("postgresql://mock:mock@localhost/test")
         # Ensure the mocked instances are set
         ingester.db = mock_db
         ingester.nem_client = mock_nem_client
         ingester.price_client = mock_price_client
+        ingester.pasa_client = mock_pasa_client
 
         yield ingester

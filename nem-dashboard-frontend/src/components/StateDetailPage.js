@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import axios from 'axios';
 import DatabaseHealthPage from './DatabaseHealthPage';
+import PASAPage from './PASAPage';
 import './StateDetailPage.css';
 
 const REGION_NAMES = {
@@ -60,6 +61,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
   const [timeRange, setTimeRange] = useState(24);
   const [lastUpdated, setLastUpdated] = useState('');
   const [showHealthPage, setShowHealthPage] = useState(false);
+  const [showPASAPage, setShowPASAPage] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -378,6 +380,17 @@ function StateDetailPage({ region, darkMode, onBack }) {
     );
   }
 
+  // Show PASA forecast page if requested
+  if (showPASAPage) {
+    return (
+      <PASAPage
+        region={region}
+        darkMode={darkMode}
+        onBack={() => setShowPASAPage(false)}
+      />
+    );
+  }
+
   if (loading) {
     return (
       <div className={`state-detail-container ${darkMode ? 'dark' : 'light'}`}>
@@ -433,6 +446,18 @@ function StateDetailPage({ region, darkMode, onBack }) {
           <div className="card-label">Active Generators</div>
           <div className="card-value">
             {summary?.generator_count || '0'}
+          </div>
+        </div>
+        <div
+          className="summary-card clickable"
+          onClick={() => setShowPASAPage(true)}
+          title="Click to view PASA forecast"
+          style={{ cursor: 'pointer' }}
+        >
+          <div className="card-label">PASA Forecast</div>
+          <div className="card-value" style={{ fontSize: '1.2rem' }}>
+            View Reserve
+            <span className="card-unit">Outlook</span>
           </div>
         </div>
       </div>

@@ -834,3 +834,245 @@ class TestRegionEndpointExceptions:
             assert "Summary error" in response.json()["detail"]
         finally:
             main_module.db = original_db
+
+
+class TestPASAEndpoints:
+    """Tests for PASA (Projected Assessment of System Adequacy) endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_pdpasa_valid_region(self):
+        """Test PDPASA endpoint with valid region."""
+        import app.main as main_module
+        from datetime import datetime
+
+        mock_db = MagicMock()
+        mock_db.get_latest_pdpasa = AsyncMock(return_value=[{
+            'run_datetime': datetime(2025, 1, 15, 10, 0),
+            'interval_datetime': datetime(2025, 1, 15, 10, 30),
+            'regionid': 'NSW1',
+            'demand50': 7500.0,
+            'lorcondition': 0,
+            'surplusreserve': 1500.0
+        }])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/pdpasa/NSW1")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["count"] == 1
+                assert data["region"] == "NSW1"
+                assert len(data["data"]) == 1
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_pdpasa_region_normalization(self):
+        """Test PDPASA endpoint normalizes region (NSW -> NSW1)."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_pdpasa = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/pdpasa/NSW")
+                assert response.status_code == 200
+                # Check that the region was normalized to NSW1
+                assert response.json()["region"] == "NSW1"
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_pdpasa_invalid_region(self):
+        """Test PDPASA endpoint with invalid region."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/pdpasa/INVALID")
+                assert response.status_code == 400
+                assert "Invalid region" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_pdpasa_empty_data(self):
+        """Test PDPASA endpoint with no data available."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_pdpasa = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/pdpasa/VIC1")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["count"] == 0
+                assert data["data"] == []
+                assert "No PDPASA data" in data["message"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_pdpasa_exception(self):
+        """Test PDPASA endpoint error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_pdpasa = AsyncMock(side_effect=Exception("PDPASA error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/pdpasa/NSW1")
+                assert response.status_code == 500
+                assert "PDPASA error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_stpasa_valid_region(self):
+        """Test STPASA endpoint with valid region."""
+        import app.main as main_module
+        from datetime import datetime
+
+        mock_db = MagicMock()
+        mock_db.get_latest_stpasa = AsyncMock(return_value=[{
+            'run_datetime': datetime(2025, 1, 15, 6, 0),
+            'interval_datetime': datetime(2025, 1, 16, 0, 0),
+            'regionid': 'QLD1',
+            'demand50': 6500.0,
+            'lorcondition': 0,
+            'surplusreserve': 900.0
+        }])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/stpasa/QLD1")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["count"] == 1
+                assert data["region"] == "QLD1"
+                assert len(data["data"]) == 1
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_stpasa_region_normalization(self):
+        """Test STPASA endpoint normalizes region (VIC -> VIC1)."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_stpasa = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/stpasa/VIC")
+                assert response.status_code == 200
+                # Check that the region was normalized to VIC1
+                assert response.json()["region"] == "VIC1"
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_stpasa_invalid_region(self):
+        """Test STPASA endpoint with invalid region."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/stpasa/INVALID")
+                assert response.status_code == 400
+                assert "Invalid region" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_stpasa_empty_data(self):
+        """Test STPASA endpoint with no data available."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_stpasa = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/stpasa/SA1")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["count"] == 0
+                assert data["data"] == []
+                assert "No STPASA data" in data["message"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_stpasa_exception(self):
+        """Test STPASA endpoint error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_stpasa = AsyncMock(side_effect=Exception("STPASA error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/pasa/stpasa/TAS1")
+                assert response.status_code == 500
+                assert "STPASA error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
