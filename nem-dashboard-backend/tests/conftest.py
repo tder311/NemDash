@@ -361,3 +361,87 @@ async def async_client_extended(populated_db_extended):
 
     # Clean up
     main_module.db = None
+
+
+# ============================================================================
+# Mock Fixtures for DataIngester (Fast Tests)
+# ============================================================================
+
+from unittest.mock import MagicMock, AsyncMock, patch
+
+
+@pytest.fixture
+def mock_db():
+    """Fully mocked NEMDatabase instance for fast unit tests.
+
+    This avoids real database connections, making tests run instantly.
+    """
+    db = MagicMock()
+    db._pool = MagicMock()
+    db.initialize = AsyncMock()
+    db.close = AsyncMock()
+    db.insert_dispatch_data = AsyncMock(return_value=5)
+    db.insert_price_data = AsyncMock(return_value=5)
+    db.get_latest_dispatch_timestamp = AsyncMock(return_value=None)
+    db.get_latest_price_timestamp = AsyncMock(return_value=None)
+    db.get_missing_dates = AsyncMock(return_value=[])
+    db.get_dispatch_dates_with_data = AsyncMock(return_value=set())
+    db.get_data_summary = AsyncMock(return_value={
+        'total_records': 100,
+        'unique_duids': 10,
+        'earliest_date': '2025-01-01',
+        'latest_date': '2025-01-15',
+        'fuel_breakdown': []
+    })
+    return db
+
+
+@pytest.fixture
+def mock_nem_client():
+    """Fully mocked NEMDispatchClient instance."""
+    client = MagicMock()
+    client.get_current_dispatch_data = AsyncMock(return_value=None)
+    client.get_all_current_dispatch_data = AsyncMock(return_value=None)
+    client.get_historical_dispatch_data = AsyncMock(return_value=None)
+    return client
+
+
+@pytest.fixture
+def mock_price_client():
+    """Fully mocked NEMPriceClient instance."""
+    client = MagicMock()
+    client.get_current_dispatch_prices = AsyncMock(return_value=None)
+    client.get_all_current_dispatch_prices = AsyncMock(return_value=None)
+    client.get_all_current_trading_prices = AsyncMock(return_value=None)
+    client.get_trading_prices = AsyncMock(return_value=None)
+    client.get_daily_prices = AsyncMock(return_value=None)
+    client.get_monthly_archive_prices = AsyncMock(return_value=None)
+    client.get_interconnector_flows = AsyncMock(return_value=None)
+    return client
+
+
+@pytest.fixture
+def mock_ingester(mock_db, mock_nem_client, mock_price_client):
+    """DataIngester with fully mocked dependencies.
+
+    This fixture patches all three dependencies (NEMDatabase, NEMDispatchClient,
+    NEMPriceClient) at construction time, so no real connections are made.
+    Tests using this fixture run in milliseconds instead of minutes.
+    """
+    from app.data_ingester import DataIngester
+
+    with patch('app.data_ingester.NEMDatabase') as MockDB, \
+         patch('app.data_ingester.NEMDispatchClient') as MockNEMClient, \
+         patch('app.data_ingester.NEMPriceClient') as MockPriceClient:
+
+        MockDB.return_value = mock_db
+        MockNEMClient.return_value = mock_nem_client
+        MockPriceClient.return_value = mock_price_client
+
+        ingester = DataIngester("postgresql://mock:mock@localhost/test")
+        # Ensure the mocked instances are set
+        ingester.db = mock_db
+        ingester.nem_client = mock_nem_client
+        ingester.price_client = mock_price_client
+
+        yield ingester
