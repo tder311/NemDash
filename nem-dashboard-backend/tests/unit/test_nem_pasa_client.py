@@ -2,8 +2,7 @@
 Unit tests for NEMPASAClient
 """
 import pytest
-import respx
-from httpx import Response
+import httpx
 
 from app.nem_pasa_client import NEMPASAClient
 from tests.fixtures.sample_pasa_csv import (
@@ -171,18 +170,19 @@ class TestGetLatestPdpasa:
         return NEMPASAClient("https://test.nemweb.com.au")
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_pdpasa_success(self, client):
+    async def test_get_latest_pdpasa_success(self, client, httpx_mock):
         """Test successful PDPASA fetch"""
         # Mock directory listing
-        respx.get("https://test.nemweb.com.au/Reports/Current/PDPASA/").mock(
-            return_value=Response(200, text=SAMPLE_PDPASA_DIR)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PDPASA/",
+            html=SAMPLE_PDPASA_DIR
         )
 
         # Mock ZIP file download
         zip_content = create_pasa_zip(SAMPLE_PDPASA_CSV, 'PDPASA')
-        respx.get("https://test.nemweb.com.au/Reports/Current/PDPASA/PUBLIC_PDPASA_202501151000_00000005.zip").mock(
-            return_value=Response(200, content=zip_content)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PDPASA/PUBLIC_PDPASA_202501151000_00000005.zip",
+            content=zip_content
         )
 
         df = await client.get_latest_pdpasa()
@@ -192,11 +192,11 @@ class TestGetLatestPdpasa:
         assert 'regionid' in df.columns
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_pdpasa_empty_directory(self, client):
+    async def test_get_latest_pdpasa_empty_directory(self, client, httpx_mock):
         """Test PDPASA fetch with empty directory"""
-        respx.get("https://test.nemweb.com.au/Reports/Current/PDPASA/").mock(
-            return_value=Response(200, text=SAMPLE_PASA_EMPTY_DIR)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PDPASA/",
+            html=SAMPLE_PASA_EMPTY_DIR
         )
 
         df = await client.get_latest_pdpasa()
@@ -204,11 +204,20 @@ class TestGetLatestPdpasa:
         assert df is None
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_pdpasa_network_error(self, client):
+    async def test_get_latest_pdpasa_network_error(self, client, httpx_mock):
         """Test PDPASA fetch handles network errors"""
-        respx.get("https://test.nemweb.com.au/Reports/Current/PDPASA/").mock(
-            return_value=Response(500)
+        httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
+
+        df = await client.get_latest_pdpasa()
+
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_get_latest_pdpasa_server_error(self, client, httpx_mock):
+        """Test PDPASA fetch handles HTTP 500 errors"""
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PDPASA/",
+            status_code=500
         )
 
         df = await client.get_latest_pdpasa()
@@ -216,14 +225,15 @@ class TestGetLatestPdpasa:
         assert df is None
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_pdpasa_file_not_found(self, client):
+    async def test_get_latest_pdpasa_file_not_found(self, client, httpx_mock):
         """Test PDPASA fetch handles file not found"""
-        respx.get("https://test.nemweb.com.au/Reports/Current/PDPASA/").mock(
-            return_value=Response(200, text=SAMPLE_PDPASA_DIR)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PDPASA/",
+            html=SAMPLE_PDPASA_DIR
         )
-        respx.get("https://test.nemweb.com.au/Reports/Current/PDPASA/PUBLIC_PDPASA_202501151000_00000005.zip").mock(
-            return_value=Response(404)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PDPASA/PUBLIC_PDPASA_202501151000_00000005.zip",
+            status_code=404
         )
 
         df = await client.get_latest_pdpasa()
@@ -239,18 +249,19 @@ class TestGetLatestStpasa:
         return NEMPASAClient("https://test.nemweb.com.au")
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_stpasa_success(self, client):
+    async def test_get_latest_stpasa_success(self, client, httpx_mock):
         """Test successful STPASA fetch"""
         # Mock directory listing
-        respx.get("https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/").mock(
-            return_value=Response(200, text=SAMPLE_STPASA_DIR)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/",
+            html=SAMPLE_STPASA_DIR
         )
 
         # Mock ZIP file download
         zip_content = create_pasa_zip(SAMPLE_STPASA_CSV, 'STPASA')
-        respx.get("https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/PUBLIC_STPASA_202501151200_00000002.zip").mock(
-            return_value=Response(200, content=zip_content)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/PUBLIC_STPASA_202501151200_00000002.zip",
+            content=zip_content
         )
 
         df = await client.get_latest_stpasa()
@@ -260,11 +271,11 @@ class TestGetLatestStpasa:
         assert 'regionid' in df.columns
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_stpasa_empty_directory(self, client):
+    async def test_get_latest_stpasa_empty_directory(self, client, httpx_mock):
         """Test STPASA fetch with empty directory"""
-        respx.get("https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/").mock(
-            return_value=Response(200, text=SAMPLE_PASA_EMPTY_DIR)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/",
+            html=SAMPLE_PASA_EMPTY_DIR
         )
 
         df = await client.get_latest_stpasa()
@@ -272,11 +283,20 @@ class TestGetLatestStpasa:
         assert df is None
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_stpasa_network_error(self, client):
+    async def test_get_latest_stpasa_network_error(self, client, httpx_mock):
         """Test STPASA fetch handles network errors"""
-        respx.get("https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/").mock(
-            return_value=Response(500)
+        httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
+
+        df = await client.get_latest_stpasa()
+
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_get_latest_stpasa_server_error(self, client, httpx_mock):
+        """Test STPASA fetch handles HTTP 500 errors"""
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/",
+            status_code=500
         )
 
         df = await client.get_latest_stpasa()
@@ -284,14 +304,15 @@ class TestGetLatestStpasa:
         assert df is None
 
     @pytest.mark.asyncio
-    @respx.mock
-    async def test_get_latest_stpasa_file_not_found(self, client):
+    async def test_get_latest_stpasa_file_not_found(self, client, httpx_mock):
         """Test STPASA fetch handles file not found"""
-        respx.get("https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/").mock(
-            return_value=Response(200, text=SAMPLE_STPASA_DIR)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/",
+            html=SAMPLE_STPASA_DIR
         )
-        respx.get("https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/PUBLIC_STPASA_202501151200_00000002.zip").mock(
-            return_value=Response(404)
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/Short_Term_PASA_Reports/PUBLIC_STPASA_202501151200_00000002.zip",
+            status_code=404
         )
 
         df = await client.get_latest_stpasa()
