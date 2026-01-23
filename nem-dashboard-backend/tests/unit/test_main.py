@@ -100,6 +100,171 @@ class TestRegionValidation:
             main_module.db = original_db
 
 
+class TestEmptyDataResponses:
+    """Tests for endpoints that return empty data."""
+
+    @pytest.mark.asyncio
+    async def test_get_latest_dispatch_empty(self):
+        """Test empty dispatch data response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.get_latest_dispatch_data = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/dispatch/latest")
+                assert response.status_code == 200
+                assert response.json()["count"] == 0
+                assert "No data available" in response.json()["message"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_generation_by_fuel_empty(self):
+        """Test empty generation by fuel response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.get_generation_by_fuel_type = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/generation/by-fuel?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00"
+                )
+                assert response.status_code == 200
+                assert response.json()["count"] == 0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_price_history_empty(self):
+        """Test empty price history response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.get_price_history = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/prices/history?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00"
+                )
+                assert response.status_code == 200
+                assert response.json()["count"] == 0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_generators_filter_empty(self):
+        """Test empty generators filter response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.get_generators_by_region_fuel = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/generators/filter?region=NSW")
+                assert response.status_code == 200
+                assert response.json()["count"] == 0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_region_fuel_mix_empty(self):
+        """Test empty region fuel mix response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.get_region_fuel_mix = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/region/NSW/generation/current")
+                assert response.status_code == 200
+                assert response.json()["total_generation"] == 0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_region_generation_history_empty(self):
+        """Test empty region generation history response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.get_region_generation_history = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/region/NSW/generation/history")
+                assert response.status_code == 200
+                assert response.json()["count"] == 0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_region_price_history_empty(self):
+        """Test empty region price history response."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        # Mock both methods since either could be called depending on parameters
+        mock_db.get_region_price_history = AsyncMock(return_value=pd.DataFrame())
+        mock_db.get_aggregated_price_history = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/region/NSW/prices/history")
+                assert response.status_code == 200
+                assert response.json()["count"] == 0
+        finally:
+            main_module.db = original_db
+
+
 class TestSuccessfulIngestion:
     """Tests for successful ingestion paths."""
 
