@@ -12,6 +12,124 @@ import httpx
 from app.main import app
 
 
+class TestRootEndpoint:
+    """Tests for root and health endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_root_endpoint(self):
+        """Test the root endpoint returns API info."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/")
+                assert response.status_code == 200
+                assert "NEM Dispatch Data API" in response.json()["message"]
+        finally:
+            main_module.db = original_db
+
+
+class TestRegionValidation:
+    """Tests for region validation in endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_region_fuel_mix_invalid_region(self):
+        """Test invalid region returns 400 error."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/region/INVALID/generation/current")
+                assert response.status_code == 400
+                assert "Invalid region" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_region_price_history_invalid_region(self):
+        """Test invalid region in price history returns 400 error."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/region/INVALID/prices/history")
+                assert response.status_code == 400
+                assert "Invalid region" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_region_price_history_invalid_price_type(self):
+        """Test invalid price_type returns 400 error."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/region/NSW/prices/history?price_type=INVALID")
+                assert response.status_code == 400
+                assert "Invalid price_type" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+
+class TestSuccessfulIngestion:
+    """Tests for successful ingestion paths."""
+
+    @pytest.mark.asyncio
+    async def test_trigger_current_ingestion_success(self):
+        """Test successful current data ingestion."""
+        import app.main as main_module
+
+        mock_ingester = MagicMock()
+        mock_ingester.ingest_current_data = AsyncMock(return_value=True)
+        original_ingester = main_module.data_ingester
+        main_module.data_ingester = mock_ingester
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.post("/api/ingest/current")
+                assert response.status_code == 200
+                assert "successfully" in response.json()["message"]
+        finally:
+            main_module.data_ingester = original_ingester
+            main_module.db = original_db
+
+
 class TestLifespanContextManager:
     """Tests for the lifespan context manager."""
 
