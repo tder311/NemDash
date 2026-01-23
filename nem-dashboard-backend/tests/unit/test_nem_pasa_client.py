@@ -113,12 +113,15 @@ class TestParsePasaZip:
 
     def test_parse_pasa_datetime_conversion(self, client):
         """Test that datetime columns are converted properly"""
+        import pandas as pd
+
         zip_content = create_pasa_zip(SAMPLE_PDPASA_CSV, 'PDPASA')
         df = client._parse_pasa_zip(zip_content, 'PDPASA')
 
         assert df is not None
-        assert df['interval_datetime'].dtype == 'datetime64[ns]'
-        assert df['run_datetime'].dtype == 'datetime64[ns]'
+        # Check for datetime type (can be ns or us precision depending on pandas version)
+        assert pd.api.types.is_datetime64_any_dtype(df['interval_datetime'])
+        assert pd.api.types.is_datetime64_any_dtype(df['run_datetime'])
 
     def test_parse_pasa_no_records(self, client):
         """Test parsing ZIP with no REGIONSOLUTION records returns None"""
