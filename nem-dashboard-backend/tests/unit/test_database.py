@@ -456,3 +456,176 @@ class TestGetMergedPriceHistory:
 
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_merges_public_and_dispatch_data(self, test_db):
+        """When both PUBLIC and DISPATCH data exist, PUBLIC takes priority"""
+        base_time = datetime.now()
+
+        # Insert PUBLIC data at time T
+        public_df = pd.DataFrame([
+            {
+                'settlementdate': base_time - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 85.50,
+                'totaldemand': 7500.0,
+                'price_type': 'PUBLIC'
+            }
+        ])
+        await test_db.insert_price_data(public_df)
+
+        # Insert DISPATCH data at time T (same timestamp) and T+5min (different timestamp)
+        dispatch_df = pd.DataFrame([
+            {
+                'settlementdate': base_time - timedelta(hours=1),  # Same as PUBLIC
+                'region': 'NSW',
+                'price': 90.00,
+                'totaldemand': 7600.0,
+                'price_type': 'DISPATCH'
+            },
+            {
+                'settlementdate': base_time - timedelta(minutes=55),  # Different timestamp
+                'region': 'NSW',
+                'price': 92.00,
+                'totaldemand': 7700.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(dispatch_df)
+
+        result = await test_db.get_merged_price_history('NSW', hours=24)
+
+        # Should have 2 records: PUBLIC at T and DISPATCH at T+5min
+        assert len(result) == 2
+        # PUBLIC should be used for the overlapping timestamp
+        public_row = result[result['source_type'] == 'PUBLIC']
+        assert len(public_row) == 1
+        assert public_row.iloc[0]['price'] == 85.50
+        # DISPATCH fills in the gap
+        dispatch_row = result[result['source_type'] == 'DISPATCH']
+        assert len(dispatch_row) == 1
+        assert dispatch_row.iloc[0]['price'] == 92.00
+
+
+class TestAggregatedPriceHistory:
+    """Tests for get_aggregated_price_history method"""
+
+    @pytest.mark.asyncio
+    async def test_returns_non_aggregated_for_short_hours(self, test_db):
+        """When hours is small, should return non-aggregated data (via get_merged_price_history)"""
+        # Insert some price data
+        price_df = pd.DataFrame([
+            {
+                'settlementdate': datetime.now() - timedelta(hours=1),
+                'region': 'NSW',
+                'price': 85.50,
+                'totaldemand': 7500.0,
+                'price_type': 'PUBLIC'
+            }
+        ])
+        await test_db.insert_price_data(price_df)
+
+        # With small hours, should use merged (non-aggregated) path
+        result = await test_db.get_aggregated_price_history('NSW', hours=6, aggregation_minutes=30)
+
+        assert isinstance(result, pd.DataFrame)
+
+    @pytest.mark.asyncio
+    async def test_returns_aggregated_data_for_long_hours(self, test_db):
+        """When hours is large, should return aggregated data"""
+        base_time = datetime.now()
+
+        # Insert multiple price points
+        price_data = []
+        for i in range(10):
+            price_data.append({
+                'settlementdate': base_time - timedelta(hours=i),
+                'region': 'NSW',
+                'price': 80.0 + i,
+                'totaldemand': 7000.0 + i * 100,
+                'price_type': 'PUBLIC'
+            })
+
+        price_df = pd.DataFrame(price_data)
+        await test_db.insert_price_data(price_df)
+
+        # Request aggregated data with 60-minute buckets
+        result = await test_db.get_aggregated_price_history('NSW', hours=12, aggregation_minutes=60)
+
+        assert isinstance(result, pd.DataFrame)
+        if len(result) > 0:
+            assert 'source_type' in result.columns
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_data(self, test_db):
+        """Should return empty DataFrame when no data exists"""
+        result = await test_db.get_aggregated_price_history('NSW', hours=24, aggregation_minutes=60)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+
+class TestDispatchTimestampQueries:
+    """Tests for dispatch timestamp query methods"""
+
+    @pytest.mark.asyncio
+    async def test_get_latest_dispatch_timestamp(self, populated_db):
+        """Test getting latest dispatch timestamp"""
+        result = await populated_db.get_latest_dispatch_timestamp()
+
+        assert result is not None
+        assert isinstance(result, datetime)
+
+    @pytest.mark.asyncio
+    async def test_get_latest_dispatch_timestamp_empty_db(self, test_db):
+        """Test getting latest timestamp from empty database"""
+        result = await test_db.get_latest_dispatch_timestamp()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_earliest_dispatch_timestamp(self, populated_db):
+        """Test getting earliest dispatch timestamp"""
+        result = await populated_db.get_earliest_dispatch_timestamp()
+
+        assert result is not None
+        assert isinstance(result, datetime)
+
+    @pytest.mark.asyncio
+    async def test_get_earliest_dispatch_timestamp_empty_db(self, test_db):
+        """Test getting earliest timestamp from empty database"""
+        result = await test_db.get_earliest_dispatch_timestamp()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_dispatch_dates_with_data(self, test_db):
+        """Test getting dates with sufficient dispatch data"""
+        # Insert dispatch data for multiple dates
+        records = []
+        base_date = datetime(2025, 1, 15, 10, 0)
+
+        # Insert 150 records for Jan 15 (should meet threshold of 100)
+        for i in range(150):
+            records.append({
+                'settlementdate': base_date + timedelta(minutes=i * 5),
+                'duid': f'TEST{i % 10}',
+                'scadavalue': 100.0,
+                'uigf': 0.0,
+                'totalcleared': 100.0,
+                'ramprate': 0.0,
+                'availability': 110.0,
+                'raise1sec': 0.0,
+                'lower1sec': 0.0
+            })
+
+        df = pd.DataFrame(records)
+        await test_db.insert_dispatch_data(df)
+
+        start = datetime(2025, 1, 14)
+        end = datetime(2025, 1, 16)
+
+        result = await test_db.get_dispatch_dates_with_data(start, end, min_records=100)
+
+        assert isinstance(result, set)
+        assert '2025-01-15' in result
