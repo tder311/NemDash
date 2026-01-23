@@ -300,6 +300,187 @@ class TestTriggerIngestionEndpoints:
             main_module.db = original_db
 
 
+class TestHistoricalIngestionEndpoints:
+    """Tests for historical ingestion trigger endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_trigger_historical_ingestion_success(self):
+        """Test successful historical ingestion trigger."""
+        import app.main as main_module
+
+        mock_ingester = MagicMock()
+        mock_ingester.ingest_historical_data = AsyncMock()
+        original_ingester = main_module.data_ingester
+        main_module.data_ingester = mock_ingester
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/ingest/historical?start_date=2025-01-01T00:00:00"
+                )
+                assert response.status_code == 200
+                assert "Historical data ingestion started" in response.json()["message"]
+        finally:
+            main_module.data_ingester = original_ingester
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_trigger_historical_ingestion_exception(self):
+        """Test historical ingestion trigger when exception occurs."""
+        import app.main as main_module
+
+        # Create a mock BackgroundTasks that raises an exception
+        original_ingester = main_module.data_ingester
+        main_module.data_ingester = None  # This will cause AttributeError
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/ingest/historical?start_date=2025-01-01T00:00:00"
+                )
+                assert response.status_code == 500
+        finally:
+            main_module.data_ingester = original_ingester
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_trigger_historical_price_ingestion_success(self):
+        """Test successful historical price ingestion trigger."""
+        import app.main as main_module
+
+        mock_ingester = MagicMock()
+        mock_ingester.ingest_historical_prices = AsyncMock()
+        original_ingester = main_module.data_ingester
+        main_module.data_ingester = mock_ingester
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/ingest/historical-prices?start_date=2025-01-01T00:00:00&end_date=2025-01-02T00:00:00"
+                )
+                assert response.status_code == 200
+                assert "Historical price data ingestion started" in response.json()["message"]
+        finally:
+            main_module.data_ingester = original_ingester
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_trigger_historical_price_ingestion_exception(self):
+        """Test historical price ingestion trigger when exception occurs."""
+        import app.main as main_module
+
+        original_ingester = main_module.data_ingester
+        main_module.data_ingester = None  # This will cause AttributeError
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/ingest/historical-prices?start_date=2025-01-01T00:00:00"
+                )
+                assert response.status_code == 500
+        finally:
+            main_module.data_ingester = original_ingester
+            main_module.db = original_db
+
+
+class TestDataCoverageEndpoint:
+    """Tests for data coverage endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_get_data_coverage_invalid_table(self):
+        """Test get_data_coverage with invalid table name."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/data/coverage?table=invalid_table")
+                assert response.status_code == 400
+                assert "Invalid table" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_data_coverage_exception(self):
+        """Test get_data_coverage exception handling."""
+        import app.main as main_module
+
+        original_db = main_module.db
+        mock_db = MagicMock()
+        mock_db.get_data_coverage = AsyncMock(side_effect=Exception("Coverage query error"))
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/data/coverage?table=price_data")
+                assert response.status_code == 500
+                assert "Coverage query error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+
+class TestDatabaseHealthEndpoint:
+    """Tests for database health endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_get_database_health_exception(self):
+        """Test get_database_health exception handling."""
+        import app.main as main_module
+
+        original_db = main_module.db
+        mock_db = MagicMock()
+        mock_db.get_database_health = AsyncMock(side_effect=Exception("Health check error"))
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/database/health")
+                assert response.status_code == 500
+                assert "Health check error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+
 class TestRegionEndpointExceptions:
     """Tests for region-specific endpoint error handling."""
 
