@@ -112,6 +112,50 @@ class NEMDatabase:
                 )
             """)
 
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS pdpasa_data (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_datetime TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    regionid TEXT NOT NULL,
+                    demand10 REAL,
+                    demand50 REAL,
+                    demand90 REAL,
+                    reservereq REAL,
+                    capacityreq REAL,
+                    aggregatecapacityavailable REAL,
+                    aggregatepasaavailability REAL,
+                    surplusreserve REAL,
+                    lorcondition INTEGER,
+                    calculatedlor1level REAL,
+                    calculatedlor2level REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_datetime, interval_datetime, regionid)
+                )
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS stpasa_data (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_datetime TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    regionid TEXT NOT NULL,
+                    demand10 REAL,
+                    demand50 REAL,
+                    demand90 REAL,
+                    reservereq REAL,
+                    capacityreq REAL,
+                    aggregatecapacityavailable REAL,
+                    aggregatepasaavailability REAL,
+                    surplusreserve REAL,
+                    lorcondition INTEGER,
+                    calculatedlor1level REAL,
+                    calculatedlor2level REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_datetime, interval_datetime, regionid)
+                )
+            """)
+
 
             # Create indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_settlement ON dispatch_data(settlementdate)")
@@ -124,6 +168,14 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_region_settlement ON price_data(region, settlementdate)")
             # Composite index for filtered queries by region and price_type
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_region_type_settlement ON price_data(region, price_type, settlementdate)")
+
+            # PASA indexes
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_pdpasa_run ON pdpasa_data(run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_pdpasa_region ON pdpasa_data(regionid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_pdpasa_region_run ON pdpasa_data(regionid, run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_run ON stpasa_data(run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region ON stpasa_data(regionid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region_run ON stpasa_data(regionid, run_datetime)")
 
         logger.info("PostgreSQL database initialized")
 
@@ -757,3 +809,134 @@ class NEMDatabase:
             'checked_hours': hours_back,
             'checked_at': datetime.now().isoformat()
         }
+
+    # PASA data methods
+    async def insert_pdpasa_data(self, df: pd.DataFrame) -> int:
+        """Insert PDPASA data from DataFrame."""
+        if df.empty:
+            return 0
+
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['run_datetime'].to_pydatetime() if hasattr(row['run_datetime'], 'to_pydatetime') else row['run_datetime'],
+                row['interval_datetime'].to_pydatetime() if hasattr(row['interval_datetime'], 'to_pydatetime') else row['interval_datetime'],
+                row['regionid'],
+                row.get('demand10'),
+                row.get('demand50'),
+                row.get('demand90'),
+                row.get('reservereq'),
+                row.get('capacityreq'),
+                row.get('aggregatecapacityavailable'),
+                row.get('aggregatepasaavailability'),
+                row.get('surplusreserve'),
+                row.get('lorcondition'),
+                row.get('calculatedlor1level'),
+                row.get('calculatedlor2level')
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO pdpasa_data
+                (run_datetime, interval_datetime, regionid, demand10, demand50, demand90,
+                 reservereq, capacityreq, aggregatecapacityavailable, aggregatepasaavailability,
+                 surplusreserve, lorcondition, calculatedlor1level, calculatedlor2level)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ON CONFLICT (run_datetime, interval_datetime, regionid) DO UPDATE SET
+                    demand10 = EXCLUDED.demand10,
+                    demand50 = EXCLUDED.demand50,
+                    demand90 = EXCLUDED.demand90,
+                    reservereq = EXCLUDED.reservereq,
+                    capacityreq = EXCLUDED.capacityreq,
+                    aggregatecapacityavailable = EXCLUDED.aggregatecapacityavailable,
+                    aggregatepasaavailability = EXCLUDED.aggregatepasaavailability,
+                    surplusreserve = EXCLUDED.surplusreserve,
+                    lorcondition = EXCLUDED.lorcondition,
+                    calculatedlor1level = EXCLUDED.calculatedlor1level,
+                    calculatedlor2level = EXCLUDED.calculatedlor2level
+            """, records)
+
+        return len(records)
+
+    async def insert_stpasa_data(self, df: pd.DataFrame) -> int:
+        """Insert STPASA data from DataFrame."""
+        if df.empty:
+            return 0
+
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['run_datetime'].to_pydatetime() if hasattr(row['run_datetime'], 'to_pydatetime') else row['run_datetime'],
+                row['interval_datetime'].to_pydatetime() if hasattr(row['interval_datetime'], 'to_pydatetime') else row['interval_datetime'],
+                row['regionid'],
+                row.get('demand10'),
+                row.get('demand50'),
+                row.get('demand90'),
+                row.get('reservereq'),
+                row.get('capacityreq'),
+                row.get('aggregatecapacityavailable'),
+                row.get('aggregatepasaavailability'),
+                row.get('surplusreserve'),
+                row.get('lorcondition'),
+                row.get('calculatedlor1level'),
+                row.get('calculatedlor2level')
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO stpasa_data
+                (run_datetime, interval_datetime, regionid, demand10, demand50, demand90,
+                 reservereq, capacityreq, aggregatecapacityavailable, aggregatepasaavailability,
+                 surplusreserve, lorcondition, calculatedlor1level, calculatedlor2level)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ON CONFLICT (run_datetime, interval_datetime, regionid) DO UPDATE SET
+                    demand10 = EXCLUDED.demand10,
+                    demand50 = EXCLUDED.demand50,
+                    demand90 = EXCLUDED.demand90,
+                    reservereq = EXCLUDED.reservereq,
+                    capacityreq = EXCLUDED.capacityreq,
+                    aggregatecapacityavailable = EXCLUDED.aggregatecapacityavailable,
+                    aggregatepasaavailability = EXCLUDED.aggregatepasaavailability,
+                    surplusreserve = EXCLUDED.surplusreserve,
+                    lorcondition = EXCLUDED.lorcondition,
+                    calculatedlor1level = EXCLUDED.calculatedlor1level,
+                    calculatedlor2level = EXCLUDED.calculatedlor2level
+            """, records)
+
+        return len(records)
+
+    async def get_latest_pdpasa(self, region: str) -> List[Dict[str, Any]]:
+        """Get the latest PDPASA run for a specific region."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM pdpasa_data
+                WHERE regionid = $1
+                AND run_datetime = (SELECT MAX(run_datetime) FROM pdpasa_data WHERE regionid = $1)
+                ORDER BY interval_datetime ASC
+            """, region)
+
+        return [dict(row) for row in rows]
+
+    async def get_latest_stpasa(self, region: str) -> List[Dict[str, Any]]:
+        """Get the latest STPASA run for a specific region."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM stpasa_data
+                WHERE regionid = $1
+                AND run_datetime = (SELECT MAX(run_datetime) FROM stpasa_data WHERE regionid = $1)
+                ORDER BY interval_datetime ASC
+            """, region)
+
+        return [dict(row) for row in rows]
+
+    async def get_latest_pdpasa_run_datetime(self) -> Optional[datetime]:
+        """Get the latest PDPASA run datetime."""
+        async with self._pool.acquire() as conn:
+            result = await conn.fetchval("SELECT MAX(run_datetime) FROM pdpasa_data")
+        return result
+
+    async def get_latest_stpasa_run_datetime(self) -> Optional[datetime]:
+        """Get the latest STPASA run datetime."""
+        async with self._pool.acquire() as conn:
+            result = await conn.fetchval("SELECT MAX(run_datetime) FROM stpasa_data")
+        return result
