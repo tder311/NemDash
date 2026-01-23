@@ -12,16 +12,7 @@ from tests.fixtures.sample_price_csv import (
     SAMPLE_PRICE_NO_RECORDS,
     SAMPLE_DISPATCH_PRICE_DIR,
     SAMPLE_TRADING_DIR,
-    SAMPLE_IRSR_DIR,
-    SAMPLE_IRSR_DIR_ALT,
     create_price_zip,
-)
-from tests.fixtures.sample_interconnector_csv import (
-    SAMPLE_INTERCONNECTOR_CSV,
-    SAMPLE_INTERCONNECTOR_NEGATIVE,
-    SAMPLE_INTERCONNECTOR_NO_RECORDS,
-    SAMPLE_INTERCONNECTOR_MALFORMED,
-    create_interconnector_zip,
 )
 
 
@@ -139,23 +130,6 @@ class TestParseLatestFiles:
         result = client._parse_latest_trading_file("<html></html>")
         assert result is None
 
-    def test_parse_latest_irsr_file(self, client):
-        """Test parsing IRSR directory"""
-        result = client._parse_latest_irsr_file(SAMPLE_IRSR_DIR)
-        assert result is not None
-        assert "IRSR" in result
-
-    def test_parse_latest_irsr_file_alt_pattern(self, client):
-        """Test IRSR with alternative naming pattern"""
-        result = client._parse_latest_irsr_file(SAMPLE_IRSR_DIR_ALT)
-        assert result is not None
-        assert "DISPATCH_IRSR" in result
-
-    def test_parse_latest_irsr_file_empty(self, client):
-        """Test empty IRSR directory"""
-        result = client._parse_latest_irsr_file("<html></html>")
-        assert result is None
-
 
 class TestParsePriceCsv:
     """Tests for _parse_price_csv method"""
@@ -249,53 +223,6 @@ class TestParsePriceCsv:
         assert len(nsw_row) > 0
 
 
-class TestParseInterconnectorCsv:
-    """Tests for _parse_interconnector_csv method"""
-
-    @pytest.fixture
-    def client(self):
-        return NEMPriceClient()
-
-    def test_parse_interconnector_csv_valid(self, client):
-        """Test parsing valid interconnector data"""
-        df = client._parse_interconnector_csv(SAMPLE_INTERCONNECTOR_CSV)
-
-        assert df is not None
-        assert len(df) == 5
-        assert 'NSW1-QLD1' in df['interconnector'].values
-
-    def test_parse_interconnector_csv_columns(self, client):
-        """Test all expected columns are present"""
-        df = client._parse_interconnector_csv(SAMPLE_INTERCONNECTOR_CSV)
-
-        expected_cols = [
-            'settlementdate', 'interconnector',
-            'meteredmwflow', 'mwflow', 'mwloss', 'marginalvalue'
-        ]
-        for col in expected_cols:
-            assert col in df.columns
-
-    def test_parse_interconnector_csv_negative_flow(self, client):
-        """Test handling of negative flows (reverse direction)"""
-        df = client._parse_interconnector_csv(SAMPLE_INTERCONNECTOR_NEGATIVE)
-
-        assert df is not None
-        assert df.loc[0, 'meteredmwflow'] < 0
-
-    def test_parse_interconnector_csv_no_records(self, client):
-        """Test CSV with no interconnector records"""
-        df = client._parse_interconnector_csv(SAMPLE_INTERCONNECTOR_NO_RECORDS)
-        assert df is None
-
-    def test_parse_interconnector_csv_malformed(self, client):
-        """Test malformed lines are skipped"""
-        df = client._parse_interconnector_csv(SAMPLE_INTERCONNECTOR_MALFORMED)
-
-        assert df is not None
-        # Should have 2 valid records
-        assert len(df) == 2
-
-
 class TestParseZipFiles:
     """Tests for ZIP parsing methods"""
 
@@ -322,13 +249,6 @@ class TestParseZipFiles:
         """Test public prices ZIP parsing"""
         zip_content = create_price_zip(SAMPLE_PUBLIC_PRICE_CSV, 'PUBLIC')
         df = client._parse_public_prices_zip(zip_content)
-
-        assert df is not None
-
-    def test_parse_irsr_zip(self, client):
-        """Test IRSR (interconnector) ZIP parsing"""
-        zip_content = create_interconnector_zip()
-        df = client._parse_irsr_zip(zip_content)
 
         assert df is not None
 
@@ -385,21 +305,6 @@ class TestAsyncMethods:
         )
 
         df = await client.get_trading_prices()
-        assert df is not None
-
-    @pytest.mark.asyncio
-    async def test_get_interconnector_flows_success(self, client, httpx_mock):
-        """Test successful interconnector flow fetch"""
-        httpx_mock.add_response(
-            url="https://www.nemweb.com.au/Reports/Current/Dispatch_IRSR/",
-            html=SAMPLE_IRSR_DIR
-        )
-        httpx_mock.add_response(
-            url="https://www.nemweb.com.au/Reports/Current/Dispatch_IRSR/PUBLIC_IRSR_202501151030_0000000123456789.zip",
-            content=create_interconnector_zip()
-        )
-
-        df = await client.get_interconnector_flows()
         assert df is not None
 
     @pytest.mark.asyncio

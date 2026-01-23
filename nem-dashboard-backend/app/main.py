@@ -1,11 +1,10 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import Optional, List
+from datetime import datetime
+from typing import Optional
 import os
 import logging
-from pathlib import Path
 import asyncio
 
 from .database import NEMDatabase, calculate_aggregation_minutes
@@ -16,7 +15,6 @@ from .models import (
     DataSummaryResponse,
     DUIDListResponse,
     PriceDataResponse,
-    InterconnectorDataResponse,
     FuelMixRecord,
     RegionFuelMixResponse,
     RegionPriceHistoryResponse,
@@ -376,58 +374,6 @@ async def get_price_history(
         
     except Exception as e:
         logger.error(f"Error getting price history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/interconnectors/latest", response_model=InterconnectorDataResponse)
-async def get_latest_interconnector_flows():
-    """Get latest interconnector flow data"""
-    try:
-        df = await db.get_latest_interconnector_flows()
-        
-        if df.empty:
-            return InterconnectorDataResponse(data=[], count=0, message="No interconnector flow data available")
-        
-        records = df.to_dict('records')
-        for record in records:
-            if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
-        return InterconnectorDataResponse(
-            data=records,
-            count=len(records),
-            message=f"Retrieved {len(records)} interconnector flow records"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error getting latest interconnector flows: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/interconnectors/history", response_model=InterconnectorDataResponse)
-async def get_interconnector_history(
-    start_date: datetime = Query(description="Start date (ISO format)"),
-    end_date: datetime = Query(description="End date (ISO format)"),
-    interconnector: Optional[str] = Query(default=None, description="Interconnector name filter")
-):
-    """Get interconnector flow history"""
-    try:
-        df = await db.get_interconnector_history(start_date, end_date, interconnector)
-        
-        if df.empty:
-            return InterconnectorDataResponse(data=[], count=0, message="No interconnector data available for the specified range")
-        
-        records = df.to_dict('records')
-        for record in records:
-            if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
-        return InterconnectorDataResponse(
-            data=records,
-            count=len(records),
-            message=f"Retrieved {len(records)} interconnector flow records"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error getting interconnector history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/generators/filter", response_model=DispatchDataResponse)

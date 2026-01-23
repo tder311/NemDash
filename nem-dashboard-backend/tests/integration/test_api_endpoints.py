@@ -92,24 +92,6 @@ class TestPriceEndpoints:
         assert response.status_code == 200
 
 
-class TestInterconnectorEndpoints:
-    """Tests for interconnector data endpoints"""
-
-    @pytest.mark.asyncio
-    async def test_get_latest_interconnector_flows(self, async_client):
-        """Get latest interconnector flows should return 200"""
-        response = await async_client.get("/api/interconnectors/latest")
-        assert response.status_code == 200
-        data = response.json()
-        assert "data" in data
-
-    @pytest.mark.asyncio
-    async def test_get_interconnector_history(self, async_client):
-        """Get interconnector history should return 200"""
-        response = await async_client.get("/api/interconnectors/history?start_date=2025-01-15T00:00:00&end_date=2025-01-16T00:00:00")
-        assert response.status_code == 200
-
-
 class TestRegionEndpoints:
     """Tests for region-specific endpoints"""
 
@@ -155,6 +137,33 @@ class TestRegionEndpoints:
         response = await async_client.get("/api/region/NSW/prices/history?hours=24")
         assert response.status_code == 200
 
+    @pytest.mark.asyncio
+    async def test_get_region_generation_history(self, async_client):
+        """Get region generation history should return 200"""
+        response = await async_client.get("/api/region/NSW/generation/history?hours=24")
+        assert response.status_code == 200
+        data = response.json()
+        assert "region" in data
+        assert data["region"] == "NSW"
+
+    @pytest.mark.asyncio
+    async def test_get_region_generation_history_with_aggregation(self, async_client):
+        """Get region generation history with custom aggregation should return 200"""
+        response = await async_client.get("/api/region/NSW/generation/history?hours=168&aggregation=60")
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_get_region_summary_invalid_region(self, async_client):
+        """Invalid region should return 400"""
+        response = await async_client.get("/api/region/INVALID/summary")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_get_region_generation_history_invalid_region(self, async_client):
+        """Invalid region for generation history should return 400"""
+        response = await async_client.get("/api/region/INVALID/generation/history?hours=24")
+        assert response.status_code == 400
+
 
 class TestGeneratorEndpoints:
     """Tests for generator data endpoints"""
@@ -194,13 +203,6 @@ class TestDataCoverageEndpoint:
         """Get data coverage for dispatch should return 200"""
         response = await async_client.get("/api/data/coverage?table=dispatch_data")
         assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_get_data_coverage_interconnector(self, async_client):
-        """Get data coverage for interconnector should return 200"""
-        response = await async_client.get("/api/data/coverage?table=interconnector_data")
-        assert response.status_code == 200
-
 
 class TestSummaryEndpoints:
     """Tests for summary data endpoints"""
@@ -393,11 +395,10 @@ class TestDatabaseHealthEndpoint:
         response = await async_client.get("/api/database/health")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["tables"]) == 4
+        assert len(data["tables"]) == 3
         table_names = [t["table"] for t in data["tables"]]
         assert "dispatch_data" in table_names
         assert "price_data" in table_names
-        assert "interconnector_data" in table_names
         assert "generator_info" in table_names
 
     @pytest.mark.asyncio
@@ -407,11 +408,10 @@ class TestDatabaseHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         # gaps should be returned for time-series tables
-        assert len(data["gaps"]) == 3
+        assert len(data["gaps"]) == 2
         gap_tables = [g["table"] for g in data["gaps"]]
         assert "dispatch_data" in gap_tables
         assert "price_data" in gap_tables
-        assert "interconnector_data" in gap_tables
 
     @pytest.mark.asyncio
     async def test_get_database_health_invalid_hours(self, async_client):

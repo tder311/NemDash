@@ -38,10 +38,6 @@ from tests.fixtures.sample_price_csv import (
     SAMPLE_PUBLIC_PRICE_CSV,
     create_price_zip,
 )
-from tests.fixtures.sample_interconnector_csv import (
-    SAMPLE_INTERCONNECTOR_CSV,
-    create_interconnector_zip,
-)
 
 
 # ============================================================================
@@ -81,7 +77,7 @@ async def test_db():
 
     # Clean all tables before each test to ensure isolation
     async with db._pool.acquire() as conn:
-        await conn.execute("TRUNCATE dispatch_data, price_data, interconnector_data, generator_info RESTART IDENTITY CASCADE")
+        await conn.execute("TRUNCATE dispatch_data, price_data, generator_info RESTART IDENTITY CASCADE")
 
     yield db
     await db.close()
@@ -168,27 +164,6 @@ async def populated_db(test_db):
     ])
     await test_db.insert_price_data(price_df)
 
-    # Insert sample interconnector data
-    interconnector_df = pd.DataFrame([
-        {
-            'settlementdate': datetime(2025, 1, 15, 10, 30),
-            'interconnector': 'NSW1-QLD1',
-            'meteredmwflow': 350.5,
-            'mwflow': 355.0,
-            'mwloss': 4.5,
-            'marginalvalue': 12.30
-        },
-        {
-            'settlementdate': datetime(2025, 1, 15, 10, 30),
-            'interconnector': 'VIC1-SA1',
-            'meteredmwflow': -150.0,
-            'mwflow': -148.0,
-            'mwloss': 2.0,
-            'marginalvalue': 8.50
-        },
-    ])
-    await test_db.insert_interconnector_data(interconnector_df)
-
     # Insert sample generator info
     await test_db.update_generator_info([
         {
@@ -266,12 +241,6 @@ def sample_public_price_csv():
     return SAMPLE_PUBLIC_PRICE_CSV
 
 
-@pytest.fixture
-def sample_interconnector_csv():
-    """Sample interconnector CSV"""
-    return SAMPLE_INTERCONNECTOR_CSV
-
-
 # ============================================================================
 # DataFrame Fixtures
 # ============================================================================
@@ -304,21 +273,6 @@ def sample_price_df():
             'price': 85.50,
             'totaldemand': 7500.0,
             'price_type': 'DISPATCH'
-        },
-    ])
-
-
-@pytest.fixture
-def sample_interconnector_df():
-    """Sample interconnector DataFrame for database insertion"""
-    return pd.DataFrame([
-        {
-            'settlementdate': datetime(2025, 1, 15, 10, 30),
-            'interconnector': 'NSW1-QLD1',
-            'meteredmwflow': 350.5,
-            'mwflow': 355.0,
-            'mwloss': 4.5,
-            'marginalvalue': 12.30
         },
     ])
 

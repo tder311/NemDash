@@ -112,19 +112,6 @@ class NEMDatabase:
                 )
             """)
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS interconnector_data (
-                    id BIGSERIAL PRIMARY KEY,
-                    settlementdate TIMESTAMP NOT NULL,
-                    interconnector TEXT NOT NULL,
-                    meteredmwflow REAL,
-                    mwflow REAL,
-                    mwloss REAL,
-                    marginalvalue REAL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(settlementdate, interconnector)
-                )
-            """)
 
             # Create indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_settlement ON dispatch_data(settlementdate)")
@@ -133,8 +120,10 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_settlement ON price_data(settlementdate)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_region ON price_data(region)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_settlement_region ON price_data(settlementdate, region)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_interconnector_settlement ON interconnector_data(settlementdate)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_interconnector_name ON interconnector_data(interconnector)")
+            # Optimized index for region price history queries (region first, then settlement)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_region_settlement ON price_data(region, settlementdate)")
+            # Composite index for filtered queries by region and price_type
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_region_type_settlement ON price_data(region, price_type, settlementdate)")
 
         logger.info("PostgreSQL database initialized")
 
@@ -205,36 +194,6 @@ class NEMDatabase:
                 ON CONFLICT (settlementdate, region, price_type) DO UPDATE SET
                     price = EXCLUDED.price,
                     totaldemand = EXCLUDED.totaldemand
-            """, records)
-
-        return len(records)
-
-    async def insert_interconnector_data(self, df: pd.DataFrame) -> int:
-        """Insert interconnector data from DataFrame."""
-        if df.empty:
-            return 0
-
-        records = []
-        for _, row in df.iterrows():
-            records.append((
-                row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
-                row['interconnector'],
-                row['meteredmwflow'],
-                row['mwflow'],
-                row['mwloss'],
-                row['marginalvalue']
-            ))
-
-        async with self._pool.acquire() as conn:
-            await conn.executemany("""
-                INSERT INTO interconnector_data
-                (settlementdate, interconnector, meteredmwflow, mwflow, mwloss, marginalvalue)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (settlementdate, interconnector) DO UPDATE SET
-                    meteredmwflow = EXCLUDED.meteredmwflow,
-                    mwflow = EXCLUDED.mwflow,
-                    mwloss = EXCLUDED.mwloss,
-                    marginalvalue = EXCLUDED.marginalvalue
             """, records)
 
         return len(records)
@@ -439,45 +398,6 @@ class NEMDatabase:
         df['settlementdate'] = pd.to_datetime(df['settlementdate'])
         return df
 
-    async def get_latest_interconnector_flows(self) -> pd.DataFrame:
-        """Get the most recent interconnector flow data."""
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT * FROM interconnector_data
-                WHERE settlementdate = (SELECT MAX(settlementdate) FROM interconnector_data)
-                ORDER BY interconnector
-            """)
-
-        if not rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame([dict(row) for row in rows])
-        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-        return df
-
-    async def get_interconnector_history(self, start_date: datetime, end_date: datetime, interconnector: Optional[str] = None) -> pd.DataFrame:
-        """Get interconnector flow data for a date range."""
-        async with self._pool.acquire() as conn:
-            if interconnector:
-                rows = await conn.fetch("""
-                    SELECT * FROM interconnector_data
-                    WHERE interconnector = $1 AND settlementdate BETWEEN $2 AND $3
-                    ORDER BY settlementdate
-                """, interconnector, start_date, end_date)
-            else:
-                rows = await conn.fetch("""
-                    SELECT * FROM interconnector_data
-                    WHERE settlementdate BETWEEN $1 AND $2
-                    ORDER BY settlementdate
-                """, start_date, end_date)
-
-        if not rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame([dict(row) for row in rows])
-        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
-        return df
-
     async def get_generators_by_region_fuel(self, region: Optional[str] = None, fuel_source: Optional[str] = None) -> pd.DataFrame:
         """Get generators filtered by region and/or fuel source."""
         async with self._pool.acquire() as conn:
@@ -628,31 +548,24 @@ class NEMDatabase:
             return await self.get_merged_price_history(region, hours)
 
         async with self._pool.acquire() as conn:
+            # Use DISTINCT ON for efficient deduplication (O(n log n) vs O(n²) correlated subquery)
             rows = await conn.fetch("""
-                WITH merged_prices AS (
-                    SELECT
+                WITH deduped AS (
+                    SELECT DISTINCT ON (settlementdate)
                         settlementdate,
                         price,
-                        totaldemand,
-                        CASE WHEN price_type = 'PUBLIC' THEN 1 ELSE 2 END as priority
+                        totaldemand
                     FROM price_data
                     WHERE region = $1
                     AND settlementdate >= (
-                        (SELECT MAX(settlementdate) FROM price_data WHERE region = $2) + ($3 || ' hours')::INTERVAL
+                        (SELECT MAX(settlementdate) FROM price_data WHERE region = $1) + ($2 || ' hours')::INTERVAL
                     )
-                ),
-                deduped AS (
-                    SELECT settlementdate, price, totaldemand
-                    FROM merged_prices m1
-                    WHERE priority = (
-                        SELECT MIN(priority)
-                        FROM merged_prices m2
-                        WHERE m2.settlementdate = m1.settlementdate
-                    )
+                    ORDER BY settlementdate,
+                        CASE WHEN price_type = 'PUBLIC' THEN 1 ELSE 2 END
                 )
                 SELECT
                     TO_TIMESTAMP(
-                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($4 * 60)) * ($4 * 60)
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($3 * 60)) * ($3 * 60)
                     ) as settlementdate,
                     AVG(price) as price,
                     AVG(totaldemand) as totaldemand,
@@ -660,7 +573,7 @@ class NEMDatabase:
                 FROM deduped
                 GROUP BY 1
                 ORDER BY settlementdate ASC
-            """, region, region, f'-{hours}', aggregation_minutes)
+            """, region, f'-{hours}', aggregation_minutes)
 
         if not rows:
             return pd.DataFrame()
@@ -767,7 +680,7 @@ class NEMDatabase:
         Returns:
             Dictionary with table statistics and detected gaps
         """
-        tables = ['dispatch_data', 'price_data', 'interconnector_data', 'generator_info']
+        tables = ['dispatch_data', 'price_data', 'generator_info']
         table_stats = []
         gaps_by_table = []
 

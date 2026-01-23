@@ -213,9 +213,11 @@ class TestBackfillMissingData:
         }])
 
         ingester.price_client.get_daily_prices = AsyncMock(return_value=price_df)
+        ingester.price_client.get_monthly_archive_prices = AsyncMock(return_value=price_df)
 
-        # Backfill with small days_back for testing
-        total = await ingester.backfill_missing_data(days_back=2, max_gaps_per_run=2)
+        # Backfill from a recent start date for testing
+        start_date = datetime.now() - timedelta(days=2)
+        total = await ingester.backfill_missing_data(start_date=start_date)
         assert isinstance(total, int)
         await ingester.db.close()
 

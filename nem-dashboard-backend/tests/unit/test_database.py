@@ -25,7 +25,6 @@ class TestNEMDatabaseInit:
 
         assert 'dispatch_data' in tables
         assert 'price_data' in tables
-        assert 'interconnector_data' in tables
         assert 'generator_info' in tables
 
     @pytest.mark.asyncio
@@ -41,7 +40,6 @@ class TestNEMDatabaseInit:
         # Check for expected indexes
         assert any('dispatch_settlement' in idx for idx in indexes)
         assert any('price_region' in idx for idx in indexes)
-        assert any('interconnector_settlement' in idx for idx in indexes)
 
     @pytest.mark.asyncio
     async def test_initialize_idempotent(self, test_db):
@@ -55,8 +53,8 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables
-        assert count == 4
+        # Should still have same number of application tables (3: dispatch_data, price_data, generator_info)
+        assert count == 3
 
 
 class TestDispatchDataInsert:
@@ -156,23 +154,6 @@ class TestPriceDataInsert:
         # Should have updated price
         result = await test_db.get_latest_prices('DISPATCH')
         assert result.loc[0, 'price'] == 90.00
-
-
-class TestInterconnectorDataInsert:
-    """Tests for insert_interconnector_data method"""
-
-    @pytest.mark.asyncio
-    async def test_insert_interconnector_data(self, test_db, sample_interconnector_df):
-        """Test inserting interconnector data"""
-        count = await test_db.insert_interconnector_data(sample_interconnector_df)
-        assert count == 1
-
-    @pytest.mark.asyncio
-    async def test_insert_interconnector_data_empty(self, test_db):
-        """Test empty DataFrame returns 0"""
-        df = pd.DataFrame()
-        count = await test_db.insert_interconnector_data(df)
-        assert count == 0
 
 
 class TestDispatchQueries:
@@ -283,25 +264,6 @@ class TestPriceQueries:
         """Test getting latest timestamp for non-existent price type returns None"""
         result = await test_db.get_latest_price_timestamp('NONEXISTENT')
         assert result is None
-
-
-class TestInterconnectorQueries:
-    """Tests for interconnector data query methods"""
-
-    @pytest.mark.asyncio
-    async def test_get_latest_interconnector_flows(self, populated_db):
-        """Test retrieving latest interconnector flows"""
-        result = await populated_db.get_latest_interconnector_flows()
-        assert len(result) > 0
-
-    @pytest.mark.asyncio
-    async def test_get_interconnector_history(self, populated_db):
-        """Test interconnector history query"""
-        start = datetime(2025, 1, 1)
-        end = datetime(2025, 1, 31)
-
-        result = await populated_db.get_interconnector_history(start, end)
-        assert len(result) > 0
 
 
 class TestGeneratorInfo:

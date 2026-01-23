@@ -96,13 +96,13 @@ class NEMDispatchClient:
     async def get_all_current_dispatch_data(
         self,
         since: Optional[datetime] = None,
-        max_concurrent: int = 10
+        request_delay: float = 0.05
     ) -> Optional[pd.DataFrame]:
         """Fetch all dispatch SCADA files from Current directory (~3 days of 5-min data).
 
         Args:
             since: Only fetch files with timestamps after this datetime.
-            max_concurrent: Maximum concurrent HTTP requests (default 10)
+            request_delay: Delay between requests in seconds (default 0.05s to avoid rate limiting)
 
         Returns:
             DataFrame with dispatch SCADA data, or None if no files found/error
@@ -112,17 +112,23 @@ class NEMDispatchClient:
 
         try:
             dispatch_url = f"{self.base_url}/REPORTS/CURRENT/Dispatch_SCADA/"
+            headers = {"User-Agent": "NEM-Dashboard/1.0"}
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=60.0, headers=headers) as client:
                 # Get directory listing
                 response = await client.get(dispatch_url)
                 response.raise_for_status()
 
                 # Find all dispatch files with timestamps
+                # Use a set to dedupe - HTML shows each filename twice (in href and link text)
                 pattern = r'(PUBLIC_DISPATCHSCADA_(\d{12})_\d{16}\.zip)'
+                seen_files = set()
                 all_files = []
                 for match in re.finditer(pattern, response.text):
                     filename = match.group(1)
+                    if filename in seen_files:
+                        continue
+                    seen_files.add(filename)
                     timestamp_str = match.group(2)  # YYYYMMDDHHmm
                     try:
                         file_timestamp = datetime.strptime(timestamp_str, '%Y%m%d%H%M')
@@ -140,35 +146,40 @@ class NEMDispatchClient:
                     logger.info(f"Dispatch backfill: {len(all_files)} total files, {len(files_to_fetch)} newer than {since}")
                 else:
                     files_to_fetch = all_files
-                    logger.info(f"Fetching all {len(all_files)} dispatch files from Current")
+                    logger.info(f"Fetching all {len(all_files)} dispatch files sequentially")
 
                 if not files_to_fetch:
                     logger.info("No new dispatch files to fetch")
                     return None
 
-                # Fetch files concurrently with semaphore
-                semaphore = asyncio.Semaphore(max_concurrent)
+                # Sort by timestamp (oldest first)
+                files_to_fetch.sort(key=lambda x: x[1])
+
+                # Fetch files sequentially with small delay to avoid rate limiting
                 all_dataframes = []
+                for i, (filename, _) in enumerate(files_to_fetch):
+                    file_url = f"{dispatch_url}{filename}"
+                    try:
+                        file_response = await client.get(file_url)
+                        file_response.raise_for_status()
+                        df = self._parse_dispatch_zip(file_response.content)
+                        if df is not None and not df.empty:
+                            all_dataframes.append(df)
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code == 403:
+                            logger.error(f"403 Forbidden fetching {filename}")
+                        else:
+                            logger.debug(f"HTTP error fetching {filename}: {e}")
+                    except Exception as e:
+                        logger.debug(f"Error fetching {filename}: {e}")
 
-                async def fetch_file(filename: str) -> Optional[pd.DataFrame]:
-                    async with semaphore:
-                        try:
-                            file_url = f"{dispatch_url}{filename}"
-                            file_response = await client.get(file_url)
-                            file_response.raise_for_status()
-                            return self._parse_dispatch_zip(file_response.content)
-                        except Exception as e:
-                            logger.debug(f"Error fetching {filename}: {e}")
-                            return None
+                    # Small delay between requests to avoid rate limiting
+                    if i < len(files_to_fetch) - 1:
+                        await asyncio.sleep(request_delay)
 
-                # Fetch all files concurrently
-                tasks = [fetch_file(f) for f, _ in files_to_fetch]
-                results = await asyncio.gather(*tasks)
-
-                # Collect valid results
-                for df in results:
-                    if df is not None and not df.empty:
-                        all_dataframes.append(df)
+                    # Progress logging every 100 files
+                    if (i + 1) % 100 == 0:
+                        logger.info(f"Dispatch backfill progress: {i + 1}/{len(files_to_fetch)} files")
 
                 if not all_dataframes:
                     logger.warning("No valid dispatch data retrieved")
@@ -252,7 +263,7 @@ class NEMDispatchClient:
                         settlement_date = parts[4].strip('"')
                         duid = parts[5].strip()
                         scada_value = self._safe_float(parts[6])
-                        last_changed = parts[7].strip('"') if len(parts) > 7 else ""
+                        _last_changed = parts[7].strip('"') if len(parts) > 7 else ""  # noqa: F841
                         
                         data.append({
                             'settlementdate': settlement_date,
