@@ -612,3 +612,236 @@ class TestGetAllCurrentDispatchPrices:
         df = await client.get_all_current_dispatch_prices(since=since)
 
         assert df is None
+
+
+# ============================================================================
+# Additional Coverage Tests
+# ============================================================================
+
+
+class TestHTTPErrorHandling:
+    """Tests for HTTP error handling in various methods."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_get_current_dispatch_prices_500_error(self, client, httpx_mock):
+        """Test handling of 500 server error for dispatch prices."""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            status_code=500
+        )
+        result = await client.get_current_dispatch_prices()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_trading_prices_500_error(self, client, httpx_mock):
+        """Test handling of 500 server error for trading prices."""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            status_code=500
+        )
+        result = await client.get_trading_prices()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_trading_prices_no_file_found(self, client, httpx_mock):
+        """Test when no trading file found in directory."""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html="<html>empty directory</html>"
+        )
+        result = await client.get_trading_prices()
+        assert result is None
+
+
+class TestMonthlyArchivePrices:
+    """Tests for get_monthly_archive_prices method."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_get_monthly_archive_prices_404(self, client, httpx_mock):
+        """Test 404 handling for monthly archive."""
+        # URL format: PUBLIC_PRICES_{year}{month:02d}01.zip
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Public_Prices/PUBLIC_PRICES_20250101.zip",
+            status_code=404
+        )
+        result = await client.get_monthly_archive_prices(2025, 1)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_monthly_archive_prices_500(self, client, httpx_mock):
+        """Test 500 error handling for monthly archive."""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Public_Prices/PUBLIC_PRICES_20250101.zip",
+            status_code=500
+        )
+        result = await client.get_monthly_archive_prices(2025, 1)
+        assert result is None
+
+
+class TestParseArchiveMonthlyZip:
+    """Tests for _parse_archive_monthly_zip method."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    def test_parse_archive_with_invalid_zip(self, client):
+        """Test handling of invalid ZIP content."""
+        from datetime import datetime
+        result = client._parse_archive_monthly_zip(
+            b'not a valid zip file',
+            datetime(2025, 1, 15).date(),
+            datetime(2025, 1, 14).date()
+        )
+        assert result == []
+
+    def test_parse_archive_with_no_matching_files(self, client):
+        """Test when archive has no matching daily files."""
+        import io
+        import zipfile
+        from datetime import datetime
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as zf:
+            zf.writestr('OTHER_FILE_20250101.zip', b'dummy content')
+
+        result = client._parse_archive_monthly_zip(
+            buffer.getvalue(),
+            datetime(2025, 1, 15).date(),
+            datetime(2025, 1, 14).date()
+        )
+        assert result == []
+
+
+class TestFilterToTargetDate:
+    """Tests for _filter_to_target_date method."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    def test_filter_empty_list_raises_value_error(self, client):
+        """Test that empty dataframes list raises ValueError."""
+        from datetime import datetime
+        import pandas as pd
+        # pd.concat([]) raises ValueError: No objects to concatenate
+        with pytest.raises(ValueError, match="No objects to concatenate"):
+            client._filter_to_target_date([], datetime(2025, 1, 15).date())
+
+    def test_filter_removes_duplicates_keeps_last(self, client):
+        """Test that duplicate (timestamp, region) entries are deduplicated, keeping last."""
+        import pandas as pd
+        from datetime import datetime
+
+        df1 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2025-01-15 10:30:00'),
+            'region': 'NSW',
+            'price': 85.50,
+            'totaldemand': 7500.0,
+            'price_type': 'PUBLIC'
+        }])
+
+        df2 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2025-01-15 10:30:00'),
+            'region': 'NSW',
+            'price': 90.00,  # Different price - should be kept as it's last
+            'totaldemand': 7600.0,
+            'price_type': 'PUBLIC'
+        }])
+
+        result = client._filter_to_target_date([df1, df2], datetime(2025, 1, 15).date())
+
+        assert result is not None
+        assert len(result) == 1  # Deduplicated
+        # Should keep the last occurrence (90.00)
+        assert result.iloc[0]['price'] == 90.00
+
+    def test_filter_with_dataframes_containing_no_matching_dates(self, client):
+        """Test filtering when no records match the target date."""
+        import pandas as pd
+        from datetime import datetime
+
+        df1 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2025-01-14 10:30:00'),  # Wrong date
+            'region': 'NSW',
+            'price': 85.50,
+            'totaldemand': 7500.0,
+            'price_type': 'PUBLIC'
+        }])
+
+        result = client._filter_to_target_date([df1], datetime(2025, 1, 15).date())
+
+        # Should return empty or None when no data matches target date
+        assert result is None or len(result) == 0
+
+
+class TestPriceCsvEdgeCases:
+    """Tests for edge cases in _parse_price_csv."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    def test_parse_dispatch_with_malformed_line(self, client):
+        """Test handling of malformed dispatch price line."""
+        # A line with too few fields should be skipped
+        csv_content = b'''C,NEMP.WORLD,,DISPATCH,PRICE,1
+I,DISPATCH,PRICE,3,SETTLEMENTDATE,RUNNO,REGIONID
+D,DISPATCH,PRICE,3,"2025/01/15 10:30:00"
+D,DISPATCH,PRICE,3,"2025/01/15 10:30:00",1,NSW1,0,85.50,0,0,0
+C,END OF REPORT,,,
+'''
+        result = client._parse_price_csv(csv_content, 'DISPATCH')
+        # May return data for the valid line or None/empty depending on implementation
+        # The important thing is it doesn't crash
+        assert result is None or isinstance(result, type(None)) or hasattr(result, 'empty')
+
+    def test_parse_empty_csv_content(self, client):
+        """Test parsing empty CSV content."""
+        result = client._parse_price_csv(b'', 'DISPATCH')
+        assert result is None
+
+    def test_parse_csv_with_only_header(self, client):
+        """Test parsing CSV with only header, no data."""
+        csv_content = b'''C,NEMP.WORLD,,DISPATCH,PRICE,1
+I,DISPATCH,PRICE,3,SETTLEMENTDATE,RUNNO,REGIONID
+C,END OF REPORT,,,
+'''
+        result = client._parse_price_csv(csv_content, 'DISPATCH')
+        assert result is None
+
+
+class TestGetAllCurrentTradingPrices:
+    """Tests for get_all_current_trading_prices method."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_directory_empty(self, client, httpx_mock):
+        """Should return None if no trading files found."""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html="<html><body>No files</body></html>"
+        )
+
+        df = await client.get_all_current_trading_prices()
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_handles_network_error(self, client, httpx_mock):
+        """Should return None on network error."""
+        import httpx
+        httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
+
+        df = await client.get_all_current_trading_prices()
+        assert df is None

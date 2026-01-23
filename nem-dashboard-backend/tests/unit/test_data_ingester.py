@@ -62,8 +62,13 @@ class TestStopContinuousIngestion:
         assert ingester.is_running is False
 
 
+@pytest.mark.slow
 class TestIngestCurrentData:
-    """Tests for ingest_current_data method"""
+    """Tests for ingest_current_data method (SLOW - uses real database).
+
+    Note: These tests are marked slow because they create real database connections.
+    For fast CI runs, use TestIngestCurrentDataFast instead.
+    """
 
     @pytest.mark.asyncio
     async def test_ingest_current_data_success(self):
@@ -298,8 +303,13 @@ TEST3,Test Station 3,QLD1,Solar,Solar PV,Existing,150
         assert count >= len(SAMPLE_GENERATOR_INFO)
 
 
+@pytest.mark.slow
 class TestRunContinuousIngestion:
-    """Tests for run_continuous_ingestion method"""
+    """Tests for run_continuous_ingestion method (SLOW - uses real database).
+
+    Note: These tests are marked slow because they create real database connections.
+    For fast CI runs, use TestRunContinuousIngestionFast instead.
+    """
 
     @pytest.mark.asyncio
     async def test_run_continuous_ingestion_can_be_stopped(self):
@@ -365,3 +375,165 @@ class TestRunContinuousIngestion:
         # Should have continued after the exception in the loop
         assert call_count >= 3
         await ingester.db.close()
+
+
+# ============================================================================
+# Fast Test Classes (Using Mocked Dependencies)
+# ============================================================================
+
+
+class TestIngestCurrentDataFast:
+    """Fast tests for ingest_current_data method using mocked dependencies.
+
+    These tests run in milliseconds instead of minutes because they don't
+    create real database connections.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ingest_current_data_success(self, mock_ingester, mock_db, mock_nem_client, mock_price_client):
+        """Test successful current data ingestion"""
+        # Setup mock return data
+        sample_df = pd.DataFrame([{
+            'settlementdate': datetime(2025, 1, 15, 10, 30),
+            'duid': 'TEST1',
+            'scadavalue': 100.0,
+            'uigf': 0.0,
+            'totalcleared': 0.0,
+            'ramprate': 0.0,
+            'availability': 0.0,
+            'raise1sec': 0.0,
+            'lower1sec': 0.0
+        }])
+
+        price_df = pd.DataFrame([{
+            'settlementdate': datetime(2025, 1, 15, 10, 30),
+            'region': 'NSW',
+            'price': 85.50,
+            'totaldemand': 7500.0,
+            'price_type': 'DISPATCH'
+        }])
+
+        mock_nem_client.get_all_current_dispatch_data.return_value = sample_df
+        mock_price_client.get_all_current_dispatch_prices.return_value = price_df
+        mock_price_client.get_all_current_trading_prices.return_value = price_df
+
+        success = await mock_ingester.ingest_current_data()
+
+        assert success is True
+        mock_db.insert_dispatch_data.assert_called_once()
+        mock_db.insert_price_data.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_ingest_current_data_partial_failure(self, mock_ingester, mock_db, mock_nem_client, mock_price_client):
+        """Test that partial failures don't stop ingestion"""
+        # All return None (simulating API failures)
+        mock_nem_client.get_all_current_dispatch_data.return_value = None
+        mock_price_client.get_all_current_dispatch_prices.return_value = None
+        mock_price_client.get_all_current_trading_prices.return_value = None
+
+        success = await mock_ingester.ingest_current_data()
+
+        assert isinstance(success, bool)
+        # Should not have inserted anything
+        mock_db.insert_dispatch_data.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ingest_current_data_exception_handling(self, mock_ingester, mock_nem_client):
+        """Test that exceptions are caught and return False"""
+        mock_nem_client.get_all_current_dispatch_data.side_effect = Exception("Network error")
+
+        success = await mock_ingester.ingest_current_data()
+
+        assert success is False
+
+
+class TestRunContinuousIngestionFast:
+    """Fast tests for run_continuous_ingestion method using mocked dependencies.
+
+    These tests run in milliseconds instead of minutes because they don't
+    create real database connections.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_continuous_ingestion_can_be_stopped(self, mock_ingester, mock_db, mock_nem_client, mock_price_client):
+        """Test that continuous ingestion can be stopped"""
+        import asyncio
+
+        # Mock all the data fetching to return empty/None quickly
+        mock_nem_client.get_all_current_dispatch_data.return_value = None
+        mock_price_client.get_all_current_dispatch_prices.return_value = None
+        mock_price_client.get_all_current_trading_prices.return_value = None
+        mock_price_client.get_daily_prices.return_value = None
+
+        async def stop_after_delay():
+            await asyncio.sleep(0.1)
+            mock_ingester.stop_continuous_ingestion()
+
+        # Run both concurrently - should complete very quickly
+        await asyncio.gather(
+            mock_ingester.run_continuous_ingestion(interval_minutes=0.01),
+            stop_after_delay()
+        )
+
+        assert mock_ingester.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_run_continuous_ingestion_handles_exceptions(self, mock_ingester, mock_db, mock_nem_client, mock_price_client):
+        """Test that exceptions in the loop don't stop ingestion"""
+        import asyncio
+
+        call_count = 0
+
+        async def mock_ingest():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise Exception("Test error")
+            return True
+
+        # Setup mocks
+        mock_nem_client.get_all_current_dispatch_data.return_value = None
+        mock_price_client.get_all_current_dispatch_prices.return_value = None
+        mock_price_client.get_all_current_trading_prices.return_value = None
+        mock_price_client.get_daily_prices.return_value = None
+
+        # Replace ingest_current_data with our mock
+        mock_ingester.ingest_current_data = mock_ingest
+
+        async def stop_after_calls():
+            while call_count < 3:
+                await asyncio.sleep(0.05)
+            mock_ingester.stop_continuous_ingestion()
+
+        await asyncio.gather(
+            mock_ingester.run_continuous_ingestion(interval_minutes=0.001),
+            stop_after_calls()
+        )
+
+        # Should have continued after the exception in the loop
+        assert call_count >= 3
+
+    @pytest.mark.asyncio
+    async def test_run_continuous_ingestion_initializes_timestamps(self, mock_ingester, mock_db):
+        """Test that continuous ingestion initializes timestamps from database"""
+        import asyncio
+
+        # Setup mock timestamps
+        mock_db.get_latest_dispatch_timestamp.return_value = datetime(2025, 1, 15, 10, 0)
+        mock_db.get_latest_price_timestamp.side_effect = [
+            datetime(2025, 1, 15, 10, 0),  # DISPATCH
+            datetime(2025, 1, 15, 10, 0),  # TRADING
+        ]
+
+        async def stop_quickly():
+            await asyncio.sleep(0.05)
+            mock_ingester.stop_continuous_ingestion()
+
+        await asyncio.gather(
+            mock_ingester.run_continuous_ingestion(interval_minutes=0.01),
+            stop_quickly()
+        )
+
+        # Verify timestamps were fetched
+        mock_db.get_latest_dispatch_timestamp.assert_called_once()
+        assert mock_db.get_latest_price_timestamp.call_count == 2
