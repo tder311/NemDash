@@ -7,7 +7,7 @@ import os
 import logging
 import asyncio
 
-from .database import NEMDatabase, calculate_aggregation_minutes
+from .database import NEMDatabase, calculate_aggregation_minutes, to_aest_isoformat
 from .data_ingester import DataIngester, import_generator_info_from_csv
 from .models import (
     DispatchDataResponse,
@@ -157,11 +157,11 @@ async def get_latest_dispatch_data(
         # Convert DataFrame to list of dictionaries
         records = df.to_dict('records')
         
-        # Convert datetime objects to ISO strings
+        # Convert datetime objects to ISO strings with AEST timezone
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
         return DispatchDataResponse(
             data=records,
             count=len(records),
@@ -186,12 +186,12 @@ async def get_dispatch_data_by_range(
             return DispatchDataResponse(data=[], count=0, message="No data available for the specified range")
         
         records = df.to_dict('records')
-        
-        # Convert datetime objects to ISO strings
+
+        # Convert datetime objects to ISO strings with AEST timezone
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
         return DispatchDataResponse(
             data=records,
             count=len(records),
@@ -215,12 +215,12 @@ async def get_generation_by_fuel_type(
             return GenerationByFuelResponse(data=[], count=0, message="No data available for the specified range")
         
         records = df.to_dict('records')
-        
-        # Convert datetime objects to ISO strings
+
+        # Convert datetime objects to ISO strings with AEST timezone
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
         return GenerationByFuelResponse(
             data=records,
             count=len(records),
@@ -336,8 +336,8 @@ async def get_latest_prices(
         records = df.to_dict('records')
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
         return PriceDataResponse(
             data=records,
             count=len(records),
@@ -365,8 +365,8 @@ async def get_price_history(
         records = df.to_dict('records')
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
         return PriceDataResponse(
             data=records,
             count=len(records),
@@ -392,8 +392,8 @@ async def get_generators_by_region_fuel(
         records = df.to_dict('records')
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
-        
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
         return DispatchDataResponse(
             data=records,
             count=len(records),
@@ -494,7 +494,7 @@ async def get_region_generation_history(
         records = df.to_dict('records')
         for record in records:
             if 'period' in record:
-                record['period'] = record['period'].isoformat()
+                record['period'] = to_aest_isoformat(record['period'])
 
         return RegionGenerationHistoryResponse(
             region=region,
@@ -562,7 +562,7 @@ async def get_region_price_history(
         records = df.to_dict('records')
         for record in records:
             if 'settlementdate' in record:
-                record['settlementdate'] = record['settlementdate'].isoformat()
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
 
         return RegionPriceHistoryResponse(
             region=region,
@@ -699,12 +699,12 @@ async def get_region_pdpasa(region: str):
                 message=f"No PDPASA data available for {region}"
             )
 
-        # Convert datetime objects to ISO strings
+        # Convert datetime objects to ISO strings with AEST timezone
         for record in data:
             if 'run_datetime' in record and record['run_datetime']:
-                record['run_datetime'] = record['run_datetime'].isoformat()
+                record['run_datetime'] = to_aest_isoformat(record['run_datetime'])
             if 'interval_datetime' in record and record['interval_datetime']:
-                record['interval_datetime'] = record['interval_datetime'].isoformat()
+                record['interval_datetime'] = to_aest_isoformat(record['interval_datetime'])
             if 'created_at' in record and record['created_at']:
                 record['created_at'] = record['created_at'].isoformat()
 
@@ -762,12 +762,12 @@ async def get_region_stpasa(region: str):
                 message=f"No STPASA data available for {region}"
             )
 
-        # Convert datetime objects to ISO strings
+        # Convert datetime objects to ISO strings with AEST timezone
         for record in data:
             if 'run_datetime' in record and record['run_datetime']:
-                record['run_datetime'] = record['run_datetime'].isoformat()
+                record['run_datetime'] = to_aest_isoformat(record['run_datetime'])
             if 'interval_datetime' in record and record['interval_datetime']:
-                record['interval_datetime'] = record['interval_datetime'].isoformat()
+                record['interval_datetime'] = to_aest_isoformat(record['interval_datetime'])
             if 'created_at' in record and record['created_at']:
                 record['created_at'] = record['created_at'].isoformat()
 
