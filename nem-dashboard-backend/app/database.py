@@ -6,7 +6,7 @@ Configuration:
 """
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -14,6 +14,30 @@ from dataclasses import dataclass
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+# NEM operates on Australian Eastern Standard Time (AEST, UTC+10) year-round
+# It does NOT observe daylight saving time to avoid market complexity
+AEST = timezone(timedelta(hours=10))
+
+
+def to_aest_isoformat(dt):
+    """Convert naive datetime (assumed AEST) to ISO string with timezone offset.
+
+    NEM data is always in AEST (UTC+10). This function adds the timezone offset
+    to ensure JavaScript/browsers correctly interpret the timestamps.
+
+    Args:
+        dt: A datetime object (naive, assumed to be AEST) or None
+
+    Returns:
+        ISO 8601 string with +10:00 offset, e.g., "2025-01-15T08:00:00+10:00"
+        Returns None if input is None
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=AEST)
+    return dt.isoformat()
 
 
 def calculate_aggregation_minutes(hours: int) -> int:
@@ -514,6 +538,8 @@ class NEMDatabase:
             aggregation_minutes = calculate_aggregation_minutes(hours)
 
         async with self._pool.acquire() as conn:
+            # Use interval arithmetic instead of TO_TIMESTAMP to preserve naive timestamp type
+            # TO_TIMESTAMP returns timestamptz (UTC) which causes timezone issues
             rows = await conn.fetch("""
                 WITH timestamp_totals AS (
                     SELECT
@@ -529,8 +555,8 @@ class NEMDatabase:
                     GROUP BY d.settlementdate, g.fuel_source
                 )
                 SELECT
-                    TO_TIMESTAMP(
-                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($3 * 60)) * ($3 * 60)
+                    settlementdate - (
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT % ($3 * 60)) * INTERVAL '1 second'
                     ) as period,
                     fuel_source,
                     AVG(total_mw) as generation_mw,
@@ -601,6 +627,7 @@ class NEMDatabase:
 
         async with self._pool.acquire() as conn:
             # Use DISTINCT ON for efficient deduplication (O(n log n) vs O(n²) correlated subquery)
+            # Use interval arithmetic instead of TO_TIMESTAMP to preserve naive timestamp type
             rows = await conn.fetch("""
                 WITH deduped AS (
                     SELECT DISTINCT ON (settlementdate)
@@ -616,8 +643,8 @@ class NEMDatabase:
                         CASE WHEN price_type = 'PUBLIC' THEN 1 ELSE 2 END
                 )
                 SELECT
-                    TO_TIMESTAMP(
-                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT / ($3 * 60)) * ($3 * 60)
+                    settlementdate - (
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT % ($3 * 60)) * INTERVAL '1 second'
                     ) as settlementdate,
                     AVG(price) as price,
                     AVG(totaldemand) as totaldemand,
