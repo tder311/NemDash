@@ -43,15 +43,6 @@ const formatTimeRange = (hours) => {
   return `${hours} Hours`;
 };
 
-// Helper to get aggregation level description
-const getAggregationLabel = (hours) => {
-  if (hours < 48) return 'Real-time (5 min)';
-  if (hours <= 168) return '30 min averages';
-  if (hours <= 720) return 'Hourly averages';
-  if (hours <= 2160) return 'Daily averages';
-  return 'Weekly averages';
-};
-
 function StateDetailPage({ region, darkMode, onBack }) {
   const [priceHistory, setPriceHistory] = useState([]);
   const [fuelMix, setFuelMix] = useState([]);
