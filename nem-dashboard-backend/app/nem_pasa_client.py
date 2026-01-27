@@ -8,8 +8,7 @@ Fetches PDPASA and STPASA data from AEMO NEMWEB.
 
 import httpx
 import pandas as pd
-from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional
 import logging
 import zipfile
 import io
