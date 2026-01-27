@@ -80,17 +80,18 @@ jest.mock('react-plotly.js', () => {
   };
 });
 
-// Suppress console errors/warnings in tests (optional)
-// Uncomment if you want cleaner test output
-// const originalError = console.error;
-// beforeAll(() => {
-//   console.error = (...args) => {
-//     if (typeof args[0] === 'string' && args[0].includes('Warning:')) {
-//       return;
-//     }
-//     originalError.call(console, ...args);
-//   };
-// });
-// afterAll(() => {
-//   console.error = originalError;
-// });
+// Suppress React act() warnings in tests that are benign false positives
+// These warnings occur when async state updates complete after the test finishes
+// This is a known issue with testing async React components
+const originalError = console.error;
+beforeAll(() => {
+  console.error = (...args) => {
+    if (typeof args[0] === 'string' && args[0].includes('not wrapped in act')) {
+      return;
+    }
+    originalError.call(console, ...args);
+  };
+});
+afterAll(() => {
+  console.error = originalError;
+});
