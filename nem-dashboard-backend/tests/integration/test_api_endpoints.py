@@ -424,3 +424,92 @@ class TestDatabaseHealthEndpoint:
         """Get database health with max hours should return 200"""
         response = await async_client.get("/api/database/health?hours_back=8760")
         assert response.status_code == 200
+
+
+class TestRegionDataRangeEndpoint:
+    """Tests for region data range endpoint"""
+
+    @pytest.mark.asyncio
+    async def test_get_region_data_range_returns_valid_dates(self, async_client):
+        """Get region data range should return earliest and latest dates"""
+        response = await async_client.get("/api/region/NSW/data-range")
+        assert response.status_code == 200
+        data = response.json()
+        assert "earliest_date" in data
+        assert "latest_date" in data
+        assert "region" in data
+        assert data["region"] == "NSW"
+
+    @pytest.mark.asyncio
+    async def test_get_region_data_range_invalid_region(self, async_client):
+        """Get region data range for invalid region should return 400"""
+        response = await async_client.get("/api/region/INVALID/data-range")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_get_region_data_range_lowercase(self, async_client):
+        """Get region data range should handle lowercase region"""
+        response = await async_client.get("/api/region/nsw/data-range")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["region"] == "NSW"
+
+
+class TestDateRangeParameters:
+    """Tests for date range parameters on existing endpoints"""
+
+    @pytest.mark.asyncio
+    async def test_price_history_with_date_range(self, async_client):
+        """Get price history with start_date and end_date should return 200"""
+        response = await async_client.get(
+            "/api/region/NSW/prices/history",
+            params={"start_date": "2025-01-12T00:00:00", "end_date": "2025-01-16T00:00:00"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert "hours" in data
+        # 4 days = 96 hours
+        assert data["hours"] == 96
+
+    @pytest.mark.asyncio
+    async def test_price_history_date_range_calculates_aggregation(self, async_client):
+        """Price history with date range should calculate appropriate aggregation"""
+        response = await async_client.get(
+            "/api/region/NSW/prices/history",
+            params={"start_date": "2025-01-01T00:00:00", "end_date": "2025-01-08T00:00:00"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # 7 days = 168 hours, should use 30 min aggregation
+        assert data["hours"] == 168
+        assert data["aggregation_minutes"] == 30
+
+    @pytest.mark.asyncio
+    async def test_generation_history_with_date_range(self, async_client):
+        """Get generation history with start_date and end_date should return 200"""
+        response = await async_client.get(
+            "/api/region/NSW/generation/history",
+            params={"start_date": "2025-01-12T00:00:00", "end_date": "2025-01-16T00:00:00"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "data" in data
+        assert "hours" in data
+
+    @pytest.mark.asyncio
+    async def test_price_history_hours_fallback(self, async_client):
+        """Price history should still work with hours parameter (backwards compatible)"""
+        response = await async_client.get("/api/region/NSW/prices/history?hours=24")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["hours"] == 24
+
+    @pytest.mark.asyncio
+    async def test_price_history_date_range_invalid_dates(self, async_client):
+        """Price history with end_date before start_date should return 400"""
+        response = await async_client.get(
+            "/api/region/NSW/prices/history",
+            params={"start_date": "2025-01-16T00:00:00", "end_date": "2025-01-12T00:00:00"}
+        )
+        assert response.status_code == 400

@@ -219,11 +219,13 @@ describe('AustraliaMap', () => {
       <AustraliaMap darkMode={false} hoveredRegion="NSW" onRegionClick={mockOnRegionClick} />
     );
 
+    // Wait for SVG to load AND highlighting to be applied
     await waitFor(() => {
-      expect(container.querySelector('svg')).toBeInTheDocument();
+      const nswPath = container.querySelector('#state-NSW');
+      expect(nswPath).toBeInTheDocument();
+      expect(nswPath.classList.contains('highlighted')).toBe(true);
     });
 
-    expect(container.querySelector('#state-NSW').classList.contains('highlighted')).toBe(true);
     expect(container.querySelector('#state-VIC').classList.contains('highlighted')).toBe(false);
 
     // Change to VIC
@@ -231,8 +233,11 @@ describe('AustraliaMap', () => {
       <AustraliaMap darkMode={false} hoveredRegion="VIC" onRegionClick={mockOnRegionClick} />
     );
 
+    await waitFor(() => {
+      expect(container.querySelector('#state-VIC').classList.contains('highlighted')).toBe(true);
+    });
+
     expect(container.querySelector('#state-NSW').classList.contains('highlighted')).toBe(false);
-    expect(container.querySelector('#state-VIC').classList.contains('highlighted')).toBe(true);
   });
 
   test('applies dark mode filter', async () => {

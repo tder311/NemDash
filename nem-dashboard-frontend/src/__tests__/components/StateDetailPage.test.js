@@ -59,9 +59,11 @@ describe('StateDetailPage', () => {
   });
 
   test('fetches all data in parallel on mount', async () => {
+    const mockDataRange = { region: 'NSW', earliest_date: '2025-01-01', latest_date: '2026-01-27' };
+
     axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
       .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
       .mockResolvedValueOnce({ data: mockGenerationHistory });
 
@@ -71,11 +73,11 @@ describe('StateDetailPage', () => {
       expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    // Check all four API calls were made
-    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=24&price_type=MERGED');
-    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/generation/current');
+    // Check API calls were made (with date range params)
+    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/data-range');
+    expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('/api/region/NSW/prices/history'));
     expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/summary');
-    expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/generation/history?hours=24');
+    expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('/api/region/NSW/generation/history'));
   });
 
   test('displays region name and code', async () => {
@@ -149,15 +151,16 @@ describe('StateDetailPage', () => {
     expect(mockOnBack).toHaveBeenCalledTimes(1);
   });
 
-  test('time range selector changes state', async () => {
+  test('date range selector updates API calls', async () => {
+    const mockDataRange = { region: 'NSW', earliest_date: '2025-01-01', latest_date: '2026-01-27' };
+
     axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
       .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
       .mockResolvedValueOnce({ data: mockGenerationHistory })
-      // Re-fetch after time range change
+      // Re-fetch after date range change
       .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
       .mockResolvedValueOnce({ data: mockGenerationHistory });
 
@@ -167,14 +170,16 @@ describe('StateDetailPage', () => {
       expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    const select = screen.getByRole('combobox');
-    expect(select).toHaveValue('24');
+    // Check that date dropdowns are rendered
+    expect(screen.getByLabelText(/start day/i)).toBeInTheDocument();
 
-    // Change to 48 hours
-    fireEvent.change(select, { target: { value: '48' } });
+    // Change start month
+    const startMonthSelect = screen.getByLabelText(/start month/i);
+    fireEvent.change(startMonthSelect, { target: { value: '6' } });
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/prices/history?hours=48&price_type=MERGED');
+      // Should have made new API calls with updated date range
+      expect(axios.get).toHaveBeenCalledTimes(7); // Initial 4 + refetch 3
     });
   });
 
@@ -193,13 +198,14 @@ describe('StateDetailPage', () => {
   });
 
   test('auto-refreshes every 60 seconds', async () => {
+    const mockDataRange = { region: 'NSW', earliest_date: '2025-01-01', latest_date: '2026-01-27' };
+
     axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
       .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
       .mockResolvedValueOnce({ data: mockGenerationHistory })
       .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: mockSummary })
       .mockResolvedValueOnce({ data: mockGenerationHistory });
 
@@ -217,18 +223,33 @@ describe('StateDetailPage', () => {
     });
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledTimes(8);
+      expect(axios.get).toHaveBeenCalledTimes(7); // +3 for refresh (data-range only fetched once)
     });
   });
 
   test('falls back to sample data on API error', async () => {
-    axios.get.mockRejectedValue(new Error('Network error'));
+    // Mock data-range to succeed but other calls to fail
+    axios.get.mockImplementation((url) => {
+      if (url.includes('/data-range')) {
+        return Promise.resolve({
+          data: {
+            region: 'NSW',
+            earliest_date: '2025-01-01',
+            latest_date: '2026-01-27'
+          }
+        });
+      }
+      return Promise.reject(new Error('Network error'));
+    });
 
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
+    // Advance timers to allow promises to resolve
+    jest.advanceTimersByTime(100);
+
     await waitFor(() => {
       expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
-    });
+    }, { timeout: 3000 });
 
     // Should display the page with fallback data
     expect(screen.getByText('New South Wales (NSW)')).toBeInTheDocument();
@@ -278,9 +299,11 @@ describe('StateDetailPage', () => {
   });
 
   test('displays correct region for VIC', async () => {
+    const mockDataRange = { region: 'VIC', earliest_date: '2025-01-01', latest_date: '2026-01-27' };
+
     axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
       .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
       .mockResolvedValueOnce({ data: { ...mockSummary, region: 'VIC' } })
       .mockResolvedValueOnce({ data: mockGenerationHistory });
 
@@ -292,10 +315,10 @@ describe('StateDetailPage', () => {
 
     // Region name and code are rendered together as "Victoria (VIC)"
     expect(screen.getByText(/Victoria \(VIC\)/i)).toBeInTheDocument();
-    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/prices/history?hours=24&price_type=MERGED');
-    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/current');
+    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/data-range');
+    expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('/api/region/VIC/prices/history'));
     expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/summary');
-    expect(axios.get).toHaveBeenCalledWith('/api/region/VIC/generation/history?hours=24');
+    expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('/api/region/VIC/generation/history'));
   });
 
   test('re-fetches data when region prop changes', async () => {
@@ -437,34 +460,153 @@ describe('StateDetailPage REGION_NAMES mapping', () => {
   });
 });
 
-describe('StateDetailPage time range options', () => {
+describe('StateDetailPage Date Range Selector', () => {
   const mockOnBack = jest.fn();
+  const mockDataRange = {
+    region: 'NSW',
+    earliest_date: '2025-01-01T00:00:00',
+    latest_date: '2026-01-27T00:00:00',
+    message: 'Data range for NSW'
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    axios.get
-      .mockResolvedValueOnce({ data: mockPriceHistory })
-      .mockResolvedValueOnce({ data: mockFuelMix })
-      .mockResolvedValueOnce({ data: mockSummary })
-      .mockResolvedValueOnce({ data: mockGenerationHistory });
+    jest.useFakeTimers();
   });
 
-  test('has all time range options', async () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('renders date dropdowns for start and end dates', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
     render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
 
     await waitFor(() => {
-      expect(screen.getByRole('combobox')).toBeInTheDocument();
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
     });
 
-    const options = screen.getAllByRole('option');
-    expect(options).toHaveLength(8);
-    expect(options[0]).toHaveValue('6');
-    expect(options[1]).toHaveValue('12');
-    expect(options[2]).toHaveValue('24');
-    expect(options[3]).toHaveValue('48');
-    expect(options[4]).toHaveValue('168');
-    expect(options[5]).toHaveValue('720');
-    expect(options[6]).toHaveValue('2160');
-    expect(options[7]).toHaveValue('8760');
+    // Check for date dropdowns
+    expect(screen.getByLabelText(/start day/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/start month/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/start year/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/end day/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/end month/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/end year/i)).toBeInTheDocument();
+  });
+
+  test('displays duration text based on selected range', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
+    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
+    });
+
+    // Should show duration (e.g., "24 hours" or "7 days")
+    expect(screen.getByText(/\d+ (hours?|days?|months?)/i)).toBeInTheDocument();
+  });
+
+  test('fetches data range on mount', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
+    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith('/api/region/NSW/data-range');
+    });
+  });
+
+  test('updates data when date range changes', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory })
+      // After date change
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
+    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
+    });
+
+    // Change start month
+    const startMonthSelect = screen.getByLabelText(/start month/i);
+    fireEvent.change(startMonthSelect, { target: { value: '6' } });
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith(expect.stringContaining('start_date'));
+    });
+  });
+});
+
+describe('StateDetailPage Aggregated Fuel Mix', () => {
+  const mockOnBack = jest.fn();
+  const mockDataRange = {
+    region: 'NSW',
+    earliest_date: '2025-01-01T00:00:00',
+    latest_date: '2026-01-27T00:00:00',
+    message: 'Data range for NSW'
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('displays fuel mix chart with aggregated data', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
+    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
+    });
+
+    // Should have chart for fuel mix
+    expect(screen.getAllByTestId('plotly-chart').length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('fuel mix chart uses aggregated generation data', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: mockDataRange })
+      .mockResolvedValueOnce({ data: mockPriceHistory })
+      .mockResolvedValueOnce({ data: mockSummary })
+      .mockResolvedValueOnce({ data: mockGenerationHistory });
+
+    render(<StateDetailPage region="NSW" darkMode={false} onBack={mockOnBack} />);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Loading/i)).not.toBeInTheDocument();
+    });
+
+    // Should render charts
+    expect(screen.getAllByTestId('plotly-chart').length).toBe(3);
   });
 });

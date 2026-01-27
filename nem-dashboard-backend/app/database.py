@@ -662,6 +662,152 @@ class NEMDatabase:
         df['source_type'] = 'AGGREGATED'
         return df
 
+    async def get_aggregated_price_history_by_dates(self, region: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+        """Get price history with time-based aggregation for a specific date range."""
+        # Calculate hours from date range for aggregation level
+        delta = end_date - start_date
+        hours = int(delta.total_seconds() / 3600)
+        aggregation_minutes = calculate_aggregation_minutes(hours)
+
+        if aggregation_minutes <= 30:
+            # For short ranges, return merged data without aggregation
+            # Use subquery to get demand from DISPATCH records when price record has NULL demand
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    WITH price_source AS (
+                        SELECT DISTINCT ON (settlementdate)
+                            settlementdate,
+                            price,
+                            totaldemand,
+                            price_type
+                        FROM price_data
+                        WHERE region = $1
+                        AND settlementdate >= $2
+                        AND settlementdate <= $3
+                        ORDER BY settlementdate,
+                            CASE WHEN price_type = 'PUBLIC' THEN 1 WHEN price_type = 'TRADING' THEN 2 ELSE 3 END
+                    ),
+                    demand_source AS (
+                        SELECT DISTINCT ON (settlementdate)
+                            settlementdate,
+                            totaldemand as dispatch_demand
+                        FROM price_data
+                        WHERE region = $1
+                        AND settlementdate >= $2
+                        AND settlementdate <= $3
+                        AND price_type = 'DISPATCH'
+                        AND totaldemand IS NOT NULL
+                        AND totaldemand > 0
+                        ORDER BY settlementdate
+                    )
+                    SELECT
+                        p.settlementdate,
+                        p.price,
+                        COALESCE(NULLIF(p.totaldemand, 0), d.dispatch_demand, p.totaldemand) as totaldemand
+                    FROM price_source p
+                    LEFT JOIN demand_source d ON p.settlementdate = d.settlementdate
+                    ORDER BY p.settlementdate
+                """, region, start_date, end_date)
+
+            if not rows:
+                return pd.DataFrame()
+
+            df = pd.DataFrame([dict(row) for row in rows])
+            df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+            df['source_type'] = 'MERGED'
+            return df
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                WITH price_source AS (
+                    SELECT DISTINCT ON (settlementdate)
+                        settlementdate,
+                        price,
+                        totaldemand,
+                        price_type
+                    FROM price_data
+                    WHERE region = $1
+                    AND settlementdate >= $2
+                    AND settlementdate <= $3
+                    ORDER BY settlementdate,
+                        CASE WHEN price_type = 'PUBLIC' THEN 1 WHEN price_type = 'TRADING' THEN 2 ELSE 3 END
+                ),
+                demand_source AS (
+                    SELECT DISTINCT ON (settlementdate)
+                        settlementdate,
+                        totaldemand as dispatch_demand
+                    FROM price_data
+                    WHERE region = $1
+                    AND settlementdate >= $2
+                    AND settlementdate <= $3
+                    AND price_type = 'DISPATCH'
+                    AND totaldemand IS NOT NULL
+                    AND totaldemand > 0
+                    ORDER BY settlementdate
+                ),
+                merged AS (
+                    SELECT
+                        p.settlementdate,
+                        p.price,
+                        COALESCE(NULLIF(p.totaldemand, 0), d.dispatch_demand, p.totaldemand) as totaldemand
+                    FROM price_source p
+                    LEFT JOIN demand_source d ON p.settlementdate = d.settlementdate
+                )
+                SELECT
+                    settlementdate - (
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT % ($4 * 60)) * INTERVAL '1 second'
+                    ) as settlementdate,
+                    AVG(price) as price,
+                    AVG(totaldemand) as totaldemand,
+                    COUNT(*) as sample_count
+                FROM merged
+                GROUP BY 1
+                ORDER BY settlementdate ASC
+            """, region, start_date, end_date, aggregation_minutes)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate'])
+        df['source_type'] = 'AGGREGATED'
+        return df
+
+    async def get_region_generation_history_by_dates(self, region: str, start_date: datetime, end_date: datetime, aggregation_minutes: int) -> pd.DataFrame:
+        """Get historical generation by fuel source for a specific date range."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                WITH timestamp_totals AS (
+                    SELECT
+                        d.settlementdate,
+                        COALESCE(g.fuel_source, 'Unknown') as fuel_source,
+                        SUM(d.scadavalue) as total_mw
+                    FROM dispatch_data d
+                    INNER JOIN generator_info g ON d.duid = g.duid
+                    WHERE g.region = $1
+                    AND d.settlementdate >= $2
+                    AND d.settlementdate <= $3
+                    GROUP BY d.settlementdate, g.fuel_source
+                )
+                SELECT
+                    settlementdate - (
+                        (EXTRACT(EPOCH FROM settlementdate)::BIGINT % ($4 * 60)) * INTERVAL '1 second'
+                    ) as period,
+                    fuel_source,
+                    AVG(total_mw) as generation_mw,
+                    COUNT(*) as sample_count
+                FROM timestamp_totals
+                GROUP BY 1, 2
+                ORDER BY period ASC, fuel_source
+            """, region, start_date, end_date, aggregation_minutes)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['period'] = pd.to_datetime(df['period'])
+        return df
+
     async def get_region_summary(self, region: str) -> Dict[str, Any]:
         """Get summary statistics for a specific region."""
         async with self._pool.acquire() as conn:
@@ -723,6 +869,29 @@ class NEMDatabase:
             'latest_date': str(row['latest_date']) if row and row['latest_date'] else None,
             'total_records': row['total_records'] if row else 0,
             'days_with_data': row['days_with_data'] if row else 0
+        }
+
+    async def get_region_data_range(self, region: str) -> Dict[str, Any]:
+        """Get the available date range for a specific region's price data.
+
+        Args:
+            region: Region code (NSW, VIC, QLD, SA, TAS)
+
+        Returns:
+            Dict with earliest_date and latest_date for the region
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    MIN(settlementdate) as earliest_date,
+                    MAX(settlementdate) as latest_date
+                FROM price_data
+                WHERE region = $1
+            """, region)
+
+        return {
+            'earliest_date': to_aest_isoformat(row['earliest_date']) if row and row['earliest_date'] else None,
+            'latest_date': to_aest_isoformat(row['latest_date']) if row and row['latest_date'] else None
         }
 
     async def get_missing_dates(self, start_date: datetime, end_date: datetime, price_type: str = 'PUBLIC') -> List[datetime]:

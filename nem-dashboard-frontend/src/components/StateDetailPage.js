@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Plot from 'react-plotly.js';
 import axios from 'axios';
 import DatabaseHealthPage from './DatabaseHealthPage';
@@ -33,39 +33,140 @@ const FUEL_COLORS = {
   'Unknown': '#9e9e9e'
 };
 
-// Helper to format time range for display
-const formatTimeRange = (hours) => {
-  if (hours <= 48) return `${hours} Hours`;
-  if (hours === 168) return '7 Days';
-  if (hours === 720) return '30 Days';
-  if (hours === 2160) return '90 Days';
-  if (hours === 8760) return '365 Days';
-  return `${hours} Hours`;
+const MONTHS = [
+  { value: 1, label: 'Jan' },
+  { value: 2, label: 'Feb' },
+  { value: 3, label: 'Mar' },
+  { value: 4, label: 'Apr' },
+  { value: 5, label: 'May' },
+  { value: 6, label: 'Jun' },
+  { value: 7, label: 'Jul' },
+  { value: 8, label: 'Aug' },
+  { value: 9, label: 'Sep' },
+  { value: 10, label: 'Oct' },
+  { value: 11, label: 'Nov' },
+  { value: 12, label: 'Dec' }
+];
+
+// Helper to get days in a month
+const getDaysInMonth = (month, year) => {
+  return new Date(year, month, 0).getDate();
+};
+
+// Helper to format date as local ISO string (without timezone suffix)
+const formatLocalIso = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+};
+
+// Helper to format duration for display
+const formatDuration = (startDate, endDate) => {
+  const diffMs = endDate - startDate;
+  const diffHours = Math.round(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffHours <= 48) return `${diffHours} hours`;
+  if (diffDays <= 30) return `${diffDays} days`;
+  if (diffDays <= 90) return `${Math.round(diffDays / 7)} weeks`;
+  if (diffDays <= 365) return `${Math.round(diffDays / 30)} months`;
+  return `${Math.round(diffDays / 365)} year${diffDays >= 730 ? 's' : ''}`;
 };
 
 function StateDetailPage({ region, darkMode, onBack }) {
   const [priceHistory, setPriceHistory] = useState([]);
-  const [fuelMix, setFuelMix] = useState([]);
   const [generationHistory, setGenerationHistory] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [timeRange, setTimeRange] = useState(24);
   const [lastUpdated, setLastUpdated] = useState('');
   const [showHealthPage, setShowHealthPage] = useState(false);
   const [showPASAPage, setShowPASAPage] = useState(false);
 
+  // Date range state
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const [startDay, setStartDay] = useState(yesterday.getDate());
+  const [startMonth, setStartMonth] = useState(yesterday.getMonth() + 1);
+  const [startYear, setStartYear] = useState(yesterday.getFullYear());
+  const [endDay, setEndDay] = useState(now.getDate());
+  const [endMonth, setEndMonth] = useState(now.getMonth() + 1);
+  const [endYear, setEndYear] = useState(now.getFullYear());
+  const [availableDateRange, setAvailableDateRange] = useState(null);
+
+  // Ref for debouncing date range changes
+  const fetchDebounceRef = useRef(null);
+
+  // Computed dates
+  const startDate = useMemo(() => {
+    return new Date(startYear, startMonth - 1, startDay, 0, 0, 0);
+  }, [startDay, startMonth, startYear]);
+
+  const endDate = useMemo(() => {
+    return new Date(endYear, endMonth - 1, endDay, 23, 59, 59);
+  }, [endDay, endMonth, endYear]);
+
+  // Calculate hours from date range (for aggregation logic)
+  const hoursFromDateRange = useMemo(() => {
+    const diffMs = endDate - startDate;
+    return Math.max(1, Math.round(diffMs / (1000 * 60 * 60)));
+  }, [startDate, endDate]);
+
+  // Calculate aggregated fuel mix from generation history
+  const aggregatedFuelMix = useMemo(() => {
+    if (!generationHistory.length) return [];
+
+    const fuelTotals = {};
+    generationHistory.forEach(record => {
+      const fuel = record.fuel_source;
+      fuelTotals[fuel] = (fuelTotals[fuel] || 0) + (record.generation_mw || 0);
+    });
+
+    const total = Object.values(fuelTotals).reduce((a, b) => a + b, 0);
+    if (total === 0) return [];
+
+    return Object.entries(fuelTotals)
+      .map(([fuel, mw]) => ({
+        fuel_source: fuel,
+        generation_mw: mw,
+        percentage: (mw / total) * 100,
+        unit_count: 0
+      }))
+      .sort((a, b) => b.generation_mw - a.generation_mw);
+  }, [generationHistory]);
+
+  // Fetch available date range on mount
+  useEffect(() => {
+    const fetchDateRange = async () => {
+      try {
+        const response = await axios.get(`/api/region/${region}/data-range`);
+        setAvailableDateRange(response.data);
+      } catch (error) {
+        console.error('Error fetching date range:', error);
+      }
+    };
+    fetchDateRange();
+  }, [region]);
+
   const fetchData = useCallback(async () => {
     try {
+      // Use local ISO format (without Z suffix) to avoid timezone mismatch with database
+      const startIso = formatLocalIso(startDate);
+      const endIso = formatLocalIso(endDate);
+
       // Fetch all data in parallel
-      const [priceResponse, fuelResponse, summaryResponse, genHistoryResponse] = await Promise.all([
-        axios.get(`/api/region/${region}/prices/history?hours=${timeRange}&price_type=MERGED`),
-        axios.get(`/api/region/${region}/generation/current`),
+      const [priceResponse, summaryResponse, genHistoryResponse] = await Promise.all([
+        axios.get(`/api/region/${region}/prices/history?start_date=${startIso}&end_date=${endIso}&price_type=MERGED`),
         axios.get(`/api/region/${region}/summary`),
-        axios.get(`/api/region/${region}/generation/history?hours=${timeRange}`)
+        axios.get(`/api/region/${region}/generation/history?start_date=${startIso}&end_date=${endIso}`)
       ]);
 
       setPriceHistory(priceResponse.data.data || []);
-      setFuelMix(fuelResponse.data.fuel_mix || []);
       setSummary(summaryResponse.data);
       setGenerationHistory(genHistoryResponse.data.data || []);
       setLastUpdated(new Date().toLocaleTimeString());
@@ -79,22 +180,33 @@ function StateDetailPage({ region, darkMode, onBack }) {
         total_generation: 0,
         generator_count: 0
       });
-      setFuelMix([
-        { fuel_source: 'Coal', generation_mw: 0, percentage: 0, unit_count: 0 },
-        { fuel_source: 'Solar', generation_mw: 0, percentage: 0, unit_count: 0 },
-        { fuel_source: 'Wind', generation_mw: 0, percentage: 0, unit_count: 0 }
-      ]);
       setPriceHistory([]);
       setGenerationHistory([]);
       setLastUpdated(new Date().toLocaleTimeString());
       setLoading(false);
     }
-  }, [region, timeRange]);
+  }, [region, startDate, endDate]);
 
   useEffect(() => {
-    fetchData();
+    // Clear any existing debounce timeout
+    if (fetchDebounceRef.current) {
+      clearTimeout(fetchDebounceRef.current);
+    }
+
+    // Debounce the fetch call - wait 500ms after last date change before fetching
+    fetchDebounceRef.current = setTimeout(() => {
+      fetchData();
+    }, 500);
+
+    // Set up auto-refresh interval
     const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
+
+    return () => {
+      if (fetchDebounceRef.current) {
+        clearTimeout(fetchDebounceRef.current);
+      }
+      clearInterval(interval);
+    };
   }, [fetchData]);
 
   const createPriceChartData = () => {
@@ -137,13 +249,13 @@ function StateDetailPage({ region, darkMode, onBack }) {
   };
 
   const createFuelMixChartData = () => {
-    if (!fuelMix.length) return [];
+    // Use aggregated fuel mix from generation history
+    if (!aggregatedFuelMix.length) return [];
 
-    const sortedFuelMix = [...fuelMix].sort((a, b) => b.generation_mw - a.generation_mw);
     const LABEL_THRESHOLD = 5;
 
     // Only show labels for top 3 or segments >= 5%
-    const customText = sortedFuelMix.map((f, idx) => {
+    const customText = aggregatedFuelMix.map((f, idx) => {
       if (idx < 3 || f.percentage >= LABEL_THRESHOLD) {
         return `${f.fuel_source}<br>${f.percentage.toFixed(1)}%`;
       }
@@ -151,12 +263,12 @@ function StateDetailPage({ region, darkMode, onBack }) {
     });
 
     return [{
-      values: sortedFuelMix.map(f => f.generation_mw),
-      labels: sortedFuelMix.map(f => f.fuel_source),
+      values: aggregatedFuelMix.map(f => f.generation_mw),
+      labels: aggregatedFuelMix.map(f => f.fuel_source),
       type: 'pie',
       hole: 0.5,
       marker: {
-        colors: sortedFuelMix.map(f => FUEL_COLORS[f.fuel_source] || FUEL_COLORS['Unknown'])
+        colors: aggregatedFuelMix.map(f => FUEL_COLORS[f.fuel_source] || FUEL_COLORS['Unknown'])
       },
       text: customText,
       textinfo: 'text',
@@ -182,11 +294,12 @@ function StateDetailPage({ region, darkMode, onBack }) {
     xaxis: {
       gridcolor: darkMode ? '#374151' : '#f3f4f6',
       color: darkMode ? '#9ca3af' : '#6b7280',
-      tickformat: timeRange <= 24 ? '%H:%M' : timeRange <= 168 ? '%d %b %H:%M' : timeRange <= 720 ? '%d %b' : '%b %Y',
+      tickformat: hoursFromDateRange <= 24 ? '%H:%M' : hoursFromDateRange <= 168 ? '%d %b %H:%M' : hoursFromDateRange <= 720 ? '%d %b' : '%b %Y',
       tickfont: { size: 11 },
       linecolor: darkMode ? '#374151' : '#e5e7eb',
       showline: true,
-      zeroline: false
+      zeroline: false,
+      rangeslider: { visible: false }
     },
     yaxis: {
       title: {
@@ -238,9 +351,11 @@ function StateDetailPage({ region, darkMode, onBack }) {
     }
   };
 
+  const durationText = formatDuration(startDate, endDate);
+
   const fuelMixLayout = {
     title: {
-      text: 'Current Fuel Mix',
+      text: `Fuel Mix (${durationText})`,
       font: {
         size: 18,
         color: darkMode ? '#f5f5f5' : '#333'
@@ -287,15 +402,10 @@ function StateDetailPage({ region, darkMode, onBack }) {
       return {
         x: timestamps.map(t => new Date(t)),
         y: timestamps.map(t => dataMap[t] || 0),
-        type: 'scatter',
-        mode: 'lines',
+        type: 'bar',
         name: fuel,
-        fill: 'tonexty',
-        stackgroup: 'generation',
-        fillcolor: color + '80',  // Add transparency to fill
-        line: {
-          color: color,
-          width: 1
+        marker: {
+          color: color
         },
         hovertemplate: `<b>${fuel}</b><br>` +
                       'Time: %{x}<br>' +
@@ -319,7 +429,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
     xaxis: {
       gridcolor: darkMode ? '#374151' : '#f3f4f6',
       color: darkMode ? '#9ca3af' : '#6b7280',
-      tickformat: timeRange <= 24 ? '%H:%M' : timeRange <= 168 ? '%d %b %H:%M' : timeRange <= 720 ? '%d %b' : '%b %Y',
+      tickformat: hoursFromDateRange <= 24 ? '%H:%M' : hoursFromDateRange <= 168 ? '%d %b %H:%M' : hoursFromDateRange <= 720 ? '%d %b' : '%b %Y',
       tickfont: { size: 11 },
       linecolor: darkMode ? '#374151' : '#e5e7eb',
       showline: true,
@@ -358,7 +468,9 @@ function StateDetailPage({ region, darkMode, onBack }) {
       bgcolor: darkMode ? '#1f2937' : 'white',
       bordercolor: darkMode ? '#374151' : '#e5e7eb',
       font: { size: 12, family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }
-    }
+    },
+    barmode: 'stack',
+    bargap: 0
   };
 
   // Show database health page if requested
@@ -453,18 +565,121 @@ function StateDetailPage({ region, darkMode, onBack }) {
         </div>
       </div>
 
-      <div className="time-range-selector">
-        <label>Time Range:</label>
-        <select value={timeRange} onChange={(e) => setTimeRange(Number(e.target.value))}>
-          <option value={6}>6 Hours</option>
-          <option value={12}>12 Hours</option>
-          <option value={24}>24 Hours</option>
-          <option value={48}>48 Hours</option>
-          <option value={168}>7 Days</option>
-          <option value={720}>30 Days</option>
-          <option value={2160}>90 Days</option>
-          <option value={8760}>365 Days</option>
-        </select>
+      <div className="date-range-panel">
+        <div className="date-range-header">
+          <label>Time Range:</label>
+          <span className="duration-text">({durationText})</span>
+        </div>
+
+        {/* Visual Range Slider */}
+        {availableDateRange && availableDateRange.earliest_date && availableDateRange.latest_date && (
+          <div className="range-slider-container">
+            <div className="range-slider-track">
+              <div
+                className="range-slider-selected"
+                style={{
+                  left: `${Math.max(0, ((startDate.getTime() - new Date(availableDateRange.earliest_date).getTime()) /
+                    (new Date(availableDateRange.latest_date).getTime() - new Date(availableDateRange.earliest_date).getTime())) * 100)}%`,
+                  right: `${Math.max(0, 100 - ((endDate.getTime() - new Date(availableDateRange.earliest_date).getTime()) /
+                    (new Date(availableDateRange.latest_date).getTime() - new Date(availableDateRange.earliest_date).getTime())) * 100)}%`
+                }}
+              />
+            </div>
+            <input
+              type="range"
+              className="range-slider-input range-slider-start"
+              aria-label="start date slider"
+              min={new Date(availableDateRange.earliest_date).getTime()}
+              max={new Date(availableDateRange.latest_date).getTime()}
+              value={startDate.getTime()}
+              onChange={(e) => {
+                const newDate = new Date(Number(e.target.value));
+                setStartDay(newDate.getDate());
+                setStartMonth(newDate.getMonth() + 1);
+                setStartYear(newDate.getFullYear());
+              }}
+            />
+            <input
+              type="range"
+              className="range-slider-input range-slider-end"
+              aria-label="end date slider"
+              min={new Date(availableDateRange.earliest_date).getTime()}
+              max={new Date(availableDateRange.latest_date).getTime()}
+              value={endDate.getTime()}
+              onChange={(e) => {
+                const newDate = new Date(Number(e.target.value));
+                setEndDay(newDate.getDate());
+                setEndMonth(newDate.getMonth() + 1);
+                setEndYear(newDate.getFullYear());
+              }}
+            />
+            <div className="range-slider-labels">
+              <span>{new Date(availableDateRange.earliest_date).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+              <span>{new Date(availableDateRange.latest_date).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Date Dropdowns for precise selection */}
+        <div className="date-dropdowns">
+          <select
+            aria-label="start day"
+            value={startDay}
+            onChange={(e) => setStartDay(Number(e.target.value))}
+          >
+            {Array.from({ length: getDaysInMonth(startMonth, startYear) }, (_, i) => i + 1).map(d => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+          <select
+            aria-label="start month"
+            value={startMonth}
+            onChange={(e) => setStartMonth(Number(e.target.value))}
+          >
+            {MONTHS.map(m => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+          <select
+            aria-label="start year"
+            value={startYear}
+            onChange={(e) => setStartYear(Number(e.target.value))}
+          >
+            {Array.from({ length: 5 }, (_, i) => now.getFullYear() - 4 + i).map(y => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+
+          <span className="date-separator">—</span>
+
+          <select
+            aria-label="end day"
+            value={endDay}
+            onChange={(e) => setEndDay(Number(e.target.value))}
+          >
+            {Array.from({ length: getDaysInMonth(endMonth, endYear) }, (_, i) => i + 1).map(d => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+          <select
+            aria-label="end month"
+            value={endMonth}
+            onChange={(e) => setEndMonth(Number(e.target.value))}
+          >
+            {MONTHS.map(m => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+          <select
+            aria-label="end year"
+            value={endYear}
+            onChange={(e) => setEndYear(Number(e.target.value))}
+          >
+            {Array.from({ length: 5 }, (_, i) => now.getFullYear() - 4 + i).map(y => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="charts-container">
@@ -472,7 +687,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
           <Plot
             data={createPriceChartData()}
             layout={priceChartLayout}
-            style={{ width: '100%', height: '350px' }}
+            style={{ width: '100%', height: '400px' }}
             config={{
               displayModeBar: 'hover',
               displaylogo: false,
@@ -512,7 +727,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
         ) : (
           <div className="no-data-message">
             <h3 style={{ color: darkMode ? '#f5f5f5' : '#333' }}>
-              Generation by Fuel Source - Last {formatTimeRange(timeRange)}
+              Generation by Fuel Source ({durationText})
             </h3>
             <p style={{ color: darkMode ? '#aaa' : '#666' }}>
               No generation history data available. Generator metadata may need to be imported.

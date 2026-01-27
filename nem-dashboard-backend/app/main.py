@@ -22,7 +22,8 @@ from .models import (
     RegionSummaryResponse,
     DataCoverageResponse,
     DatabaseHealthResponse,
-    PASADataResponse
+    PASADataResponse,
+    RegionDataRangeResponse
 )
 
 # Configure logging
@@ -456,10 +457,16 @@ async def get_region_current_generation(region: str):
 @app.get("/api/region/{region}/generation/history", response_model=RegionGenerationHistoryResponse)
 async def get_region_generation_history(
     region: str,
-    hours: int = Query(default=24, ge=1, le=8760, description="Hours of history (1-8760, i.e., up to 365 days)"),
+    hours: Optional[int] = Query(default=None, ge=1, le=8760, description="Hours of history (1-8760, i.e., up to 365 days)"),
+    start_date: Optional[datetime] = Query(default=None, description="Start date for custom range (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None, description="End date for custom range (ISO format)"),
     aggregation: Optional[int] = Query(default=None, ge=5, le=10080, description="Aggregation interval in minutes (auto-calculated if not specified)")
 ):
     """Get historical generation by fuel source for a specific region.
+
+    Can be queried by either:
+    - hours: Get the last N hours of data (backwards from now)
+    - start_date/end_date: Get data for a specific date range
 
     Auto-aggregation levels when aggregation is not specified:
     - < 48h: 5 min (raw data)
@@ -474,12 +481,28 @@ async def get_region_generation_history(
     if region not in valid_regions:
         raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
 
+    # Determine hours from date range or default
+    if start_date and end_date:
+        if end_date <= start_date:
+            raise HTTPException(status_code=400, detail="end_date must be after start_date")
+        delta = end_date - start_date
+        hours = int(delta.total_seconds() / 3600)
+        if hours < 1:
+            hours = 1
+        if hours > 8760:
+            hours = 8760
+    elif hours is None:
+        hours = 24  # Default to 24 hours
+
     # Use auto-calculated aggregation if not specified
     if aggregation is None:
         aggregation = calculate_aggregation_minutes(hours)
 
     try:
-        df = await db.get_region_generation_history(region, hours, aggregation)
+        if start_date and end_date:
+            df = await db.get_region_generation_history_by_dates(region, start_date, end_date, aggregation)
+        else:
+            df = await db.get_region_generation_history(region, hours, aggregation)
 
         if df.empty:
             return RegionGenerationHistoryResponse(
@@ -513,10 +536,16 @@ async def get_region_generation_history(
 @app.get("/api/region/{region}/prices/history", response_model=RegionPriceHistoryResponse)
 async def get_region_price_history(
     region: str,
-    hours: int = Query(default=24, ge=1, le=8760, description="Hours of history (1-8760, i.e., up to 365 days)"),
+    hours: Optional[int] = Query(default=None, ge=1, le=8760, description="Hours of history (1-8760, i.e., up to 365 days)"),
+    start_date: Optional[datetime] = Query(default=None, description="Start date for custom range (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None, description="End date for custom range (ISO format)"),
     price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, PUBLIC, or MERGED")
 ):
-    """Get price history for a specific region over the last N hours.
+    """Get price history for a specific region.
+
+    Can be queried by either:
+    - hours: Get the last N hours of data (backwards from now)
+    - start_date/end_date: Get data for a specific date range
 
     The MERGED price type intelligently combines PUBLIC (official settlement) prices
     with DISPATCH (real-time) prices. PUBLIC prices are preferred where available,
@@ -538,12 +567,27 @@ async def get_region_price_history(
     if price_type not in valid_price_types:
         raise HTTPException(status_code=400, detail=f"Invalid price_type. Must be one of: {', '.join(valid_price_types)}")
 
+    # Determine hours from date range or default
+    if start_date and end_date:
+        if end_date <= start_date:
+            raise HTTPException(status_code=400, detail="end_date must be after start_date")
+        delta = end_date - start_date
+        hours = int(delta.total_seconds() / 3600)
+        if hours < 1:
+            hours = 1
+        if hours > 8760:
+            hours = 8760
+    elif hours is None:
+        hours = 24  # Default to 24 hours
+
     # Calculate aggregation for response metadata
     aggregation_minutes = calculate_aggregation_minutes(hours)
 
     try:
         # For extended ranges with MERGED, use aggregated price history
-        if price_type == 'MERGED' or aggregation_minutes > 30:
+        if start_date and end_date:
+            df = await db.get_aggregated_price_history_by_dates(region, start_date, end_date)
+        elif price_type == 'MERGED' or aggregation_minutes > 30:
             df = await db.get_aggregated_price_history(region, hours)
         else:
             df = await db.get_region_price_history(region, hours, price_type)
@@ -603,6 +647,35 @@ async def get_region_summary(region: str):
 
     except Exception as e:
         logger.error(f"Error getting summary for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/region/{region}/data-range", response_model=RegionDataRangeResponse)
+async def get_region_data_range(region: str):
+    """Get the available date range for a specific region's price data.
+
+    Returns the earliest and latest dates with price data for the region.
+    Useful for setting date picker bounds in the frontend.
+    """
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+
+    try:
+        # Get data coverage from price_data table for this region
+        coverage = await db.get_region_data_range(region)
+
+        return RegionDataRangeResponse(
+            region=region,
+            earliest_date=coverage.get('earliest_date'),
+            latest_date=coverage.get('latest_date'),
+            message=f"Data range for {region}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting data range for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

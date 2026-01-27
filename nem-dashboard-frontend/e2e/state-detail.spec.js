@@ -49,23 +49,24 @@ test.describe('State Detail Page', () => {
     await expect(select.locator('option[value="168"]')).toHaveText('7 Days');
   });
 
-  test('changing time range updates chart', async ({ page }) => {
-    let lastHoursParam = '';
+  test('changing date range updates chart', async ({ page }) => {
+    let lastStartDate = '';
 
     // Monitor API calls
     await page.route('**/api/region/NSW/prices/history**', async route => {
       const url = new URL(route.request().url());
-      lastHoursParam = url.searchParams.get('hours') || '';
+      lastStartDate = url.searchParams.get('start_date') || '';
       await route.continue();
     });
 
-    // Change to 48 hours
-    await page.getByRole('combobox').selectOption('48');
+    // Change start month to June using the specific dropdown
+    await page.getByLabel('start month').selectOption('6');
 
-    // Wait for the API call
+    // Wait for the debounced API call (500ms debounce + extra buffer)
     await page.waitForTimeout(1000);
 
-    expect(lastHoursParam).toBe('48');
+    // API should be called with start_date containing the new month (06)
+    expect(lastStartDate).toContain('-06-');
   });
 
   test.skip('displays price history chart', async ({ page }) => {
