@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+import io
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
@@ -856,6 +858,135 @@ async def get_region_stpasa(region: str):
 
     except Exception as e:
         logger.error(f"Error getting STPASA data for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# CSV Export endpoints
+@app.get("/api/export/available-options")
+async def get_export_options():
+    """Get available export options and data ranges for the downloads page.
+
+    Returns:
+    - Available regions
+    - Available fuel sources
+    - PASA types
+    - Data ranges for each exportable data type
+    """
+    try:
+        fuel_sources = await db.get_unique_fuel_sources()
+        data_ranges = await db.get_export_data_ranges()
+
+        return {
+            "regions": ["NSW", "VIC", "QLD", "SA", "TAS"],
+            "fuel_sources": fuel_sources,
+            "pasa_types": ["pdpasa", "stpasa"],
+            "data_ranges": data_ranges
+        }
+    except Exception as e:
+        logger.error(f"Error getting export options: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/export/prices")
+async def export_prices_csv(
+    start_date: datetime = Query(..., description="Start date (ISO format)"),
+    end_date: datetime = Query(..., description="End date (ISO format)"),
+    regions: Optional[str] = Query(default=None, description="Comma-separated regions (e.g., NSW,VIC)")
+):
+    """Export price data as CSV file.
+
+    Returns a CSV file with columns: settlementdate, region, price, totaldemand, price_type
+    """
+    try:
+        region_list = regions.split(',') if regions else None
+        df = await db.export_price_data(start_date, end_date, region_list)
+
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        stream.seek(0)
+
+        filename = f"nem_prices_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+        response = StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv"
+        )
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+    except Exception as e:
+        logger.error(f"Error exporting prices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/export/generation")
+async def export_generation_csv(
+    start_date: datetime = Query(..., description="Start date (ISO format)"),
+    end_date: datetime = Query(..., description="End date (ISO format)"),
+    regions: Optional[str] = Query(default=None, description="Comma-separated regions (e.g., NSW,VIC)"),
+    fuel_sources: Optional[str] = Query(default=None, description="Comma-separated fuel sources (e.g., Coal,Gas)")
+):
+    """Export generation data as CSV file.
+
+    Returns a CSV file with columns: settlementdate, duid, station_name, region,
+    fuel_source, technology_type, generation_mw, totalcleared, availability
+    """
+    try:
+        region_list = regions.split(',') if regions else None
+        fuel_list = fuel_sources.split(',') if fuel_sources else None
+        df = await db.export_generation_data(start_date, end_date, region_list, fuel_list)
+
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        stream.seek(0)
+
+        filename = f"nem_generation_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv"
+        response = StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv"
+        )
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+    except Exception as e:
+        logger.error(f"Error exporting generation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/export/pasa")
+async def export_pasa_csv(
+    pasa_type: str = Query(..., description="PASA type: pdpasa or stpasa"),
+    regions: Optional[str] = Query(default=None, description="Comma-separated regions (e.g., NSW,VIC)")
+):
+    """Export the latest PASA forecast data as CSV file.
+
+    PASA data is forecast data - this exports the most recent forecast run.
+
+    Returns a CSV file with columns: run_datetime, interval_datetime, regionid,
+    demand10, demand50, demand90, reservereq, capacityreq, aggregatecapacityavailable,
+    aggregatepasaavailability, surplusreserve, lorcondition, calculatedlor1level, calculatedlor2level
+    """
+    if pasa_type not in ['pdpasa', 'stpasa']:
+        raise HTTPException(status_code=400, detail="pasa_type must be 'pdpasa' or 'stpasa'")
+
+    try:
+        region_list = regions.split(',') if regions else None
+        df = await db.export_latest_pasa_data(pasa_type, region_list)
+
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        stream.seek(0)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f"nem_{pasa_type}_forecast_{timestamp}.csv"
+        response = StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv"
+        )
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+    except Exception as e:
+        logger.error(f"Error exporting PASA data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

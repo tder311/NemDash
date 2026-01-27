@@ -118,3 +118,46 @@ body {
   background: rgba(0, 0, 0, 0.7);
   color: #ccc;
 }
+
+/* Tab Navigation */
+.main-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
+}
+
+.dark .main-tabs {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tab-button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-weight: 500;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab-button:hover {
+  background: rgba(0, 123, 255, 0.1);
+}
+
+.dark .tab-button:hover {
+  background: rgba(0, 123, 255, 0.2);
+}
+
+.tab-button.active {
+  background: #007bff;
+  color: white;
+}
+
+.dark .tab-button.active {
+  background: #007bff;
+  color: white;
+}
