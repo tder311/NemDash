@@ -1144,8 +1144,9 @@ class TestExportMethods:
         assert isinstance(result, dict)
         assert 'prices' in result
         assert 'generation' in result
-        assert 'pdpasa' in result
-        assert 'stpasa' in result
+        assert 'pasa' in result
+        assert 'pdpasa' in result['pasa']
+        assert 'stpasa' in result['pasa']
         assert 'earliest_date' in result['prices']
         assert 'latest_date' in result['prices']
 
@@ -1157,3 +1158,5 @@ class TestExportMethods:
         assert isinstance(result, dict)
         assert result['prices']['earliest_date'] is None
         assert result['prices']['latest_date'] is None
+        assert result['pasa']['pdpasa']['earliest_date'] is None
+        assert result['pasa']['stpasa']['earliest_date'] is None
