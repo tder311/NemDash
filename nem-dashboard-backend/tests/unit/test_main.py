@@ -1076,3 +1076,351 @@ class TestPASAEndpoints:
                 assert "STPASA error" in response.json()["detail"]
         finally:
             main_module.db = original_db
+
+
+class TestExportEndpoints:
+    """Tests for CSV export endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_export_options_success(self):
+        """Test export options endpoint returns fuel sources and data ranges."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_unique_fuel_sources = AsyncMock(return_value=['Coal', 'Gas', 'Wind', 'Solar'])
+        mock_db.get_export_data_ranges = AsyncMock(return_value={
+            'prices': {'earliest_date': '2025-01-01', 'latest_date': '2025-01-15'},
+            'generation': {'earliest_date': '2025-01-01', 'latest_date': '2025-01-15'},
+            'pdpasa': {'earliest_date': None, 'latest_date': None},
+            'stpasa': {'earliest_date': None, 'latest_date': None}
+        })
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/available-options")
+                assert response.status_code == 200
+                data = response.json()
+                assert 'regions' in data
+                assert 'fuel_sources' in data
+                assert 'pasa_types' in data
+                assert 'data_ranges' in data
+                assert data['fuel_sources'] == ['Coal', 'Gas', 'Wind', 'Solar']
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_export_options_exception(self):
+        """Test export options endpoint error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_unique_fuel_sources = AsyncMock(side_effect=Exception("Export options error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/available-options")
+                assert response.status_code == 500
+                assert "Export options error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_prices_csv_success(self):
+        """Test price export returns CSV file."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_price_data = AsyncMock(return_value=pd.DataFrame([
+            {'settlementdate': '2025-01-15 10:00:00', 'region': 'NSW', 'price': 85.50,
+             'totaldemand': 7500.0, 'price_type': 'DISPATCH'}
+        ]))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/export/prices?start_date=2025-01-15T00:00:00&end_date=2025-01-15T23:59:59"
+                )
+                assert response.status_code == 200
+                assert response.headers['content-type'] == 'text/csv; charset=utf-8'
+                assert 'content-disposition' in response.headers
+                assert 'attachment' in response.headers['content-disposition']
+                # Verify CSV content
+                content = response.text
+                assert 'settlementdate' in content
+                assert 'region' in content
+                assert 'NSW' in content
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_prices_csv_with_regions(self):
+        """Test price export with region filter."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_price_data = AsyncMock(return_value=pd.DataFrame([
+            {'settlementdate': '2025-01-15 10:00:00', 'region': 'NSW', 'price': 85.50,
+             'totaldemand': 7500.0, 'price_type': 'DISPATCH'}
+        ]))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/export/prices?start_date=2025-01-15T00:00:00&end_date=2025-01-15T23:59:59&regions=NSW,VIC"
+                )
+                assert response.status_code == 200
+                # Verify region filter was passed
+                mock_db.export_price_data.assert_called_once()
+                call_args = mock_db.export_price_data.call_args
+                assert call_args[0][2] == ['NSW', 'VIC']
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_prices_csv_exception(self):
+        """Test price export error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.export_price_data = AsyncMock(side_effect=Exception("Price export error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/export/prices?start_date=2025-01-15T00:00:00&end_date=2025-01-15T23:59:59"
+                )
+                assert response.status_code == 500
+                assert "Price export error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_generation_csv_success(self):
+        """Test generation export returns CSV file."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_generation_data = AsyncMock(return_value=pd.DataFrame([
+            {'settlementdate': '2025-01-15 10:00:00', 'duid': 'GEN1', 'station_name': 'Test Station',
+             'region': 'NSW', 'fuel_source': 'Coal', 'technology_type': 'Steam',
+             'generation_mw': 400.0, 'totalcleared': 400.0, 'availability': 500.0}
+        ]))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/export/generation?start_date=2025-01-15T00:00:00&end_date=2025-01-15T23:59:59"
+                )
+                assert response.status_code == 200
+                assert response.headers['content-type'] == 'text/csv; charset=utf-8'
+                content = response.text
+                assert 'generation_mw' in content
+                assert 'fuel_source' in content
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_generation_csv_with_filters(self):
+        """Test generation export with region and fuel source filters."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_generation_data = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/export/generation?start_date=2025-01-15T00:00:00&end_date=2025-01-15T23:59:59&regions=NSW&fuel_sources=Coal,Gas"
+                )
+                assert response.status_code == 200
+                # Verify filters were passed
+                mock_db.export_generation_data.assert_called_once()
+                call_args = mock_db.export_generation_data.call_args
+                assert call_args[0][2] == ['NSW']
+                assert call_args[0][3] == ['Coal', 'Gas']
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_generation_csv_exception(self):
+        """Test generation export error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.export_generation_data = AsyncMock(side_effect=Exception("Generation export error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get(
+                    "/api/export/generation?start_date=2025-01-15T00:00:00&end_date=2025-01-15T23:59:59"
+                )
+                assert response.status_code == 500
+                assert "Generation export error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_pasa_csv_pdpasa_success(self):
+        """Test PDPASA export returns CSV file."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_latest_pasa_data = AsyncMock(return_value=pd.DataFrame([
+            {'run_datetime': '2025-01-15 10:00:00', 'interval_datetime': '2025-01-15 10:30:00',
+             'regionid': 'NSW1', 'demand50': 7500.0, 'lorcondition': 0}
+        ]))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/pasa?pasa_type=pdpasa")
+                assert response.status_code == 200
+                assert response.headers['content-type'] == 'text/csv; charset=utf-8'
+                content = response.text
+                assert 'run_datetime' in content
+                assert 'interval_datetime' in content
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_pasa_csv_stpasa_success(self):
+        """Test STPASA export returns CSV file."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_latest_pasa_data = AsyncMock(return_value=pd.DataFrame([
+            {'run_datetime': '2025-01-15 06:00:00', 'interval_datetime': '2025-01-16 00:00:00',
+             'regionid': 'VIC1', 'demand50': 5000.0, 'lorcondition': 0}
+        ]))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/pasa?pasa_type=stpasa")
+                assert response.status_code == 200
+                # Verify stpasa was requested
+                mock_db.export_latest_pasa_data.assert_called_once()
+                call_args = mock_db.export_latest_pasa_data.call_args
+                assert call_args[0][0] == 'stpasa'
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_pasa_csv_with_regions(self):
+        """Test PASA export with region filter."""
+        import app.main as main_module
+        import pandas as pd
+
+        mock_db = MagicMock()
+        mock_db.export_latest_pasa_data = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/pasa?pasa_type=pdpasa&regions=NSW,VIC")
+                assert response.status_code == 200
+                # Verify regions filter was passed
+                mock_db.export_latest_pasa_data.assert_called_once()
+                call_args = mock_db.export_latest_pasa_data.call_args
+                assert call_args[0][1] == ['NSW', 'VIC']
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_pasa_csv_invalid_type(self):
+        """Test PASA export with invalid pasa_type returns 400."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/pasa?pasa_type=invalid")
+                assert response.status_code == 400
+                assert "pasa_type must be" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_export_pasa_csv_exception(self):
+        """Test PASA export error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.export_latest_pasa_data = AsyncMock(side_effect=Exception("PASA export error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/export/pasa?pasa_type=pdpasa")
+                assert response.status_code == 500
+                assert "PASA export error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db

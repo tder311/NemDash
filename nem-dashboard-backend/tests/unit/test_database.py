@@ -829,3 +829,331 @@ class TestPASAQueries:
         """Test getting latest STPASA run datetime when no data"""
         result = await test_db.get_latest_stpasa_run_datetime()
         assert result is None
+
+
+class TestExportMethods:
+    """Tests for export methods used in CSV downloads"""
+
+    @pytest.mark.asyncio
+    async def test_get_unique_fuel_sources(self, test_db):
+        """Test getting unique fuel sources from generator_info"""
+        # Insert some generator info with different fuel sources
+        generators = [
+            {'duid': 'GEN1', 'station_name': 'Coal Station', 'region': 'NSW',
+             'fuel_source': 'Coal', 'technology_type': 'Steam', 'capacity_mw': 500},
+            {'duid': 'GEN2', 'station_name': 'Wind Farm', 'region': 'VIC',
+             'fuel_source': 'Wind', 'technology_type': 'Wind Turbine', 'capacity_mw': 200},
+            {'duid': 'GEN3', 'station_name': 'Solar Farm', 'region': 'QLD',
+             'fuel_source': 'Solar', 'technology_type': 'Photovoltaic', 'capacity_mw': 150},
+        ]
+        await test_db.update_generator_info(generators)
+
+        result = await test_db.get_unique_fuel_sources()
+
+        assert isinstance(result, list)
+        assert 'Coal' in result
+        assert 'Wind' in result
+        assert 'Solar' in result
+
+    @pytest.mark.asyncio
+    async def test_get_unique_fuel_sources_empty(self, test_db):
+        """Test getting unique fuel sources when no generators exist"""
+        result = await test_db.get_unique_fuel_sources()
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_export_price_data(self, test_db):
+        """Test exporting price data as DataFrame"""
+        # Insert price data
+        price_df = pd.DataFrame([
+            {
+                'settlementdate': datetime(2025, 1, 15, 10, 0),
+                'region': 'NSW',
+                'price': 85.50,
+                'totaldemand': 7500.0,
+                'price_type': 'DISPATCH'
+            },
+            {
+                'settlementdate': datetime(2025, 1, 15, 10, 30),
+                'region': 'VIC',
+                'price': 90.00,
+                'totaldemand': 5000.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(price_df)
+
+        start = datetime(2025, 1, 15, 0, 0)
+        end = datetime(2025, 1, 15, 23, 59)
+
+        result = await test_db.export_price_data(start, end)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 2
+        assert 'settlementdate' in result.columns
+        assert 'region' in result.columns
+        assert 'price' in result.columns
+
+    @pytest.mark.asyncio
+    async def test_export_price_data_with_region_filter(self, test_db):
+        """Test exporting price data filtered by region"""
+        # Insert price data for multiple regions
+        price_df = pd.DataFrame([
+            {
+                'settlementdate': datetime(2025, 1, 15, 10, 0),
+                'region': 'NSW',
+                'price': 85.50,
+                'totaldemand': 7500.0,
+                'price_type': 'DISPATCH'
+            },
+            {
+                'settlementdate': datetime(2025, 1, 15, 10, 0),
+                'region': 'VIC',
+                'price': 90.00,
+                'totaldemand': 5000.0,
+                'price_type': 'DISPATCH'
+            }
+        ])
+        await test_db.insert_price_data(price_df)
+
+        start = datetime(2025, 1, 15, 0, 0)
+        end = datetime(2025, 1, 15, 23, 59)
+
+        result = await test_db.export_price_data(start, end, regions=['NSW'])
+
+        assert len(result) == 1
+        assert result.iloc[0]['region'] == 'NSW'
+
+    @pytest.mark.asyncio
+    async def test_export_price_data_empty(self, test_db):
+        """Test exporting price data when no data exists"""
+        start = datetime(2025, 1, 15, 0, 0)
+        end = datetime(2025, 1, 15, 23, 59)
+
+        result = await test_db.export_price_data(start, end)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+        assert 'settlementdate' in result.columns
+
+    @pytest.mark.asyncio
+    async def test_export_generation_data(self, test_db):
+        """Test exporting generation data as DataFrame"""
+        # Insert generator info
+        generators = [
+            {'duid': 'GEN1', 'station_name': 'Test Station', 'region': 'NSW',
+             'fuel_source': 'Coal', 'technology_type': 'Steam', 'capacity_mw': 500}
+        ]
+        await test_db.update_generator_info(generators)
+
+        # Insert dispatch data
+        dispatch_df = pd.DataFrame([{
+            'settlementdate': datetime(2025, 1, 15, 10, 0),
+            'duid': 'GEN1',
+            'scadavalue': 400.0,
+            'uigf': 0.0,
+            'totalcleared': 400.0,
+            'ramprate': 0.0,
+            'availability': 500.0,
+            'raise1sec': 0.0,
+            'lower1sec': 0.0
+        }])
+        await test_db.insert_dispatch_data(dispatch_df)
+
+        start = datetime(2025, 1, 15, 0, 0)
+        end = datetime(2025, 1, 15, 23, 59)
+
+        result = await test_db.export_generation_data(start, end)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+        assert 'generation_mw' in result.columns
+        assert 'station_name' in result.columns
+
+    @pytest.mark.asyncio
+    async def test_export_generation_data_with_filters(self, test_db):
+        """Test exporting generation data with region and fuel source filters"""
+        # Insert generator info
+        generators = [
+            {'duid': 'GEN1', 'station_name': 'Coal Station', 'region': 'NSW',
+             'fuel_source': 'Coal', 'technology_type': 'Steam', 'capacity_mw': 500},
+            {'duid': 'GEN2', 'station_name': 'Wind Farm', 'region': 'VIC',
+             'fuel_source': 'Wind', 'technology_type': 'Wind Turbine', 'capacity_mw': 200}
+        ]
+        await test_db.update_generator_info(generators)
+
+        # Insert dispatch data for both generators
+        dispatch_df = pd.DataFrame([
+            {
+                'settlementdate': datetime(2025, 1, 15, 10, 0),
+                'duid': 'GEN1',
+                'scadavalue': 400.0,
+                'uigf': 0.0,
+                'totalcleared': 400.0,
+                'ramprate': 0.0,
+                'availability': 500.0,
+                'raise1sec': 0.0,
+                'lower1sec': 0.0
+            },
+            {
+                'settlementdate': datetime(2025, 1, 15, 10, 0),
+                'duid': 'GEN2',
+                'scadavalue': 150.0,
+                'uigf': 0.0,
+                'totalcleared': 150.0,
+                'ramprate': 0.0,
+                'availability': 200.0,
+                'raise1sec': 0.0,
+                'lower1sec': 0.0
+            }
+        ])
+        await test_db.insert_dispatch_data(dispatch_df)
+
+        start = datetime(2025, 1, 15, 0, 0)
+        end = datetime(2025, 1, 15, 23, 59)
+
+        # Filter by region
+        result = await test_db.export_generation_data(start, end, regions=['NSW'])
+        assert len(result) == 1
+        assert result.iloc[0]['region'] == 'NSW'
+
+        # Filter by fuel source
+        result = await test_db.export_generation_data(start, end, fuel_sources=['Wind'])
+        assert len(result) == 1
+        assert result.iloc[0]['fuel_source'] == 'Wind'
+
+    @pytest.mark.asyncio
+    async def test_export_generation_data_empty(self, test_db):
+        """Test exporting generation data when no data exists"""
+        start = datetime(2025, 1, 15, 0, 0)
+        end = datetime(2025, 1, 15, 23, 59)
+
+        result = await test_db.export_generation_data(start, end)
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_export_latest_pasa_data_pdpasa(self, test_db):
+        """Test exporting latest PDPASA data as DataFrame"""
+        # Insert PDPASA data
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 10, 0),
+            'interval_datetime': datetime(2025, 1, 15, 10, 30),
+            'regionid': 'NSW1',
+            'demand10': 7200.0,
+            'demand50': 7500.0,
+            'demand90': 7800.0,
+            'reservereq': 1500.0,
+            'capacityreq': 9000.0,
+            'aggregatecapacityavailable': 10500.0,
+            'aggregatepasaavailability': 10000.0,
+            'surplusreserve': 1500.0,
+            'lorcondition': 0,
+            'calculatedlor1level': 2000.0,
+            'calculatedlor2level': 1500.0
+        }])
+        await test_db.insert_pdpasa_data(df)
+
+        result = await test_db.export_latest_pasa_data('pdpasa')
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+        assert 'run_datetime' in result.columns
+        assert 'interval_datetime' in result.columns
+        assert 'regionid' in result.columns
+
+    @pytest.mark.asyncio
+    async def test_export_latest_pasa_data_stpasa(self, test_db):
+        """Test exporting latest STPASA data as DataFrame"""
+        # Insert STPASA data
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 1, 15, 6, 0),
+            'interval_datetime': datetime(2025, 1, 16, 0, 0),
+            'regionid': 'VIC1',
+            'demand10': 4500.0,
+            'demand50': 4900.0,
+            'demand90': 5300.0,
+            'reservereq': 1200.0,
+            'capacityreq': 6100.0,
+            'aggregatecapacityavailable': 7200.0,
+            'aggregatepasaavailability': 6900.0,
+            'surplusreserve': 1100.0,
+            'lorcondition': 0,
+            'calculatedlor1level': 1800.0,
+            'calculatedlor2level': 1400.0
+        }])
+        await test_db.insert_stpasa_data(df)
+
+        result = await test_db.export_latest_pasa_data('stpasa')
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_export_latest_pasa_data_with_region_filter(self, test_db):
+        """Test exporting PASA data with region filter"""
+        # Insert PDPASA data for multiple regions
+        df = pd.DataFrame([
+            {
+                'run_datetime': datetime(2025, 1, 15, 10, 0),
+                'interval_datetime': datetime(2025, 1, 15, 10, 30),
+                'regionid': 'NSW1',
+                'demand50': 7500.0
+            },
+            {
+                'run_datetime': datetime(2025, 1, 15, 10, 0),
+                'interval_datetime': datetime(2025, 1, 15, 10, 30),
+                'regionid': 'VIC1',
+                'demand50': 5000.0
+            }
+        ])
+        await test_db.insert_pdpasa_data(df)
+
+        # Filter by region (should auto-convert NSW to NSW1)
+        result = await test_db.export_latest_pasa_data('pdpasa', regions=['NSW'])
+
+        assert len(result) == 1
+        assert result.iloc[0]['regionid'] == 'NSW1'
+
+    @pytest.mark.asyncio
+    async def test_export_latest_pasa_data_empty(self, test_db):
+        """Test exporting PASA data when no data exists"""
+        result = await test_db.export_latest_pasa_data('pdpasa')
+
+        assert isinstance(result, pd.DataFrame)
+        assert len(result) == 0
+        assert 'run_datetime' in result.columns
+
+    @pytest.mark.asyncio
+    async def test_get_export_data_ranges(self, test_db):
+        """Test getting export data ranges"""
+        # Insert some data
+        price_df = pd.DataFrame([{
+            'settlementdate': datetime(2025, 1, 15, 10, 0),
+            'region': 'NSW',
+            'price': 85.50,
+            'totaldemand': 7500.0,
+            'price_type': 'DISPATCH'
+        }])
+        await test_db.insert_price_data(price_df)
+
+        result = await test_db.get_export_data_ranges()
+
+        assert isinstance(result, dict)
+        assert 'prices' in result
+        assert 'generation' in result
+        assert 'pdpasa' in result
+        assert 'stpasa' in result
+        assert 'earliest_date' in result['prices']
+        assert 'latest_date' in result['prices']
+
+    @pytest.mark.asyncio
+    async def test_get_export_data_ranges_empty(self, test_db):
+        """Test getting export data ranges when no data exists"""
+        result = await test_db.get_export_data_ranges()
+
+        assert isinstance(result, dict)
+        assert result['prices']['earliest_date'] is None
+        assert result['prices']['latest_date'] is None
