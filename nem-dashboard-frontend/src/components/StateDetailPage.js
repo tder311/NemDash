@@ -383,15 +383,10 @@ function StateDetailPage({ region, darkMode, onBack }) {
       return {
         x: timestamps.map(t => new Date(t)),
         y: timestamps.map(t => dataMap[t] || 0),
-        type: 'scatter',
-        mode: 'lines',
+        type: 'bar',
         name: fuel,
-        fill: 'tonexty',
-        stackgroup: 'generation',
-        fillcolor: color + '80',  // Add transparency to fill
-        line: {
-          color: color,
-          width: 1
+        marker: {
+          color: color
         },
         hovertemplate: `<b>${fuel}</b><br>` +
                       'Time: %{x}<br>' +
@@ -454,7 +449,9 @@ function StateDetailPage({ region, darkMode, onBack }) {
       bgcolor: darkMode ? '#1f2937' : 'white',
       bordercolor: darkMode ? '#374151' : '#e5e7eb',
       font: { size: 12, family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }
-    }
+    },
+    barmode: 'stack',
+    bargap: 0
   };
 
   // Show database health page if requested
