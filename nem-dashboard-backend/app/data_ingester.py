@@ -405,12 +405,12 @@ class DataIngester:
         logger.info(f"Starting continuous ingestion with {interval_minutes} minute intervals")
 
         # Parse backfill start date from environment
-        backfill_start_str = os.getenv('BACKFILL_START_DATE', '2025-01-01')
+        backfill_start_str = os.getenv('BACKFILL_START_DATE', '2026-01-01')
         try:
             backfill_start_date = datetime.strptime(backfill_start_str, '%Y-%m-%d')
         except ValueError:
-            logger.warning(f"Invalid BACKFILL_START_DATE '{backfill_start_str}', using 2025-01-01")
-            backfill_start_date = datetime(2025, 1, 1)
+            logger.warning(f"Invalid BACKFILL_START_DATE '{backfill_start_str}', using 2026-01-01")
+            backfill_start_date = datetime(2026, 1, 1)
 
         logger.info(f"Backfill start date: {backfill_start_date.strftime('%Y-%m-%d')}")
 

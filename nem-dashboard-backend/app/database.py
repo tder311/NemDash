@@ -331,16 +331,21 @@ class NEMDatabase:
             result = await conn.fetchval("SELECT MIN(settlementdate) FROM dispatch_data")
         return result
 
-    async def get_dispatch_dates_with_data(self, start_date: datetime, end_date: datetime, min_records: int = 100) -> set:
-        """Get dates that have sufficient dispatch data."""
+    async def get_dispatch_dates_with_data(self, start_date: datetime, end_date: datetime, min_intervals: int = 280) -> set:
+        """Get dates that have sufficient dispatch data (complete 5-min interval coverage).
+
+        A complete day has 288 5-minute intervals. Default threshold of 280 allows
+        for minor gaps while catching days with significant missing data.
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT settlementdate::DATE as data_date, COUNT(*) as record_count
+                SELECT settlementdate::DATE as data_date,
+                       COUNT(DISTINCT settlementdate) as interval_count
                 FROM dispatch_data
                 WHERE settlementdate::DATE BETWEEN $1::DATE AND $2::DATE
                 GROUP BY settlementdate::DATE
-                HAVING COUNT(*) >= $3
-            """, start_date, end_date, min_records)
+                HAVING COUNT(DISTINCT settlementdate) >= $3
+            """, start_date, end_date, min_intervals)
 
         return {str(row['data_date']) for row in rows}
 

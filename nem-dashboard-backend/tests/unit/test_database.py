@@ -600,12 +600,12 @@ class TestDispatchTimestampQueries:
 
     @pytest.mark.asyncio
     async def test_get_dispatch_dates_with_data(self, test_db):
-        """Test getting dates with sufficient dispatch data"""
+        """Test getting dates with sufficient dispatch data (interval coverage)"""
         # Insert dispatch data for multiple dates
         records = []
         base_date = datetime(2025, 1, 15, 10, 0)
 
-        # Insert 150 records for Jan 15 (should meet threshold of 100)
+        # Insert 150 records with distinct 5-min intervals (should meet threshold of 100)
         for i in range(150):
             records.append({
                 'settlementdate': base_date + timedelta(minutes=i * 5),
@@ -625,7 +625,7 @@ class TestDispatchTimestampQueries:
         start = datetime(2025, 1, 14)
         end = datetime(2025, 1, 16)
 
-        result = await test_db.get_dispatch_dates_with_data(start, end, min_records=100)
+        result = await test_db.get_dispatch_dates_with_data(start, end, min_intervals=100)
 
         assert isinstance(result, set)
         assert '2025-01-15' in result
