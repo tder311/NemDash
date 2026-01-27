@@ -13,18 +13,6 @@ function formatNumber(num) {
   return num.toLocaleString();
 }
 
-function formatDate(dateStr) {
-  if (!dateStr) return 'N/A';
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('en-AU', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
-
 function formatShortDate(dateStr) {
   if (!dateStr) return 'N/A';
   const date = new Date(dateStr);
