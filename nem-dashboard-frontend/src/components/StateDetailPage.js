@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Plot from 'react-plotly.js';
 import axios from 'axios';
 import DatabaseHealthPage from './DatabaseHealthPage';
@@ -99,6 +99,9 @@ function StateDetailPage({ region, darkMode, onBack }) {
   const [endYear, setEndYear] = useState(now.getFullYear());
   const [availableDateRange, setAvailableDateRange] = useState(null);
 
+  // Ref for debouncing date range changes
+  const fetchDebounceRef = useRef(null);
+
   // Computed dates
   const startDate = useMemo(() => {
     return new Date(startYear, startMonth - 1, startDay, 0, 0, 0);
@@ -185,9 +188,25 @@ function StateDetailPage({ region, darkMode, onBack }) {
   }, [region, startDate, endDate]);
 
   useEffect(() => {
-    fetchData();
+    // Clear any existing debounce timeout
+    if (fetchDebounceRef.current) {
+      clearTimeout(fetchDebounceRef.current);
+    }
+
+    // Debounce the fetch call - wait 500ms after last date change before fetching
+    fetchDebounceRef.current = setTimeout(() => {
+      fetchData();
+    }, 500);
+
+    // Set up auto-refresh interval
     const interval = setInterval(fetchData, 60000);
-    return () => clearInterval(interval);
+
+    return () => {
+      if (fetchDebounceRef.current) {
+        clearTimeout(fetchDebounceRef.current);
+      }
+      clearInterval(interval);
+    };
   }, [fetchData]);
 
   const createPriceChartData = () => {
