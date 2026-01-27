@@ -192,3 +192,10 @@ class PASADataResponse(BaseModel):
     region: str
     count: int
     message: str
+
+
+class RegionDataRangeResponse(BaseModel):
+    region: str
+    earliest_date: Optional[str] = None
+    latest_date: Optional[str] = None
+    message: str
