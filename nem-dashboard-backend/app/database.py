@@ -1141,3 +1141,210 @@ class NEMDatabase:
         async with self._pool.acquire() as conn:
             result = await conn.fetchval("SELECT MAX(run_datetime) FROM stpasa_data")
         return result
+
+    # Export methods for CSV downloads
+    async def get_unique_fuel_sources(self) -> List[str]:
+        """Get list of all unique fuel sources for filter dropdown."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT fuel_source FROM generator_info WHERE fuel_source IS NOT NULL ORDER BY fuel_source"
+            )
+        return [row['fuel_source'] for row in rows]
+
+    async def export_price_data(self, start_date: datetime, end_date: datetime,
+                                 regions: Optional[List[str]] = None) -> pd.DataFrame:
+        """Export price data for CSV download.
+
+        Args:
+            start_date: Start of date range
+            end_date: End of date range
+            regions: Optional list of regions to filter (None = all regions)
+
+        Returns:
+            DataFrame with price data
+        """
+        async with self._pool.acquire() as conn:
+            if regions:
+                rows = await conn.fetch("""
+                    SELECT settlementdate, region, price, totaldemand, price_type
+                    FROM price_data
+                    WHERE settlementdate BETWEEN $1 AND $2
+                    AND region = ANY($3)
+                    ORDER BY settlementdate, region
+                """, start_date, end_date, regions)
+            else:
+                rows = await conn.fetch("""
+                    SELECT settlementdate, region, price, totaldemand, price_type
+                    FROM price_data
+                    WHERE settlementdate BETWEEN $1 AND $2
+                    ORDER BY settlementdate, region
+                """, start_date, end_date)
+
+        if not rows:
+            return pd.DataFrame(columns=['settlementdate', 'region', 'price', 'totaldemand', 'price_type'])
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df
+
+    async def export_generation_data(self, start_date: datetime, end_date: datetime,
+                                      regions: Optional[List[str]] = None,
+                                      fuel_sources: Optional[List[str]] = None) -> pd.DataFrame:
+        """Export generation data for CSV download.
+
+        Args:
+            start_date: Start of date range
+            end_date: End of date range
+            regions: Optional list of regions to filter
+            fuel_sources: Optional list of fuel sources to filter
+
+        Returns:
+            DataFrame with generation data including generator metadata
+        """
+        async with self._pool.acquire() as conn:
+            base_query = """
+                SELECT
+                    d.settlementdate,
+                    d.duid,
+                    g.station_name,
+                    g.region,
+                    g.fuel_source,
+                    g.technology_type,
+                    d.scadavalue as generation_mw,
+                    d.totalcleared,
+                    d.availability
+                FROM dispatch_data d
+                LEFT JOIN generator_info g ON d.duid = g.duid
+                WHERE d.settlementdate BETWEEN $1 AND $2
+            """
+            params = [start_date, end_date]
+            param_idx = 3
+
+            if regions:
+                base_query += f" AND g.region = ANY(${param_idx})"
+                params.append(regions)
+                param_idx += 1
+
+            if fuel_sources:
+                base_query += f" AND g.fuel_source = ANY(${param_idx})"
+                params.append(fuel_sources)
+
+            base_query += " ORDER BY d.settlementdate, g.region, g.fuel_source, d.duid"
+
+            rows = await conn.fetch(base_query, *params)
+
+        if not rows:
+            return pd.DataFrame(columns=['settlementdate', 'duid', 'station_name', 'region',
+                                         'fuel_source', 'technology_type', 'generation_mw',
+                                         'totalcleared', 'availability'])
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['settlementdate'] = pd.to_datetime(df['settlementdate']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df
+
+    async def export_latest_pasa_data(self, pasa_type: str,
+                                       regions: Optional[List[str]] = None) -> pd.DataFrame:
+        """Export the latest PASA forecast data for CSV download.
+
+        Args:
+            pasa_type: 'pdpasa' or 'stpasa'
+            regions: Optional list of regions to filter (e.g., ['NSW', 'VIC'])
+
+        Returns:
+            DataFrame with the latest PASA forecast data
+        """
+        table = 'pdpasa_data' if pasa_type == 'pdpasa' else 'stpasa_data'
+
+        # Convert simple region names to PASA format if needed
+        pasa_regions = None
+        if regions:
+            pasa_regions = []
+            for r in regions:
+                if not r.endswith('1'):
+                    pasa_regions.append(r + '1')
+                else:
+                    pasa_regions.append(r)
+
+        async with self._pool.acquire() as conn:
+            if pasa_regions:
+                rows = await conn.fetch(f"""
+                    SELECT run_datetime, interval_datetime, regionid,
+                           demand10, demand50, demand90,
+                           reservereq, capacityreq,
+                           aggregatecapacityavailable, aggregatepasaavailability,
+                           surplusreserve, lorcondition,
+                           calculatedlor1level, calculatedlor2level
+                    FROM {table}
+                    WHERE run_datetime = (SELECT MAX(run_datetime) FROM {table})
+                    AND regionid = ANY($1)
+                    ORDER BY interval_datetime, regionid
+                """, pasa_regions)
+            else:
+                rows = await conn.fetch(f"""
+                    SELECT run_datetime, interval_datetime, regionid,
+                           demand10, demand50, demand90,
+                           reservereq, capacityreq,
+                           aggregatecapacityavailable, aggregatepasaavailability,
+                           surplusreserve, lorcondition,
+                           calculatedlor1level, calculatedlor2level
+                    FROM {table}
+                    WHERE run_datetime = (SELECT MAX(run_datetime) FROM {table})
+                    ORDER BY interval_datetime, regionid
+                """)
+
+        if not rows:
+            return pd.DataFrame(columns=['run_datetime', 'interval_datetime', 'regionid',
+                                         'demand10', 'demand50', 'demand90',
+                                         'reservereq', 'capacityreq',
+                                         'aggregatecapacityavailable', 'aggregatepasaavailability',
+                                         'surplusreserve', 'lorcondition',
+                                         'calculatedlor1level', 'calculatedlor2level'])
+
+        df = pd.DataFrame([dict(row) for row in rows])
+        df['run_datetime'] = pd.to_datetime(df['run_datetime']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        df['interval_datetime'] = pd.to_datetime(df['interval_datetime']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df
+
+    async def get_export_data_ranges(self) -> Dict[str, Any]:
+        """Get available data ranges for all exportable data types."""
+        async with self._pool.acquire() as conn:
+            price_range = await conn.fetchrow("""
+                SELECT MIN(settlementdate) as earliest, MAX(settlementdate) as latest
+                FROM price_data
+            """)
+
+            generation_range = await conn.fetchrow("""
+                SELECT MIN(settlementdate) as earliest, MAX(settlementdate) as latest
+                FROM dispatch_data
+            """)
+
+            pdpasa_range = await conn.fetchrow("""
+                SELECT MIN(interval_datetime) as earliest, MAX(interval_datetime) as latest
+                FROM pdpasa_data
+            """)
+
+            stpasa_range = await conn.fetchrow("""
+                SELECT MIN(interval_datetime) as earliest, MAX(interval_datetime) as latest
+                FROM stpasa_data
+            """)
+
+        return {
+            'prices': {
+                'earliest_date': to_aest_isoformat(price_range['earliest']) if price_range and price_range['earliest'] else None,
+                'latest_date': to_aest_isoformat(price_range['latest']) if price_range and price_range['latest'] else None
+            },
+            'generation': {
+                'earliest_date': to_aest_isoformat(generation_range['earliest']) if generation_range and generation_range['earliest'] else None,
+                'latest_date': to_aest_isoformat(generation_range['latest']) if generation_range and generation_range['latest'] else None
+            },
+            'pasa': {
+                'pdpasa': {
+                    'earliest_date': to_aest_isoformat(pdpasa_range['earliest']) if pdpasa_range and pdpasa_range['earliest'] else None,
+                    'latest_date': to_aest_isoformat(pdpasa_range['latest']) if pdpasa_range and pdpasa_range['latest'] else None
+                },
+                'stpasa': {
+                    'earliest_date': to_aest_isoformat(stpasa_range['earliest']) if stpasa_range and stpasa_range['earliest'] else None,
+                    'latest_date': to_aest_isoformat(stpasa_range['latest']) if stpasa_range and stpasa_range['latest'] else None
+                }
+            }
+        }
