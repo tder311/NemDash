@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import api from '../api';
 import './DatabaseHealthPage.css';
 
 const TIME_RANGE_OPTIONS = [
@@ -35,7 +35,7 @@ function DatabaseHealthPage({ darkMode, onBack }) {
     try {
       setLoading(true);
       setError(null);
-      const response = await axios.get(`/api/database/health?hours_back=${hoursBack}`);
+      const response = await api.get(`/api/database/health?hours_back=${hoursBack}`);
       setHealthData(response.data);
       setLoading(false);
     } catch (err) {

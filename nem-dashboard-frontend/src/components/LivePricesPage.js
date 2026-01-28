@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api';
 import RegionSidebar from './RegionSidebar';
 import AustraliaMap from './AustraliaMap';
 import StateDetailPage from './StateDetailPage';
@@ -18,11 +18,11 @@ function LivePricesPage({ darkMode }) {
   const fetchData = async () => {
     try {
       // Fetch latest trading prices 
-      const tradingResponse = await axios.get('/api/prices/latest?price_type=TRADING');
+      const tradingResponse = await api.get('/api/prices/latest?price_type=TRADING');
       const tradingData = tradingResponse.data.data || [];
       
       // Fetch dispatch data for demand information
-      const dispatchResponse = await axios.get('/api/prices/latest?price_type=DISPATCH');
+      const dispatchResponse = await api.get('/api/prices/latest?price_type=DISPATCH');
       const dispatchData = dispatchResponse.data.data || [];
       
       // Combine trading prices with dispatch demand data

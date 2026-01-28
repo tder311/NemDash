@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Plot from 'react-plotly.js';
-import axios from 'axios';
+import api from '../api';
 import DatabaseHealthPage from './DatabaseHealthPage';
 import PASAPage from './PASAPage';
 import './StateDetailPage.css';
@@ -144,7 +144,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
   useEffect(() => {
     const fetchDateRange = async () => {
       try {
-        const response = await axios.get(`/api/region/${region}/data-range`);
+        const response = await api.get(`/api/region/${region}/data-range`);
         setAvailableDateRange(response.data);
       } catch (error) {
         console.error('Error fetching date range:', error);
@@ -161,9 +161,9 @@ function StateDetailPage({ region, darkMode, onBack }) {
 
       // Fetch all data in parallel
       const [priceResponse, summaryResponse, genHistoryResponse] = await Promise.all([
-        axios.get(`/api/region/${region}/prices/history?start_date=${startIso}&end_date=${endIso}&price_type=MERGED`),
-        axios.get(`/api/region/${region}/summary`),
-        axios.get(`/api/region/${region}/generation/history?start_date=${startIso}&end_date=${endIso}`)
+        api.get(`/api/region/${region}/prices/history?start_date=${startIso}&end_date=${endIso}&price_type=MERGED`),
+        api.get(`/api/region/${region}/summary`),
+        api.get(`/api/region/${region}/generation/history?start_date=${startIso}&end_date=${endIso}`)
       ]);
 
       setPriceHistory(priceResponse.data.data || []);
