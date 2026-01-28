@@ -2,11 +2,11 @@
   padding: 20px;
   height: 100%;
   overflow-y: auto;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background: var(--bg-light);
 }
 
 .database-health-container.dark {
-  background: linear-gradient(135deg, #1a1a1a 0%, #262626 100%);
+  background: var(--bg-dark);
 }
 
 .health-header {
@@ -20,17 +20,17 @@
 .back-button {
   padding: 10px 20px;
   border: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
   color: white;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: all var(--transition-fast);
 }
 
 .back-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  background: var(--color-accent-hover);
+  transform: translateY(-1px);
 }
 
 .health-title {
@@ -42,8 +42,7 @@
 }
 
 .database-health-container.dark .health-title {
-  color: #f5f5f5;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  color: var(--text-primary-dark);
 }
 
 .last-checked {
@@ -84,38 +83,38 @@
 
 .range-button {
   padding: 8px 16px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  background: white;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-card-light);
   font-size: 0.9rem;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-fast);
 }
 
 .range-button:hover {
-  border-color: #667eea;
-  color: #667eea;
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .range-button.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-accent);
   color: white;
   border-color: transparent;
 }
 
 .database-health-container.dark .range-button {
-  background: #262626;
-  border-color: #444;
-  color: #f5f5f5;
+  background: var(--bg-card-dark);
+  border-color: var(--border-dark);
+  color: var(--text-primary-dark);
 }
 
 .database-health-container.dark .range-button:hover {
-  border-color: #667eea;
-  color: #667eea;
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .database-health-container.dark .range-button.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-accent);
   color: white;
 }
 
@@ -482,11 +481,16 @@
   margin-top: 16px;
   padding: 10px 24px;
   border: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
   color: white;
   font-weight: 600;
   cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.retry-button:hover {
+  background: var(--color-accent-hover);
 }
 
 .loading {
@@ -505,11 +509,16 @@
 .spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid #ddd;
-  border-top-color: #667eea;
+  border: 3px solid var(--border-light);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
+}
+
+.database-health-container.dark .spinner {
+  border-color: var(--border-dark);
+  border-top-color: var(--color-accent);
 }
 
 @keyframes spin {

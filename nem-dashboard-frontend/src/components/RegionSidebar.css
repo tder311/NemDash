@@ -5,24 +5,18 @@
   width: 320px;
   height: 100%;
   padding: 1.5rem;
-  backdrop-filter: blur(20px);
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  border-right: 1px solid var(--border-light);
   z-index: 20;
   overflow-y: auto;
 }
 
 .region-sidebar.light {
-  background: linear-gradient(180deg, 
-    rgba(255, 255, 255, 0.95) 0%, 
-    rgba(248, 250, 252, 0.9) 100%);
-  border-right-color: rgba(0, 0, 0, 0.1);
+  background: var(--bg-card-light);
 }
 
 .region-sidebar.dark {
-  background: linear-gradient(180deg,
-    rgba(26, 26, 26, 0.95) 0%,
-    rgba(38, 38, 38, 0.9) 100%);
-  border-right-color: rgba(255, 255, 255, 0.1);
+  background: var(--bg-card-dark);
+  border-right-color: var(--border-dark);
 }
 
 .sidebar-title {
@@ -44,48 +38,29 @@
 }
 
 .sidebar-region-card {
-  background: rgba(255, 255, 255, 0.8);
-  border-radius: 16px;
+  background: var(--bg-elevated-light);
+  border-radius: var(--radius-lg);
   padding: 1.25rem;
-  border: 2px solid var(--region-color);
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  border: 1px solid var(--border-light);
+  transition: all var(--transition-base);
   cursor: pointer;
-  position: relative;
-  overflow: hidden;
-  backdrop-filter: blur(10px);
 }
 
 .dark .sidebar-region-card {
-  background: rgba(38, 38, 38, 0.8);
-}
-
-.sidebar-region-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-  transition: left 0.5s;
-}
-
-.sidebar-region-card:hover::before {
-  left: 100%;
+  background: var(--bg-elevated-dark);
+  border-color: var(--border-dark);
 }
 
 .sidebar-region-card:hover,
 .sidebar-region-card.highlighted {
-  transform: translateX(8px) scale(1.02);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
-  border-color: var(--region-color);
-  background: rgba(255, 255, 255, 0.95);
+  transform: translateX(4px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-accent);
 }
 
 .dark .sidebar-region-card:hover,
 .dark .sidebar-region-card.highlighted {
-  background: rgba(51, 51, 51, 0.95);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-lg);
 }
 
 .region-header {
@@ -97,9 +72,8 @@
 
 .region-code {
   font-size: 1.5rem;
-  font-weight: 800;
+  font-weight: 700;
   color: var(--region-color);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .region-name {

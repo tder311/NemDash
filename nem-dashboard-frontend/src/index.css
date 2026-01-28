@@ -1,3 +1,5 @@
+@import './design-tokens.css';
+
 * {
   margin: 0;
   padding: 0;
@@ -37,15 +39,19 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 2rem;
-  border-bottom: 2px solid #007bff;
+  border-bottom: 1px solid var(--border-light);
   margin-bottom: 0;
   flex-shrink: 0;
+}
+
+.dark .header {
+  border-bottom-color: var(--border-dark);
 }
 
 .title {
   font-size: 2rem;
   font-weight: bold;
-  color: #007bff;
+  color: var(--color-accent);
 }
 
 .dark-mode-toggle {
@@ -65,7 +71,7 @@ body {
 }
 
 .toggle-switch.active {
-  background-color: #007bff;
+  background-color: var(--color-accent);
 }
 
 .toggle-slider {
@@ -145,19 +151,19 @@ body {
 }
 
 .tab-button:hover {
-  background: rgba(0, 123, 255, 0.1);
+  background: var(--color-accent-light);
 }
 
 .dark .tab-button:hover {
-  background: rgba(0, 123, 255, 0.2);
+  background: var(--color-accent-medium);
 }
 
 .tab-button.active {
-  background: #007bff;
+  background: var(--color-accent);
   color: white;
 }
 
 .dark .tab-button.active {
-  background: #007bff;
+  background: var(--color-accent);
   color: white;
 }

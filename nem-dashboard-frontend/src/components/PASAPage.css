@@ -2,11 +2,11 @@
   padding: 20px;
   height: 100%;
   overflow-y: auto;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background: var(--bg-light);
 }
 
 .pasa-container.dark {
-  background: linear-gradient(135deg, #1a1a1a 0%, #262626 100%);
+  background: var(--bg-dark);
 }
 
 .pasa-header {
@@ -20,17 +20,17 @@
 .back-button {
   padding: 10px 20px;
   border: none;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
   color: white;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: all var(--transition-fast);
 }
 
 .back-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  background: var(--color-accent-hover);
+  transform: translateY(-1px);
 }
 
 .pasa-title {
@@ -41,10 +41,11 @@
 }
 
 .pasa-container.dark .pasa-title {
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  color: var(--text-primary-dark);
 }
 
-.last-updated {
+.pasa-container .last-updated {
+  position: static;
   font-size: 0.9rem;
   color: #666;
   background: rgba(255, 255, 255, 0.8);
@@ -81,22 +82,22 @@
 }
 
 .pasa-tab.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-accent);
   color: white;
 }
 
 .pasa-container.dark .pasa-tab {
-  background: rgba(38, 38, 38, 0.8);
-  color: #999;
+  background: var(--bg-card-dark);
+  color: var(--text-secondary-dark);
 }
 
 .pasa-container.dark .pasa-tab:hover {
-  background: rgba(50, 50, 50, 0.9);
-  color: #ccc;
+  background: var(--bg-elevated-dark);
+  color: var(--text-primary-dark);
 }
 
 .pasa-container.dark .pasa-tab.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--color-accent);
   color: white;
 }
 
@@ -287,11 +288,16 @@
 .spinner {
   width: 40px;
   height: 40px;
-  border: 3px solid #ddd;
-  border-top-color: #667eea;
+  border: 3px solid var(--border-light);
+  border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 16px;
+}
+
+.pasa-container.dark .spinner {
+  border-color: var(--border-dark);
+  border-top-color: var(--color-accent);
 }
 
 @keyframes spin {
