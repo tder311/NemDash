@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
-import axios from 'axios';
+import api from '../api';
 import './PriceHistoryPage.css';
 
 const REGION_COLORS = {
@@ -20,7 +20,7 @@ function PriceHistoryPage({ darkMode }) {
       const endDate = new Date();
       const startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
       
-      const response = await axios.get(`/api/prices/history`, {
+      const response = await api.get(`/api/prices/history`, {
         params: {
           start_date: startDate.toISOString(),
           end_date: endDate.toISOString(),

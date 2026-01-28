@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../api';
 import './DownloadsPage.css';
 
 const DATA_TYPES = [
@@ -47,7 +47,7 @@ function DownloadsPage({ darkMode }) {
   useEffect(() => {
     const fetchOptions = async () => {
       try {
-        const response = await axios.get('/api/export/available-options');
+        const response = await api.get('/api/export/available-options');
         setAvailableFuelSources(response.data.fuel_sources || []);
       } catch (err) {
         console.error('Error fetching export options:', err);
@@ -131,7 +131,7 @@ function DownloadsPage({ darkMode }) {
       }
 
       // Trigger download
-      const response = await axios.get(`${url}?${params.toString()}`, {
+      const response = await api.get(`${url}?${params.toString()}`, {
         responseType: 'blob'
       });
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
-import axios from 'axios';
+import api from '../api';
 import './PASAPage.css';
 
 const REGION_NAMES = {
@@ -48,8 +48,8 @@ function PASAPage({ region, darkMode, onBack }) {
   const fetchData = useCallback(async () => {
     try {
       const [pdpasaResponse, stpasaResponse] = await Promise.all([
-        axios.get(`/api/pasa/pdpasa/${regionId}`),
-        axios.get(`/api/pasa/stpasa/${regionId}`)
+        api.get(`/api/pasa/pdpasa/${regionId}`),
+        api.get(`/api/pasa/stpasa/${regionId}`)
       ]);
 
       setPdpasaData(pdpasaResponse.data.data || []);

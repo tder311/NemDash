@@ -58,6 +58,16 @@ jest.mock('axios', () => {
   const defaultPut = jest.fn(() => Promise.resolve({ data: {} }));
   const defaultDelete = jest.fn(() => Promise.resolve({ data: {} }));
 
+  // axios.create() returns an instance with the same methods
+  const axiosInstance = {
+    get: defaultGet,
+    post: defaultPost,
+    put: defaultPut,
+    delete: defaultDelete,
+  };
+
+  const create = jest.fn(() => axiosInstance);
+
   return {
     __esModule: true,
     default: {
@@ -65,11 +75,13 @@ jest.mock('axios', () => {
       post: defaultPost,
       put: defaultPut,
       delete: defaultDelete,
+      create: create,
     },
     get: defaultGet,
     post: defaultPost,
     put: defaultPut,
     delete: defaultDelete,
+    create: create,
   };
 });
 
