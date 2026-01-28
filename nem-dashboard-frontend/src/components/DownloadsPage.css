@@ -3,11 +3,11 @@
   max-width: 900px;
   margin: 0 auto;
   min-height: 100%;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background: var(--bg-light);
 }
 
 .downloads-container.dark {
-  background: linear-gradient(135deg, #1a1a1a 0%, #262626 100%);
+  background: var(--bg-dark);
 }
 
 .downloads-header {
@@ -82,27 +82,27 @@
 }
 
 .data-type-card:hover {
-  border-color: #007bff;
-  background: rgba(0, 123, 255, 0.05);
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
 }
 
 .data-type-card.selected {
-  border-color: #007bff;
-  background: rgba(0, 123, 255, 0.1);
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
 }
 
 .downloads-container.dark .data-type-card {
-  border-color: #374151;
+  border-color: var(--border-dark);
 }
 
 .downloads-container.dark .data-type-card:hover {
-  border-color: #007bff;
-  background: rgba(0, 123, 255, 0.15);
+  border-color: var(--color-accent);
+  background: var(--color-accent-medium);
 }
 
 .downloads-container.dark .data-type-card.selected {
-  border-color: #007bff;
-  background: rgba(0, 123, 255, 0.2);
+  border-color: var(--color-accent);
+  background: var(--color-accent-medium);
 }
 
 .data-type-label {
@@ -163,13 +163,13 @@
 }
 
 .date-dropdowns select:hover {
-  border-color: #007bff;
+  border-color: var(--color-accent);
 }
 
 .date-dropdowns select:focus {
   outline: none;
-  border-color: #007bff;
-  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.15);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-light);
 }
 
 .downloads-container.dark .date-dropdowns select {
@@ -179,7 +179,7 @@
 }
 
 .downloads-container.dark .date-dropdowns select:hover {
-  border-color: #007bff;
+  border-color: var(--color-accent);
 }
 
 .date-separator {
@@ -240,7 +240,7 @@
   width: 18px;
   height: 18px;
   cursor: pointer;
-  accent-color: #007bff;
+  accent-color: var(--color-accent);
 }
 
 .select-all-btn,
@@ -257,22 +257,22 @@
 
 .select-all-btn:hover,
 .clear-all-btn:hover {
-  background: rgba(0, 123, 255, 0.1);
-  border-color: #007bff;
-  color: #007bff;
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .downloads-container.dark .select-all-btn,
 .downloads-container.dark .clear-all-btn {
-  border-color: #374151;
-  color: #9ca3af;
+  border-color: var(--border-dark);
+  color: var(--text-muted-dark);
 }
 
 .downloads-container.dark .select-all-btn:hover,
 .downloads-container.dark .clear-all-btn:hover {
-  background: rgba(0, 123, 255, 0.2);
-  border-color: #007bff;
-  color: #007bff;
+  background: var(--color-accent-medium);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .filter-hint {
@@ -327,7 +327,7 @@
 
 .download-button {
   padding: 14px 40px;
-  background: #007bff;
+  background: var(--color-accent);
   color: white;
   border: none;
   border-radius: 10px;
@@ -341,8 +341,8 @@
 }
 
 .download-button:hover:not(:disabled) {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0, 123, 255, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--color-accent-medium);
 }
 
 .download-button:disabled {
