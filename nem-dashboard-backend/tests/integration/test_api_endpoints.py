@@ -395,11 +395,12 @@ class TestDatabaseHealthEndpoint:
         response = await async_client.get("/api/database/health")
         assert response.status_code == 200
         data = response.json()
-        assert len(data["tables"]) == 3
+        assert len(data["tables"]) == 4
         table_names = [t["table"] for t in data["tables"]]
         assert "dispatch_data" in table_names
         assert "price_data" in table_names
         assert "generator_info" in table_names
+        assert "daily_metrics" in table_names
 
     @pytest.mark.asyncio
     async def test_get_database_health_gaps_structure(self, async_client):
