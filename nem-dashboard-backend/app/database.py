@@ -181,6 +181,42 @@ class NEMDatabase:
             """)
 
 
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_metrics (
+                    id BIGSERIAL PRIMARY KEY,
+                    metric_date DATE NOT NULL,
+                    region TEXT NOT NULL,
+                    capture_solar REAL,
+                    capture_wind REAL,
+                    capture_battery REAL,
+                    capture_gas REAL,
+                    capture_coal REAL,
+                    capture_hydro REAL,
+                    capture_price_solar REAL,
+                    capture_price_wind REAL,
+                    capture_price_battery REAL,
+                    capture_price_gas REAL,
+                    capture_price_coal REAL,
+                    capture_price_hydro REAL,
+                    baseload_price REAL,
+                    tb2_spread REAL,
+                    tb4_spread REAL,
+                    tb8_spread REAL,
+                    intervals_count INTEGER,
+                    calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(metric_date, region)
+                )
+            """)
+
+            # Add hydro columns to existing daily_metrics tables
+            for col in ['capture_hydro', 'capture_price_hydro']:
+                await conn.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE daily_metrics ADD COLUMN {col} REAL;
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$
+                """)
+
             # Create indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_settlement ON dispatch_data(settlementdate)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_duid ON dispatch_data(duid)")
@@ -200,6 +236,10 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_run ON stpasa_data(run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region ON stpasa_data(regionid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region_run ON stpasa_data(regionid, run_datetime)")
+
+            # Daily metrics indexes
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_region_date ON daily_metrics(region, metric_date)")
 
         logger.info("PostgreSQL database initialized")
 
@@ -1348,3 +1388,240 @@ class NEMDatabase:
                 }
             }
         }
+
+    # ---- Daily Metrics (Capture Rates & TB Spreads) ----
+
+    async def calculate_daily_metrics(self, region: str, metric_date) -> bool:
+        """Calculate and upsert capture rates and TB spreads for a region and date.
+
+        Uses merged prices (PUBLIC preferred, DISPATCH as fallback) to maximise
+        historical coverage.
+
+        Returns True if metrics were calculated, False if skipped (incomplete data).
+        """
+        # CTE that deduplicates prices: prefer PUBLIC over DISPATCH per interval
+        merged_prices_cte = """
+            merged_prices AS (
+                SELECT DISTINCT ON (settlementdate)
+                    settlementdate, region, price, price_type
+                FROM price_data
+                WHERE region = $1
+                  AND settlementdate::DATE = $2::DATE
+                ORDER BY settlementdate, CASE WHEN price_type = 'PUBLIC' THEN 0 ELSE 1 END
+            )
+        """
+
+        async with self._pool.acquire() as conn:
+            # Baseload price and interval count
+            baseload_row = await conn.fetchrow(f"""
+                WITH {merged_prices_cte}
+                SELECT AVG(price) AS baseload_price, COUNT(*) AS intervals_count
+                FROM merged_prices
+            """, region, metric_date)
+
+            if not baseload_row or (baseload_row['intervals_count'] or 0) < 240:
+                return False
+
+            baseload_price = float(baseload_row['baseload_price'])
+            intervals_count = baseload_row['intervals_count']
+
+            # Capture prices via single-pass conditional aggregation
+            capture_row = await conn.fetchrow(f"""
+                WITH {merged_prices_cte},
+                gen AS (
+                    SELECT
+                        d.settlementdate,
+                        COALESCE(g.fuel_source, 'Unknown') AS fuel_source,
+                        GREATEST(d.scadavalue, 0) AS generation_mw,
+                        p.price
+                    FROM dispatch_data d
+                    INNER JOIN generator_info g ON d.duid = g.duid
+                    INNER JOIN merged_prices p
+                        ON p.settlementdate = d.settlementdate
+                    WHERE g.region = $1
+                      AND d.settlementdate::DATE = $2::DATE
+                )
+                SELECT
+                    CASE WHEN SUM(CASE WHEN fuel_source='Solar'   THEN generation_mw END) > 0
+                         THEN SUM(CASE WHEN fuel_source='Solar'   THEN generation_mw * price END) /
+                              SUM(CASE WHEN fuel_source='Solar'   THEN generation_mw END)
+                    END AS cp_solar,
+                    CASE WHEN SUM(CASE WHEN fuel_source='Wind'    THEN generation_mw END) > 0
+                         THEN SUM(CASE WHEN fuel_source='Wind'    THEN generation_mw * price END) /
+                              SUM(CASE WHEN fuel_source='Wind'    THEN generation_mw END)
+                    END AS cp_wind,
+                    CASE WHEN SUM(CASE WHEN fuel_source='Battery' THEN generation_mw END) > 0
+                         THEN SUM(CASE WHEN fuel_source='Battery' THEN generation_mw * price END) /
+                              SUM(CASE WHEN fuel_source='Battery' THEN generation_mw END)
+                    END AS cp_battery,
+                    CASE WHEN SUM(CASE WHEN fuel_source='Gas'     THEN generation_mw END) > 0
+                         THEN SUM(CASE WHEN fuel_source='Gas'     THEN generation_mw * price END) /
+                              SUM(CASE WHEN fuel_source='Gas'     THEN generation_mw END)
+                    END AS cp_gas,
+                    CASE WHEN SUM(CASE WHEN fuel_source='Coal'    THEN generation_mw END) > 0
+                         THEN SUM(CASE WHEN fuel_source='Coal'    THEN generation_mw * price END) /
+                              SUM(CASE WHEN fuel_source='Coal'    THEN generation_mw END)
+                    END AS cp_coal,
+                    CASE WHEN SUM(CASE WHEN fuel_source='Hydro'   THEN generation_mw END) > 0
+                         THEN SUM(CASE WHEN fuel_source='Hydro'   THEN generation_mw * price END) /
+                              SUM(CASE WHEN fuel_source='Hydro'   THEN generation_mw END)
+                    END AS cp_hydro
+                FROM gen
+            """, region, metric_date)
+
+            # TB spreads
+            tb_row = await conn.fetchrow(f"""
+                WITH {merged_prices_cte},
+                ranked AS (
+                    SELECT
+                        price,
+                        ROW_NUMBER() OVER (ORDER BY price DESC) AS rank_desc,
+                        ROW_NUMBER() OVER (ORDER BY price ASC)  AS rank_asc
+                    FROM merged_prices
+                )
+                SELECT
+                    AVG(CASE WHEN rank_desc <= 24 THEN price END) -
+                    AVG(CASE WHEN rank_asc  <= 24 THEN price END) AS tb2_spread,
+                    AVG(CASE WHEN rank_desc <= 48 THEN price END) -
+                    AVG(CASE WHEN rank_asc  <= 48 THEN price END) AS tb4_spread,
+                    AVG(CASE WHEN rank_desc <= 96 THEN price END) -
+                    AVG(CASE WHEN rank_asc  <= 96 THEN price END) AS tb8_spread
+                FROM ranked
+            """, region, metric_date)
+
+            # Compute capture ratios
+            def safe_ratio(cp, bp):
+                if cp is not None and bp and bp != 0:
+                    return float(cp) / bp
+                return None
+
+            cp_solar = capture_row['cp_solar'] if capture_row else None
+            cp_wind = capture_row['cp_wind'] if capture_row else None
+            cp_battery = capture_row['cp_battery'] if capture_row else None
+            cp_gas = capture_row['cp_gas'] if capture_row else None
+            cp_coal = capture_row['cp_coal'] if capture_row else None
+            cp_hydro = capture_row['cp_hydro'] if capture_row else None
+
+            await conn.execute("""
+                INSERT INTO daily_metrics
+                (metric_date, region,
+                 capture_solar, capture_wind, capture_battery, capture_gas, capture_coal, capture_hydro,
+                 capture_price_solar, capture_price_wind, capture_price_battery,
+                 capture_price_gas, capture_price_coal, capture_price_hydro,
+                 baseload_price, tb2_spread, tb4_spread, tb8_spread,
+                 intervals_count, calculated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
+                ON CONFLICT (metric_date, region) DO UPDATE SET
+                    capture_solar          = EXCLUDED.capture_solar,
+                    capture_wind           = EXCLUDED.capture_wind,
+                    capture_battery        = EXCLUDED.capture_battery,
+                    capture_gas            = EXCLUDED.capture_gas,
+                    capture_coal           = EXCLUDED.capture_coal,
+                    capture_hydro          = EXCLUDED.capture_hydro,
+                    capture_price_solar    = EXCLUDED.capture_price_solar,
+                    capture_price_wind     = EXCLUDED.capture_price_wind,
+                    capture_price_battery  = EXCLUDED.capture_price_battery,
+                    capture_price_gas      = EXCLUDED.capture_price_gas,
+                    capture_price_coal     = EXCLUDED.capture_price_coal,
+                    capture_price_hydro    = EXCLUDED.capture_price_hydro,
+                    baseload_price         = EXCLUDED.baseload_price,
+                    tb2_spread             = EXCLUDED.tb2_spread,
+                    tb4_spread             = EXCLUDED.tb4_spread,
+                    tb8_spread             = EXCLUDED.tb8_spread,
+                    intervals_count        = EXCLUDED.intervals_count,
+                    calculated_at          = NOW()
+            """,
+                metric_date, region,
+                safe_ratio(cp_solar, baseload_price),
+                safe_ratio(cp_wind, baseload_price),
+                safe_ratio(cp_battery, baseload_price),
+                safe_ratio(cp_gas, baseload_price),
+                safe_ratio(cp_coal, baseload_price),
+                safe_ratio(cp_hydro, baseload_price),
+                float(cp_solar) if cp_solar is not None else None,
+                float(cp_wind) if cp_wind is not None else None,
+                float(cp_battery) if cp_battery is not None else None,
+                float(cp_gas) if cp_gas is not None else None,
+                float(cp_coal) if cp_coal is not None else None,
+                float(cp_hydro) if cp_hydro is not None else None,
+                baseload_price,
+                float(tb_row['tb2_spread']) if tb_row and tb_row['tb2_spread'] is not None else None,
+                float(tb_row['tb4_spread']) if tb_row and tb_row['tb4_spread'] is not None else None,
+                float(tb_row['tb8_spread']) if tb_row and tb_row['tb8_spread'] is not None else None,
+                intervals_count
+            )
+
+        logger.info(f"Calculated daily metrics for {region} {metric_date}: "
+                     f"baseload=${baseload_price:.2f}, intervals={intervals_count}")
+        return True
+
+    async def get_daily_metrics(self, region: str, start_date, end_date) -> List[Dict[str, Any]]:
+        """Fetch precalculated daily metrics for a region and date range."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT
+                    metric_date,
+                    region,
+                    capture_solar, capture_wind, capture_battery, capture_gas, capture_coal, capture_hydro,
+                    capture_price_solar, capture_price_wind, capture_price_battery,
+                    capture_price_gas, capture_price_coal, capture_price_hydro,
+                    baseload_price,
+                    tb2_spread, tb4_spread, tb8_spread,
+                    intervals_count
+                FROM daily_metrics
+                WHERE region = $1
+                  AND metric_date >= $2::DATE
+                  AND metric_date <= $3::DATE
+                ORDER BY metric_date ASC
+            """, region, start_date, end_date)
+
+        return [
+            {**dict(r), 'metric_date': r['metric_date'].isoformat()}
+            for r in rows
+        ]
+
+    async def get_metrics_summary(self, region: str, start_date, end_date) -> Dict[str, Any]:
+        """Get averaged metrics for a region over a date range."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    AVG(capture_solar) AS capture_solar,
+                    AVG(capture_wind) AS capture_wind,
+                    AVG(capture_battery) AS capture_battery,
+                    AVG(capture_gas) AS capture_gas,
+                    AVG(capture_coal) AS capture_coal,
+                    AVG(capture_hydro) AS capture_hydro,
+                    AVG(capture_price_solar) AS capture_price_solar,
+                    AVG(capture_price_wind) AS capture_price_wind,
+                    AVG(capture_price_battery) AS capture_price_battery,
+                    AVG(capture_price_gas) AS capture_price_gas,
+                    AVG(capture_price_coal) AS capture_price_coal,
+                    AVG(capture_price_hydro) AS capture_price_hydro,
+                    AVG(baseload_price) AS baseload_price,
+                    AVG(tb2_spread) AS tb2_spread,
+                    AVG(tb4_spread) AS tb4_spread,
+                    AVG(tb8_spread) AS tb8_spread,
+                    COUNT(*) AS days_count
+                FROM daily_metrics
+                WHERE region = $1
+                  AND metric_date >= $2::DATE
+                  AND metric_date <= $3::DATE
+            """, region, start_date, end_date)
+
+        if not row or row['days_count'] == 0:
+            return None
+
+        return {k: (float(v) if v is not None else None) for k, v in dict(row).items()}
+
+    async def get_earliest_metrics_date(self):
+        """Get the earliest date where both dispatch and price data overlap."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT GREATEST(
+                    (SELECT MIN(settlementdate)::DATE FROM dispatch_data),
+                    (SELECT MIN(settlementdate)::DATE FROM price_data)
+                ) AS earliest_date
+            """)
+        if row and row['earliest_date']:
+            return row['earliest_date']
+        return None

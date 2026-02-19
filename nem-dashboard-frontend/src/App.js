@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import LivePricesPage from './components/LivePricesPage';
 import DownloadsPage from './components/DownloadsPage';
+import MarketMetricsPage from './components/MarketMetricsPage';
 
 function App() {
   const [darkMode, setDarkMode] = useState(true);
@@ -28,6 +29,12 @@ function App() {
             Dashboard
           </button>
           <button
+            className={`tab-button ${activeTab === 'metrics' ? 'active' : ''}`}
+            onClick={() => setActiveTab('metrics')}
+          >
+            Market Metrics
+          </button>
+          <button
             className={`tab-button ${activeTab === 'downloads' ? 'active' : ''}`}
             onClick={() => setActiveTab('downloads')}
           >
@@ -48,6 +55,7 @@ function App() {
 
       <div className="content">
         {activeTab === 'dashboard' && <LivePricesPage darkMode={darkMode} />}
+        {activeTab === 'metrics' && <MarketMetricsPage darkMode={darkMode} />}
         {activeTab === 'downloads' && <DownloadsPage darkMode={darkMode} />}
       </div>
     </div>

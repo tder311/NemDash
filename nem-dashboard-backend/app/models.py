@@ -199,3 +199,18 @@ class RegionDataRangeResponse(BaseModel):
     earliest_date: Optional[str] = None
     latest_date: Optional[str] = None
     message: str
+
+
+class DailyMetricsResponse(BaseModel):
+    region: str
+    data: List[Dict[str, Any]]
+    count: int
+    start_date: str
+    end_date: str
+    message: str
+
+
+class MetricsSummaryResponse(BaseModel):
+    region: str
+    periods: Dict[str, Any]
+    message: str
