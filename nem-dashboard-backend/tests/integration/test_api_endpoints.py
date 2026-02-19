@@ -514,3 +514,105 @@ class TestDateRangeParameters:
             params={"start_date": "2025-01-16T00:00:00", "end_date": "2025-01-12T00:00:00"}
         )
         assert response.status_code == 400
+
+
+class TestMetricsEndpoints:
+    """Tests for daily metrics endpoints"""
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_summary(self, async_client):
+        """Get metrics summary should return 200 with period data"""
+        response = await async_client.get("/api/metrics/summary?region=NSW")
+        assert response.status_code == 200
+        data = response.json()
+        assert "region" in data
+        assert data["region"] == "NSW"
+        assert "periods" in data
+        for period in ["24h", "7d", "30d", "365d"]:
+            assert period in data["periods"]
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_summary_invalid_region(self, async_client):
+        """Get metrics summary with invalid region should return 400"""
+        response = await async_client.get("/api/metrics/summary?region=INVALID")
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_get_metrics_summary_lowercase(self, async_client):
+        """Get metrics summary should handle lowercase region"""
+        response = await async_client.get("/api/metrics/summary?region=nsw")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["region"] == "NSW"
+
+    @pytest.mark.asyncio
+    async def test_get_daily_metrics(self, async_client):
+        """Get daily metrics should return 200 with data array"""
+        response = await async_client.get(
+            "/api/metrics/daily",
+            params={
+                "region": "NSW",
+                "start_date": "2025-01-01T00:00:00",
+                "end_date": "2025-12-31T00:00:00"
+            }
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "region" in data
+        assert "data" in data
+        assert "count" in data
+        assert isinstance(data["data"], list)
+
+    @pytest.mark.asyncio
+    async def test_get_daily_metrics_invalid_region(self, async_client):
+        """Get daily metrics with invalid region should return 400"""
+        response = await async_client.get(
+            "/api/metrics/daily",
+            params={
+                "region": "INVALID",
+                "start_date": "2025-01-01T00:00:00",
+                "end_date": "2025-12-31T00:00:00"
+            }
+        )
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_trigger_metrics_calculation(self, async_client):
+        """Trigger metrics calculation should return 200"""
+        response = await async_client.post(
+            "/api/ingest/calculate-metrics",
+            params={"start_date": "2025-01-01T00:00:00"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "message" in data
+
+
+class TestMetricsExport:
+    """Tests for daily metrics CSV export"""
+
+    @pytest.mark.asyncio
+    async def test_export_metrics_csv(self, async_client):
+        """Export metrics should return CSV response"""
+        response = await async_client.get(
+            "/api/export/metrics",
+            params={
+                "start_date": "2025-01-01T00:00:00",
+                "end_date": "2025-12-31T00:00:00"
+            }
+        )
+        assert response.status_code == 200
+        assert "text/csv" in response.headers.get("content-type", "")
+
+    @pytest.mark.asyncio
+    async def test_export_metrics_csv_with_regions(self, async_client):
+        """Export metrics with region filter should return CSV response"""
+        response = await async_client.get(
+            "/api/export/metrics",
+            params={
+                "start_date": "2025-01-01T00:00:00",
+                "end_date": "2025-12-31T00:00:00",
+                "regions": "NSW,VIC"
+            }
+        )
+        assert response.status_code == 200
