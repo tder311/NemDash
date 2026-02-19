@@ -82,11 +82,53 @@ class DataIngester:
                 self.last_trading_price_timestamp = trading_df['settlementdate'].max()
                 logger.info(f"Ingested {trading_records} new trading price records, latest: {self.last_trading_price_timestamp}")
 
+            # Recalculate daily metrics for recently completed days
+            await self._recalculate_recent_metrics()
+
             return success
 
         except Exception as e:
             logger.error(f"Error ingesting current data: {e}")
             return False
+
+    async def _recalculate_recent_metrics(self):
+        """Recalculate daily metrics for yesterday and the day before (safety net for late data)."""
+        from datetime import date
+        REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+        today = date.today()
+        for days_back in [1, 2]:
+            target_date = today - timedelta(days=days_back)
+            for region in REGIONS:
+                try:
+                    await self.db.calculate_daily_metrics(region, target_date)
+                except Exception as e:
+                    logger.error(f"Error calculating metrics for {region} {target_date}: {e}")
+
+    async def backfill_daily_metrics(self, start_date, end_date=None) -> int:
+        """Calculate daily metrics for all regions over a historical date range."""
+        from datetime import date
+        REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+
+        if end_date is None:
+            end_date = date.today() - timedelta(days=1)
+
+        current = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
+
+        total = 0
+        while current <= end:
+            for region in REGIONS:
+                try:
+                    success = await self.db.calculate_daily_metrics(region, current)
+                    if success:
+                        total += 1
+                except Exception as e:
+                    logger.error(f"Error backfilling metrics {region} {current}: {e}")
+            current += timedelta(days=1)
+            await asyncio.sleep(0.05)
+
+        logger.info(f"Metrics backfill complete: {total} region-days calculated")
+        return total
 
     async def ingest_pasa_data(self) -> bool:
         """Fetch and ingest latest PASA (PDPASA and STPASA) data.
@@ -395,6 +437,14 @@ class DataIngester:
             # Backfill dispatch SCADA data from archives (older than ~3 days)
             await self.backfill_dispatch_data(start_date=start_date)
 
+            # Backfill daily metrics from earliest available data (not limited to BACKFILL_START_DATE)
+            logger.info("Starting daily metrics backfill...")
+            metrics_start = await self.db.get_earliest_metrics_date()
+            if metrics_start:
+                await self.backfill_daily_metrics(start_date=metrics_start)
+            else:
+                logger.info("No overlapping dispatch+price data found for metrics backfill")
+
             logger.info("Background historical backfill complete")
         except Exception as e:
             logger.error(f"Error in background backfill: {e}")
@@ -405,12 +455,16 @@ class DataIngester:
         logger.info(f"Starting continuous ingestion with {interval_minutes} minute intervals")
 
         # Parse backfill start date from environment
-        backfill_start_str = os.getenv('BACKFILL_START_DATE', '2026-01-01')
-        try:
-            backfill_start_date = datetime.strptime(backfill_start_str, '%Y-%m-%d')
-        except ValueError:
-            logger.warning(f"Invalid BACKFILL_START_DATE '{backfill_start_str}', using 2026-01-01")
-            backfill_start_date = datetime(2026, 1, 1)
+        # Default: go back 365 days from today so we pick up a full year of history
+        backfill_start_str = os.getenv('BACKFILL_START_DATE')
+        if backfill_start_str:
+            try:
+                backfill_start_date = datetime.strptime(backfill_start_str, '%Y-%m-%d')
+            except ValueError:
+                logger.warning(f"Invalid BACKFILL_START_DATE '{backfill_start_str}', using 365 days ago")
+                backfill_start_date = datetime.now() - timedelta(days=365)
+        else:
+            backfill_start_date = datetime.now() - timedelta(days=365)
 
         logger.info(f"Backfill start date: {backfill_start_date.strftime('%Y-%m-%d')}")
 

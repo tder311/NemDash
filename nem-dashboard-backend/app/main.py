@@ -25,7 +25,9 @@ from .models import (
     DataCoverageResponse,
     DatabaseHealthResponse,
     PASADataResponse,
-    RegionDataRangeResponse
+    RegionDataRangeResponse,
+    DailyMetricsResponse,
+    MetricsSummaryResponse
 )
 
 # Configure logging
@@ -325,6 +327,83 @@ async def trigger_historical_price_ingestion(
     except Exception as e:
         logger.error(f"Error triggering historical price ingestion: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/metrics/daily", response_model=DailyMetricsResponse)
+async def get_daily_metrics(
+    region: str = Query(description="Region code (NSW, VIC, QLD, SA, TAS)"),
+    start_date: datetime = Query(description="Start date (ISO format)"),
+    end_date: datetime = Query(description="End date (ISO format)")
+):
+    """Get precalculated daily capture rates and TB spreads for a region."""
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+    try:
+        data = await db.get_daily_metrics(region, start_date, end_date)
+        return DailyMetricsResponse(
+            region=region,
+            data=data,
+            count=len(data),
+            start_date=start_date.date().isoformat(),
+            end_date=end_date.date().isoformat(),
+            message=f"Retrieved {len(data)} days of metrics for {region}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting daily metrics for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/metrics/summary", response_model=MetricsSummaryResponse)
+async def get_metrics_summary(
+    region: str = Query(description="Region code (NSW, VIC, QLD, SA, TAS)")
+):
+    """Get averaged capture rates and TB spreads for multiple lookback periods."""
+    valid_regions = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+    region = region.upper()
+    if region not in valid_regions:
+        raise HTTPException(status_code=400, detail=f"Invalid region. Must be one of: {', '.join(valid_regions)}")
+
+    try:
+        from datetime import date, timedelta
+        end = date.today() - timedelta(days=1)  # yesterday (most recent complete day)
+        lookbacks = {
+            '24h': 1,
+            '7d': 7,
+            '30d': 30,
+            '365d': 365
+        }
+
+        periods = {}
+        for label, days in lookbacks.items():
+            start = end - timedelta(days=days - 1)
+            summary = await db.get_metrics_summary(region, start, end)
+            periods[label] = summary
+
+        return MetricsSummaryResponse(
+            region=region,
+            periods=periods,
+            message=f"Summary metrics for {region}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting metrics summary for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ingest/calculate-metrics")
+async def trigger_metrics_calculation(
+    start_date: datetime = Query(description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None),
+    background_tasks: BackgroundTasks = None
+):
+    """Trigger backfill calculation of daily metrics (capture rates and TB spreads)."""
+    background_tasks.add_task(
+        data_ingester.backfill_daily_metrics,
+        start_date,
+        end_date
+    )
+    return {"message": f"Metrics calculation started from {start_date.date()}"}
+
 
 @app.get("/api/prices/latest", response_model=PriceDataResponse)
 async def get_latest_prices(
@@ -988,6 +1067,35 @@ async def export_pasa_csv(
 
     except Exception as e:
         logger.error(f"Error exporting PASA data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/export/metrics")
+async def export_metrics_csv(
+    start_date: datetime = Query(..., description="Start date (ISO format)"),
+    end_date: datetime = Query(..., description="End date (ISO format)"),
+    regions: Optional[str] = Query(default=None, description="Comma-separated regions (e.g., NSW,VIC)")
+):
+    """Export daily metrics (capture rates, capture prices, TB spreads) as CSV."""
+    try:
+        region_list = regions.split(',') if regions else None
+        df = await db.export_daily_metrics(start_date, end_date, region_list)
+
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        stream.seek(0)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f"nem_daily_metrics_{timestamp}.csv"
+        response = StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv"
+        )
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+    except Exception as e:
+        logger.error(f"Error exporting daily metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

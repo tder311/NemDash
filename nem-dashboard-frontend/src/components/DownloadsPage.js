@@ -5,6 +5,7 @@ import './DownloadsPage.css';
 const DATA_TYPES = [
   { id: 'prices', label: 'Price Data', description: 'Regional electricity prices ($/MWh) and demand (MW)' },
   { id: 'generation', label: 'Generation Data', description: 'SCADA values by generator and fuel source' },
+  { id: 'metrics', label: 'Daily Metrics', description: 'Capture rates, capture prices, and TB spreads by region' },
   { id: 'pasa', label: 'PASA Forecasts', description: 'Latest demand forecasts, reserves, and LOR conditions' }
 ];
 
@@ -118,6 +119,11 @@ function DownloadsPage({ darkMode }) {
         }
         if (selectedFuelSources.length > 0) {
           params.append('fuel_sources', selectedFuelSources.join(','));
+        }
+      } else if (selectedDataType === 'metrics') {
+        url = '/api/export/metrics';
+        if (selectedRegions.length < REGIONS.length && selectedRegions.length > 0) {
+          params.append('regions', selectedRegions.join(','));
         }
       } else if (selectedDataType === 'pasa') {
         // PASA doesn't use date range - it's always the latest forecast
