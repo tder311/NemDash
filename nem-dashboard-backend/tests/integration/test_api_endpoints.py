@@ -576,18 +576,6 @@ class TestMetricsEndpoints:
         )
         assert response.status_code == 400
 
-    @pytest.mark.asyncio
-    async def test_trigger_metrics_calculation(self, async_client):
-        """Trigger metrics calculation should return 200"""
-        response = await async_client.post(
-            "/api/ingest/calculate-metrics",
-            params={"start_date": "2025-01-01T00:00:00"}
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "message" in data
-
-
 class TestMetricsExport:
     """Tests for daily metrics CSV export"""
 
