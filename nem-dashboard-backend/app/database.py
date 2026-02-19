@@ -973,7 +973,7 @@ class NEMDatabase:
         Returns:
             Dictionary with table statistics and detected gaps
         """
-        tables = ['dispatch_data', 'price_data', 'generator_info']
+        tables = ['dispatch_data', 'price_data', 'generator_info', 'daily_metrics']
         table_stats = []
         gaps_by_table = []
 
@@ -993,6 +993,24 @@ class NEMDatabase:
                         'earliest_date': str(row['earliest_date']) if row['earliest_date'] else None,
                         'latest_date': str(row['latest_date']) if row['latest_date'] else None,
                         'days_with_data': None,
+                        'expected_interval': None
+                    })
+                elif table == 'daily_metrics':
+                    # Daily metrics - date-based, not 5-min intervals
+                    row = await conn.fetchrow("""
+                        SELECT COUNT(*) as total_records,
+                               MIN(metric_date) as earliest_date,
+                               MAX(metric_date) as latest_date,
+                               COUNT(DISTINCT metric_date) as days_with_data,
+                               COUNT(DISTINCT region) as region_count
+                        FROM daily_metrics
+                    """)
+                    table_stats.append({
+                        'table': table,
+                        'total_records': row['total_records'] or 0,
+                        'earliest_date': str(row['earliest_date']) if row['earliest_date'] else None,
+                        'latest_date': str(row['latest_date']) if row['latest_date'] else None,
+                        'days_with_data': row['days_with_data'] or 0,
                         'expected_interval': None
                     })
                 else:
@@ -1345,6 +1363,40 @@ class NEMDatabase:
         df['interval_datetime'] = pd.to_datetime(df['interval_datetime']).dt.strftime('%Y-%m-%d %H:%M:%S')
         return df
 
+    async def export_daily_metrics(self, start_date: datetime, end_date: datetime,
+                                    regions: Optional[List[str]] = None) -> pd.DataFrame:
+        """Export daily metrics data for CSV download."""
+        async with self._pool.acquire() as conn:
+            base_query = """
+                SELECT
+                    metric_date, region, baseload_price,
+                    capture_solar, capture_wind, capture_battery, capture_gas, capture_coal, capture_hydro,
+                    capture_price_solar, capture_price_wind, capture_price_battery,
+                    capture_price_gas, capture_price_coal, capture_price_hydro,
+                    tb2_spread, tb4_spread, tb8_spread,
+                    intervals_count
+                FROM daily_metrics
+                WHERE metric_date BETWEEN $1::DATE AND $2::DATE
+            """
+            params = [start_date, end_date]
+
+            if regions:
+                base_query += " AND region = ANY($3)"
+                params.append(regions)
+
+            base_query += " ORDER BY metric_date, region"
+            rows = await conn.fetch(base_query, *params)
+
+        if not rows:
+            return pd.DataFrame(columns=['metric_date', 'region', 'baseload_price',
+                                         'capture_solar', 'capture_wind', 'capture_battery',
+                                         'capture_gas', 'capture_coal', 'capture_hydro',
+                                         'capture_price_solar', 'capture_price_wind', 'capture_price_battery',
+                                         'capture_price_gas', 'capture_price_coal', 'capture_price_hydro',
+                                         'tb2_spread', 'tb4_spread', 'tb8_spread', 'intervals_count'])
+
+        return pd.DataFrame([dict(row) for row in rows])
+
     async def get_export_data_ranges(self) -> Dict[str, Any]:
         """Get available data ranges for all exportable data types."""
         async with self._pool.acquire() as conn:
@@ -1368,6 +1420,11 @@ class NEMDatabase:
                 FROM stpasa_data
             """)
 
+            metrics_range = await conn.fetchrow("""
+                SELECT MIN(metric_date) as earliest, MAX(metric_date) as latest
+                FROM daily_metrics
+            """)
+
         return {
             'prices': {
                 'earliest_date': to_aest_isoformat(price_range['earliest']) if price_range and price_range['earliest'] else None,
@@ -1386,6 +1443,10 @@ class NEMDatabase:
                     'earliest_date': to_aest_isoformat(stpasa_range['earliest']) if stpasa_range and stpasa_range['earliest'] else None,
                     'latest_date': to_aest_isoformat(stpasa_range['latest']) if stpasa_range and stpasa_range['latest'] else None
                 }
+            },
+            'metrics': {
+                'earliest_date': str(metrics_range['earliest']) if metrics_range and metrics_range['earliest'] else None,
+                'latest_date': str(metrics_range['latest']) if metrics_range and metrics_range['latest'] else None
             }
         }
 

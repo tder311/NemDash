@@ -1070,6 +1070,35 @@ async def export_pasa_csv(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/export/metrics")
+async def export_metrics_csv(
+    start_date: datetime = Query(..., description="Start date (ISO format)"),
+    end_date: datetime = Query(..., description="End date (ISO format)"),
+    regions: Optional[str] = Query(default=None, description="Comma-separated regions (e.g., NSW,VIC)")
+):
+    """Export daily metrics (capture rates, capture prices, TB spreads) as CSV."""
+    try:
+        region_list = regions.split(',') if regions else None
+        df = await db.export_daily_metrics(start_date, end_date, region_list)
+
+        stream = io.StringIO()
+        df.to_csv(stream, index=False)
+        stream.seek(0)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        filename = f"nem_daily_metrics_{timestamp}.csv"
+        response = StreamingResponse(
+            iter([stream.getvalue()]),
+            media_type="text/csv"
+        )
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+    except Exception as e:
+        logger.error(f"Error exporting daily metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
