@@ -53,8 +53,8 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables (6: dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, daily_metrics)
-        assert count == 6
+        # Should still have same number of application tables (7: dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, daily_metrics, price_setter_data)
+        assert count == 7
 
 
 class TestDispatchDataInsert:
