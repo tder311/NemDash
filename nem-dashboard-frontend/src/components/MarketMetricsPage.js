@@ -36,6 +36,15 @@ const TB_TYPES = [
   { key: 'tb8_spread', label: 'TB8 (8h)' }
 ];
 
+const PS_FUELS = [
+  { freqKey: 'ps_freq_solar', priceKey: 'ps_price_solar', label: 'Solar' },
+  { freqKey: 'ps_freq_wind', priceKey: 'ps_price_wind', label: 'Wind' },
+  { freqKey: 'ps_freq_battery', priceKey: 'ps_price_battery', label: 'Battery' },
+  { freqKey: 'ps_freq_hydro', priceKey: 'ps_price_hydro', label: 'Hydro' },
+  { freqKey: 'ps_freq_gas', priceKey: 'ps_price_gas', label: 'Gas' },
+  { freqKey: 'ps_freq_coal', priceKey: 'ps_price_coal', label: 'Coal' }
+];
+
 const PERIODS = ['24h', '7d', '30d', '365d'];
 
 const applyRollingAverage = (values, window) => {
@@ -85,6 +94,25 @@ const getSpreadClass = (value) => {
   return 'cell-low';
 };
 
+const formatPsFreq = (value) => {
+  if (value == null) return '—';
+  return `${(value * 100).toFixed(1)}%`;
+};
+
+const formatPsPrice = (value) => {
+  if (value == null) return '—';
+  return `$${value.toFixed(1)}`;
+};
+
+const getPsFreqClass = (value) => {
+  if (value == null) return '';
+  const pct = value * 100;
+  if (pct >= 40) return 'cell-high';
+  if (pct >= 20) return 'cell-above';
+  if (pct >= 10) return 'cell-mid';
+  return 'cell-low';
+};
+
 function MarketMetricsPage({ darkMode }) {
   const [selectedRegion, setSelectedRegion] = useState('NSW');
   const [summaryData, setSummaryData] = useState(null);
@@ -96,6 +124,7 @@ function MarketMetricsPage({ darkMode }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [visibleDurations, setVisibleDurations] = useState({ daily: true, '7d': true, '30d': true });
   const [captureUnit, setCaptureUnit] = useState('pct'); // 'pct' or 'dollar'
+  const [psUnit, setPsUnit] = useState('pct'); // 'pct' (frequency) or 'dollar' (avg price)
 
   // Fetch summary data — only show spinner on first load
   const fetchSummary = useCallback(async () => {
@@ -165,6 +194,13 @@ function MarketMetricsPage({ darkMode }) {
     );
   }, [summaryData]);
 
+  const activePsFuels = useMemo(() => {
+    if (!summaryData) return [];
+    return PS_FUELS.filter(fuel =>
+      PERIODS.some(p => summaryData[p] && summaryData[p][fuel.freqKey] != null)
+    );
+  }, [summaryData]);
+
   const chartFont = {
     color: darkMode ? '#e5e7eb' : '#374151',
     family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
@@ -185,6 +221,10 @@ function MarketMetricsPage({ darkMode }) {
     if (fuelPrice) return { label: `${fuelPrice.label} Capture Price`, type: 'capture_price', prefix: '$', multiplier: 1 };
     const tb = TB_TYPES.find(t => t.key === key);
     if (tb) return { label: `${tb.label} Spread`, type: 'spread', prefix: '$', multiplier: 1 };
+    const psFreq = PS_FUELS.find(f => f.freqKey === key);
+    if (psFreq) return { label: `${psFreq.label} Price Setting Frequency`, type: 'ps_freq', suffix: '%', multiplier: 100 };
+    const psPrice = PS_FUELS.find(f => f.priceKey === key);
+    if (psPrice) return { label: `${psPrice.label} Avg Price When Setting`, type: 'ps_price', prefix: '$', multiplier: 1 };
     return { label: key, type: 'unknown', multiplier: 1 };
   };
 
@@ -208,8 +248,8 @@ function MarketMetricsPage({ darkMode }) {
 
       avg7.forEach(v => { if (v != null) allAvg7Values.push(v); });
 
-      const hoverSuffix = info.type === 'capture' ? '%' : '';
-      const hoverPrefix = (info.type === 'spread' || info.type === 'capture_price') ? '$' : '';
+      const hoverSuffix = (info.type === 'capture' || info.type === 'ps_freq') ? '%' : '';
+      const hoverPrefix = (info.type === 'spread' || info.type === 'capture_price' || info.type === 'ps_price') ? '$' : '';
 
       // Determine which duration is the "primary" one for legend/hover
       const primaryDuration = visibleDurations['30d'] ? '30d' : visibleDurations['7d'] ? '7d' : 'daily';
@@ -315,8 +355,8 @@ function MarketMetricsPage({ darkMode }) {
       yaxis: {
         gridcolor: darkMode ? '#374151' : '#f3f4f6',
         color: darkMode ? '#9ca3af' : '#6b7280',
-        ticksuffix: info.type === 'capture' ? '%' : '',
-        tickprefix: (info.type === 'spread' || info.type === 'capture_price') ? '$' : '',
+        ticksuffix: (info.type === 'capture' || info.type === 'ps_freq') ? '%' : '',
+        tickprefix: (info.type === 'spread' || info.type === 'capture_price' || info.type === 'ps_price') ? '$' : '',
         tickfont: { size: 11 },
         zeroline: false,
         ...(yRange ? { range: yRange } : {})
@@ -344,9 +384,13 @@ function MarketMetricsPage({ darkMode }) {
   if (detailMetric) {
     const info = getMetricInfo(detailMetric);
     const isCaptureType = info.type === 'capture' || info.type === 'capture_price';
+    const isPsType = info.type === 'ps_freq' || info.type === 'ps_price';
     // Find the paired key for toggling between rate and price
     const pairedFuel = isCaptureType
       ? CAPTURE_FUELS.find(f => f.key === detailMetric || f.priceKey === detailMetric)
+      : null;
+    const pairedPs = isPsType
+      ? PS_FUELS.find(f => f.freqKey === detailMetric || f.priceKey === detailMetric)
       : null;
 
     return (
@@ -386,6 +430,19 @@ function MarketMetricsPage({ darkMode }) {
               >$/MWh</button>
             </div>
           )}
+
+          {pairedPs && (
+            <div className="unit-toggles">
+              <button
+                className={`unit-toggle ${info.type === 'ps_freq' ? 'active' : ''}`}
+                onClick={() => setDetailMetric(pairedPs.freqKey)}
+              >% of Intervals</button>
+              <button
+                className={`unit-toggle ${info.type === 'ps_price' ? 'active' : ''}`}
+                onClick={() => setDetailMetric(pairedPs.priceKey)}
+              >$/MWh</button>
+            </div>
+          )}
         </div>
 
         {detailLoading ? (
@@ -416,7 +473,7 @@ function MarketMetricsPage({ darkMode }) {
     <div className={`metrics-container ${darkMode ? 'dark' : 'light'}`}>
       <div className="metrics-header">
         <h1 className="metrics-title">Market Metrics</h1>
-        <p className="metrics-subtitle">Capture rates and top-bottom price spreads</p>
+        <p className="metrics-subtitle">Capture rates, price spreads, and price setting analysis</p>
       </div>
 
       {/* Region tabs */}
@@ -523,6 +580,57 @@ function MarketMetricsPage({ darkMode }) {
               </tbody>
             </table>
           </div>
+
+          {/* Price Setting Table */}
+          {activePsFuels.length > 0 && (
+            <div className="metrics-table-section">
+              <div className="section-header">
+                <h2 className="section-title">Price Setting {psUnit === 'pct' ? 'Frequency' : 'Average Price'}</h2>
+                <div className="unit-toggles">
+                  <button
+                    className={`unit-toggle ${psUnit === 'pct' ? 'active' : ''}`}
+                    onClick={() => setPsUnit('pct')}
+                  >% of Intervals</button>
+                  <button
+                    className={`unit-toggle ${psUnit === 'dollar' ? 'active' : ''}`}
+                    onClick={() => setPsUnit('dollar')}
+                  >$/MWh</button>
+                </div>
+              </div>
+              <table className="metrics-table">
+                <thead>
+                  <tr>
+                    <th>Fuel</th>
+                    {PERIODS.map(p => <th key={p}>{p}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {activePsFuels.map(fuel => (
+                    <tr key={fuel.freqKey} className="clickable" onClick={() => openDetail(psUnit === 'pct' ? fuel.freqKey : fuel.priceKey)}>
+                      <td className="fuel-label">{fuel.label}</td>
+                      {PERIODS.map(p => {
+                        if (psUnit === 'pct') {
+                          const val = summaryData[p]?.[fuel.freqKey];
+                          return (
+                            <td key={p} className={getPsFreqClass(val)}>
+                              {formatPsFreq(val)}
+                            </td>
+                          );
+                        } else {
+                          const val = summaryData[p]?.[fuel.priceKey];
+                          return (
+                            <td key={p}>
+                              {formatPsPrice(val)}
+                            </td>
+                          );
+                        }
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>

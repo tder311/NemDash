@@ -10,6 +10,7 @@ import pandas as pd
 from .nem_client import NEMDispatchClient
 from .nem_price_client import NEMPriceClient
 from .nem_pasa_client import NEMPASAClient
+from .nem_price_setter_client import NEMPriceSetterClient
 from .database import NEMDatabase
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +28,7 @@ class DataIngester:
         self.nem_client = NEMDispatchClient(nem_base_url)
         self.price_client = NEMPriceClient(nem_base_url)
         self.pasa_client = NEMPASAClient(nem_base_url)
+        self.price_setter_client = NEMPriceSetterClient(nem_base_url)
         self.is_running = False
 
         # Track last fetched timestamps to avoid gaps
@@ -104,6 +106,23 @@ class DataIngester:
                 except Exception as e:
                     logger.error(f"Error calculating metrics for {region} {target_date}: {e}")
 
+        # Fetch price setter data for T-2 and T-3 (NEMDE archive has ~1-2 day delay)
+        for days_back in [2, 3]:
+            target_date = today - timedelta(days=days_back)
+            try:
+                df = await self.price_setter_client.get_daily_price_setter(
+                    datetime.combine(target_date, datetime.min.time())
+                )
+                if df is not None and not df.empty:
+                    await self.db.insert_price_setter_data(df)
+                    for region in REGIONS:
+                        try:
+                            await self.db.calculate_daily_price_setter_metrics(region, target_date)
+                        except Exception as e:
+                            logger.error(f"Error calculating PS metrics {region} {target_date}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching price setter for {target_date}: {e}")
+
     async def backfill_daily_metrics(self, start_date, end_date=None) -> int:
         """Calculate daily metrics for all regions over a historical date range."""
         from datetime import date
@@ -129,6 +148,46 @@ class DataIngester:
 
         logger.info(f"Metrics backfill complete: {total} region-days calculated")
         return total
+
+    async def backfill_price_setter_data(self, start_date, end_date=None) -> int:
+        """Fetch NemPriceSetter data and calculate price setter metrics for a date range."""
+        from datetime import date
+        REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+
+        if end_date is None:
+            end_date = date.today() - timedelta(days=2)  # Archive has ~2 day delay
+
+        current = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
+
+        total_records = 0
+        days_processed = 0
+        while current <= end:
+            try:
+                df = await self.price_setter_client.get_daily_price_setter(
+                    datetime.combine(current, datetime.min.time())
+                )
+                if df is not None and not df.empty:
+                    records = await self.db.insert_price_setter_data(df)
+                    total_records += records
+
+                    for region in REGIONS:
+                        try:
+                            await self.db.calculate_daily_price_setter_metrics(region, current)
+                        except Exception as e:
+                            logger.error(f"Error calculating PS metrics {region} {current}: {e}")
+            except Exception as e:
+                logger.error(f"Error fetching price setter for {current}: {e}")
+
+            days_processed += 1
+            if days_processed % 10 == 0:
+                logger.info(f"Price setter backfill progress: {days_processed} days, {total_records} records")
+
+            current += timedelta(days=1)
+            await asyncio.sleep(0.5)
+
+        logger.info(f"Price setter backfill complete: {total_records} records over {days_processed} days")
+        return total_records
 
     async def ingest_pasa_data(self) -> bool:
         """Fetch and ingest latest PASA (PDPASA and STPASA) data.
@@ -444,6 +503,10 @@ class DataIngester:
                 await self.backfill_daily_metrics(start_date=metrics_start)
             else:
                 logger.info("No overlapping dispatch+price data found for metrics backfill")
+
+            # Backfill price setter data from NEMDE archive
+            logger.info("Starting price setter backfill...")
+            await self.backfill_price_setter_data(start_date=start_date)
 
             logger.info("Background historical backfill complete")
         except Exception as e:

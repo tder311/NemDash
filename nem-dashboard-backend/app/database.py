@@ -217,6 +217,33 @@ class NEMDatabase:
                     END $$
                 """)
 
+            # Price setter data from NEMDE archive
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS price_setter_data (
+                    id BIGSERIAL PRIMARY KEY,
+                    period_id TIMESTAMP NOT NULL,
+                    region TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    duid TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(period_id, region, duid)
+                )
+            """)
+
+            # Add price setter columns to daily_metrics
+            for col in [
+                'ps_freq_solar', 'ps_freq_wind', 'ps_freq_battery',
+                'ps_freq_gas', 'ps_freq_coal', 'ps_freq_hydro',
+                'ps_price_solar', 'ps_price_wind', 'ps_price_battery',
+                'ps_price_gas', 'ps_price_coal', 'ps_price_hydro',
+            ]:
+                await conn.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE daily_metrics ADD COLUMN {col} REAL;
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$
+                """)
+
             # Create indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_settlement ON dispatch_data(settlementdate)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_duid ON dispatch_data(duid)")
@@ -240,6 +267,10 @@ class NEMDatabase:
             # Daily metrics indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_region_date ON daily_metrics(region, metric_date)")
+
+            # Price setter indexes
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_period ON price_setter_data(period_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_region_period ON price_setter_data(region, period_id)")
 
         logger.info("PostgreSQL database initialized")
 
@@ -310,6 +341,30 @@ class NEMDatabase:
                 ON CONFLICT (settlementdate, region, price_type) DO UPDATE SET
                     price = EXCLUDED.price,
                     totaldemand = EXCLUDED.totaldemand
+            """, records)
+
+        return len(records)
+
+    async def insert_price_setter_data(self, df: pd.DataFrame) -> int:
+        """Insert price setter data from DataFrame."""
+        if df.empty:
+            return 0
+
+        records = []
+        for _, row in df.iterrows():
+            records.append((
+                row['period_id'].to_pydatetime() if hasattr(row['period_id'], 'to_pydatetime') else row['period_id'],
+                row['region'],
+                row['price'],
+                row['duid'],
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO price_setter_data (period_id, region, price, duid)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (period_id, region, duid) DO UPDATE SET
+                    price = EXCLUDED.price
             """, records)
 
         return len(records)
@@ -973,7 +1028,7 @@ class NEMDatabase:
         Returns:
             Dictionary with table statistics and detected gaps
         """
-        tables = ['dispatch_data', 'price_data', 'generator_info', 'daily_metrics']
+        tables = ['dispatch_data', 'price_data', 'generator_info', 'daily_metrics', 'price_setter_data']
         table_stats = []
         gaps_by_table = []
 
@@ -994,6 +1049,22 @@ class NEMDatabase:
                         'latest_date': str(row['latest_date']) if row['latest_date'] else None,
                         'days_with_data': None,
                         'expected_interval': None
+                    })
+                elif table == 'price_setter_data':
+                    row = await conn.fetchrow("""
+                        SELECT COUNT(*) as total_records,
+                               MIN(period_id) as earliest_date,
+                               MAX(period_id) as latest_date,
+                               COUNT(DISTINCT period_id::DATE) as days_with_data
+                        FROM price_setter_data
+                    """)
+                    table_stats.append({
+                        'table': table,
+                        'total_records': row['total_records'] or 0,
+                        'earliest_date': str(row['earliest_date']) if row['earliest_date'] else None,
+                        'latest_date': str(row['latest_date']) if row['latest_date'] else None,
+                        'days_with_data': row['days_with_data'] or 0,
+                        'expected_interval': 5
                     })
                 elif table == 'daily_metrics':
                     # Daily metrics - date-based, not 5-min intervals
@@ -1374,7 +1445,11 @@ class NEMDatabase:
                     capture_price_solar, capture_price_wind, capture_price_battery,
                     capture_price_gas, capture_price_coal, capture_price_hydro,
                     tb2_spread, tb4_spread, tb8_spread,
-                    intervals_count
+                    intervals_count,
+                    ps_freq_solar, ps_freq_wind, ps_freq_battery,
+                    ps_freq_gas, ps_freq_coal, ps_freq_hydro,
+                    ps_price_solar, ps_price_wind, ps_price_battery,
+                    ps_price_gas, ps_price_coal, ps_price_hydro
                 FROM daily_metrics
                 WHERE metric_date BETWEEN $1::DATE AND $2::DATE
             """
@@ -1393,7 +1468,11 @@ class NEMDatabase:
                                          'capture_gas', 'capture_coal', 'capture_hydro',
                                          'capture_price_solar', 'capture_price_wind', 'capture_price_battery',
                                          'capture_price_gas', 'capture_price_coal', 'capture_price_hydro',
-                                         'tb2_spread', 'tb4_spread', 'tb8_spread', 'intervals_count'])
+                                         'tb2_spread', 'tb4_spread', 'tb8_spread', 'intervals_count',
+                                         'ps_freq_solar', 'ps_freq_wind', 'ps_freq_battery',
+                                         'ps_freq_gas', 'ps_freq_coal', 'ps_freq_hydro',
+                                         'ps_price_solar', 'ps_price_wind', 'ps_price_battery',
+                                         'ps_price_gas', 'ps_price_coal', 'ps_price_hydro'])
 
         return pd.DataFrame([dict(row) for row in rows])
 
@@ -1616,6 +1695,84 @@ class NEMDatabase:
                      f"baseload=${baseload_price:.2f}, intervals={intervals_count}")
         return True
 
+    async def calculate_daily_price_setter_metrics(self, region: str, metric_date) -> bool:
+        """Calculate price setter frequency and average price per fuel type.
+
+        Updates ps_freq_* and ps_price_* columns in daily_metrics.
+        Requires price_setter_data to be populated and a daily_metrics row to exist.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                WITH ps_fuel AS (
+                    SELECT
+                        ps.period_id,
+                        COALESCE(g.fuel_source, 'Unknown') AS fuel_source,
+                        ps.price
+                    FROM price_setter_data ps
+                    INNER JOIN generator_info g ON ps.duid = g.duid
+                    WHERE ps.region = $1
+                      AND ps.period_id::DATE = $2::DATE
+                )
+                SELECT
+                    COUNT(DISTINCT period_id) AS total_intervals,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   THEN period_id END)::REAL
+                        / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_solar,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    THEN period_id END)::REAL
+                        / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_wind,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' THEN period_id END)::REAL
+                        / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_battery,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     THEN period_id END)::REAL
+                        / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_gas,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    THEN period_id END)::REAL
+                        / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_coal,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   THEN period_id END)::REAL
+                        / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_hydro,
+                    AVG(CASE WHEN fuel_source = 'Solar'   THEN price END) AS ps_price_solar,
+                    AVG(CASE WHEN fuel_source = 'Wind'    THEN price END) AS ps_price_wind,
+                    AVG(CASE WHEN fuel_source = 'Battery' THEN price END) AS ps_price_battery,
+                    AVG(CASE WHEN fuel_source = 'Gas'     THEN price END) AS ps_price_gas,
+                    AVG(CASE WHEN fuel_source = 'Coal'    THEN price END) AS ps_price_coal,
+                    AVG(CASE WHEN fuel_source = 'Hydro'   THEN price END) AS ps_price_hydro
+                FROM ps_fuel
+            """, region, metric_date)
+
+            if not row or not row['total_intervals']:
+                return False
+
+            def safe_float(v):
+                return float(v) if v is not None else None
+
+            updated = await conn.execute("""
+                UPDATE daily_metrics SET
+                    ps_freq_solar = $3, ps_freq_wind = $4, ps_freq_battery = $5,
+                    ps_freq_gas = $6, ps_freq_coal = $7, ps_freq_hydro = $8,
+                    ps_price_solar = $9, ps_price_wind = $10, ps_price_battery = $11,
+                    ps_price_gas = $12, ps_price_coal = $13, ps_price_hydro = $14,
+                    calculated_at = NOW()
+                WHERE metric_date = $1 AND region = $2
+            """,
+                metric_date, region,
+                safe_float(row['ps_freq_solar']),
+                safe_float(row['ps_freq_wind']),
+                safe_float(row['ps_freq_battery']),
+                safe_float(row['ps_freq_gas']),
+                safe_float(row['ps_freq_coal']),
+                safe_float(row['ps_freq_hydro']),
+                safe_float(row['ps_price_solar']),
+                safe_float(row['ps_price_wind']),
+                safe_float(row['ps_price_battery']),
+                safe_float(row['ps_price_gas']),
+                safe_float(row['ps_price_coal']),
+                safe_float(row['ps_price_hydro']),
+            )
+
+            if updated == 'UPDATE 0':
+                logger.warning(f"No daily_metrics row to update for {region} {metric_date}")
+                return False
+
+        logger.info(f"Calculated price setter metrics for {region} {metric_date}")
+        return True
+
     async def get_daily_metrics(self, region: str, start_date, end_date) -> List[Dict[str, Any]]:
         """Fetch precalculated daily metrics for a region and date range."""
         async with self._pool.acquire() as conn:
@@ -1628,7 +1785,11 @@ class NEMDatabase:
                     capture_price_gas, capture_price_coal, capture_price_hydro,
                     baseload_price,
                     tb2_spread, tb4_spread, tb8_spread,
-                    intervals_count
+                    intervals_count,
+                    ps_freq_solar, ps_freq_wind, ps_freq_battery,
+                    ps_freq_gas, ps_freq_coal, ps_freq_hydro,
+                    ps_price_solar, ps_price_wind, ps_price_battery,
+                    ps_price_gas, ps_price_coal, ps_price_hydro
                 FROM daily_metrics
                 WHERE region = $1
                   AND metric_date >= $2::DATE
@@ -1662,6 +1823,18 @@ class NEMDatabase:
                     AVG(tb2_spread) AS tb2_spread,
                     AVG(tb4_spread) AS tb4_spread,
                     AVG(tb8_spread) AS tb8_spread,
+                    AVG(ps_freq_solar) AS ps_freq_solar,
+                    AVG(ps_freq_wind) AS ps_freq_wind,
+                    AVG(ps_freq_battery) AS ps_freq_battery,
+                    AVG(ps_freq_gas) AS ps_freq_gas,
+                    AVG(ps_freq_coal) AS ps_freq_coal,
+                    AVG(ps_freq_hydro) AS ps_freq_hydro,
+                    AVG(ps_price_solar) AS ps_price_solar,
+                    AVG(ps_price_wind) AS ps_price_wind,
+                    AVG(ps_price_battery) AS ps_price_battery,
+                    AVG(ps_price_gas) AS ps_price_gas,
+                    AVG(ps_price_coal) AS ps_price_coal,
+                    AVG(ps_price_hydro) AS ps_price_hydro,
                     COUNT(*) AS days_count
                 FROM daily_metrics
                 WHERE region = $1
