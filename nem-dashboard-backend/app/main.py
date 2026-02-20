@@ -405,6 +405,21 @@ async def trigger_metrics_calculation(
     return {"message": f"Metrics calculation started from {start_date.date()}"}
 
 
+@app.post("/api/ingest/backfill-price-setter")
+async def trigger_price_setter_backfill(
+    start_date: datetime = Query(description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None),
+    background_tasks: BackgroundTasks = None
+):
+    """Trigger backfill of NemPriceSetter data and price setting metrics."""
+    background_tasks.add_task(
+        data_ingester.backfill_price_setter_data,
+        start_date,
+        end_date
+    )
+    return {"message": f"Price setter backfill started from {start_date.date()}"}
+
+
 @app.get("/api/prices/latest", response_model=PriceDataResponse)
 async def get_latest_prices(
     price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, or PUBLIC")
