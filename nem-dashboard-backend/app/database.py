@@ -272,6 +272,45 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_period ON price_setter_data(period_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_region_period ON price_setter_data(region, period_id)")
 
+            # Bid data tables
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bid_day_offer (
+                    id BIGSERIAL PRIMARY KEY,
+                    settlementdate DATE NOT NULL,
+                    duid TEXT NOT NULL,
+                    offerdate TIMESTAMP NOT NULL,
+                    priceband1 REAL, priceband2 REAL, priceband3 REAL, priceband4 REAL, priceband5 REAL,
+                    priceband6 REAL, priceband7 REAL, priceband8 REAL, priceband9 REAL, priceband10 REAL,
+                    minimumload REAL,
+                    t1 REAL, t2 REAL, t3 REAL, t4 REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(settlementdate, duid, offerdate)
+                )
+            """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bid_per_offer (
+                    id BIGSERIAL PRIMARY KEY,
+                    settlementdate TIMESTAMP NOT NULL,
+                    duid TEXT NOT NULL,
+                    offerdate TIMESTAMP NOT NULL,
+                    bandavail1 REAL, bandavail2 REAL, bandavail3 REAL, bandavail4 REAL, bandavail5 REAL,
+                    bandavail6 REAL, bandavail7 REAL, bandavail8 REAL, bandavail9 REAL, bandavail10 REAL,
+                    maxavail REAL,
+                    fixedload REAL,
+                    rocup REAL,
+                    rocdown REAL,
+                    pasaavailability REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(settlementdate, duid, offerdate)
+                )
+            """)
+
+            # Bid data indexes
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_biddayoffer_duid_date ON bid_day_offer(duid, settlementdate)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bidperoffer_duid_date ON bid_per_offer(duid, settlementdate)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_bidperoffer_settlement ON bid_per_offer(settlementdate)")
+
         logger.info("PostgreSQL database initialized")
 
     async def close(self):
@@ -368,6 +407,162 @@ class NEMDatabase:
             """, records)
 
         return len(records)
+
+    async def insert_bid_day_offer(self, df: pd.DataFrame) -> int:
+        """Insert BIDDAYOFFER data from DataFrame."""
+        if df.empty:
+            return 0
+
+        records = []
+        for _, row in df.iterrows():
+            sd = row['settlementdate']
+            sd = sd.to_pydatetime() if hasattr(sd, 'to_pydatetime') else sd
+            # settlementdate in bid_day_offer is DATE type
+            sd_date = sd.date() if hasattr(sd, 'date') else sd
+
+            od = row['offerdate']
+            od = od.to_pydatetime() if hasattr(od, 'to_pydatetime') else od
+
+            records.append((
+                sd_date,
+                row['duid'],
+                od,
+                row.get('priceband1'), row.get('priceband2'), row.get('priceband3'),
+                row.get('priceband4'), row.get('priceband5'), row.get('priceband6'),
+                row.get('priceband7'), row.get('priceband8'), row.get('priceband9'),
+                row.get('priceband10'),
+                row.get('minimumload'),
+                row.get('t1'), row.get('t2'), row.get('t3'), row.get('t4'),
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO bid_day_offer
+                (settlementdate, duid, offerdate,
+                 priceband1, priceband2, priceband3, priceband4, priceband5,
+                 priceband6, priceband7, priceband8, priceband9, priceband10,
+                 minimumload, t1, t2, t3, t4)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                ON CONFLICT (settlementdate, duid, offerdate) DO UPDATE SET
+                    priceband1 = EXCLUDED.priceband1, priceband2 = EXCLUDED.priceband2,
+                    priceband3 = EXCLUDED.priceband3, priceband4 = EXCLUDED.priceband4,
+                    priceband5 = EXCLUDED.priceband5, priceband6 = EXCLUDED.priceband6,
+                    priceband7 = EXCLUDED.priceband7, priceband8 = EXCLUDED.priceband8,
+                    priceband9 = EXCLUDED.priceband9, priceband10 = EXCLUDED.priceband10,
+                    minimumload = EXCLUDED.minimumload,
+                    t1 = EXCLUDED.t1, t2 = EXCLUDED.t2, t3 = EXCLUDED.t3, t4 = EXCLUDED.t4
+            """, records)
+
+        return len(records)
+
+    async def insert_bid_per_offer(self, df: pd.DataFrame) -> int:
+        """Insert BIDPEROFFER data from DataFrame."""
+        if df.empty:
+            return 0
+
+        records = []
+        for _, row in df.iterrows():
+            sd = row['settlementdate']
+            sd = sd.to_pydatetime() if hasattr(sd, 'to_pydatetime') else sd
+
+            od = row['offerdate']
+            od = od.to_pydatetime() if hasattr(od, 'to_pydatetime') else od
+
+            records.append((
+                sd,
+                row['duid'],
+                od,
+                row.get('bandavail1'), row.get('bandavail2'), row.get('bandavail3'),
+                row.get('bandavail4'), row.get('bandavail5'), row.get('bandavail6'),
+                row.get('bandavail7'), row.get('bandavail8'), row.get('bandavail9'),
+                row.get('bandavail10'),
+                row.get('maxavail'),
+                row.get('fixedload'),
+                row.get('rocup'),
+                row.get('rocdown'),
+                row.get('pasaavailability'),
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO bid_per_offer
+                (settlementdate, duid, offerdate,
+                 bandavail1, bandavail2, bandavail3, bandavail4, bandavail5,
+                 bandavail6, bandavail7, bandavail8, bandavail9, bandavail10,
+                 maxavail, fixedload, rocup, rocdown, pasaavailability)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                ON CONFLICT (settlementdate, duid, offerdate) DO UPDATE SET
+                    bandavail1 = EXCLUDED.bandavail1, bandavail2 = EXCLUDED.bandavail2,
+                    bandavail3 = EXCLUDED.bandavail3, bandavail4 = EXCLUDED.bandavail4,
+                    bandavail5 = EXCLUDED.bandavail5, bandavail6 = EXCLUDED.bandavail6,
+                    bandavail7 = EXCLUDED.bandavail7, bandavail8 = EXCLUDED.bandavail8,
+                    bandavail9 = EXCLUDED.bandavail9, bandavail10 = EXCLUDED.bandavail10,
+                    maxavail = EXCLUDED.maxavail, fixedload = EXCLUDED.fixedload,
+                    rocup = EXCLUDED.rocup, rocdown = EXCLUDED.rocdown,
+                    pasaavailability = EXCLUDED.pasaavailability
+            """, records)
+
+        return len(records)
+
+    async def get_bid_bands_for_duid(self, duid: str, target_date) -> List[Dict[str, Any]]:
+        """Get combined bid band data (prices + quantities) for a DUID on a specific date.
+
+        Joins BIDPEROFFER intervals with the latest applicable BIDDAYOFFER price bands.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                WITH latest_day_offer AS (
+                    SELECT DISTINCT ON (duid)
+                        duid, offerdate,
+                        priceband1, priceband2, priceband3, priceband4, priceband5,
+                        priceband6, priceband7, priceband8, priceband9, priceband10,
+                        minimumload
+                    FROM bid_day_offer
+                    WHERE duid = $1
+                      AND settlementdate = $2::DATE
+                    ORDER BY duid, offerdate DESC
+                )
+                SELECT
+                    bpo.settlementdate,
+                    bpo.duid,
+                    bpo.bandavail1, bpo.bandavail2, bpo.bandavail3, bpo.bandavail4, bpo.bandavail5,
+                    bpo.bandavail6, bpo.bandavail7, bpo.bandavail8, bpo.bandavail9, bpo.bandavail10,
+                    bpo.maxavail,
+                    ldo.priceband1, ldo.priceband2, ldo.priceband3, ldo.priceband4, ldo.priceband5,
+                    ldo.priceband6, ldo.priceband7, ldo.priceband8, ldo.priceband9, ldo.priceband10,
+                    ldo.minimumload
+                FROM bid_per_offer bpo
+                INNER JOIN latest_day_offer ldo ON bpo.duid = ldo.duid
+                WHERE bpo.duid = $1
+                  AND bpo.settlementdate::DATE = $2::DATE
+                ORDER BY bpo.settlementdate ASC
+            """, duid, target_date)
+
+        return [dict(row) for row in rows]
+
+    async def has_bid_data_for_date(self, target_date) -> bool:
+        """Check if bid data exists for any DUID on a specific date."""
+        async with self._pool.acquire() as conn:
+            count = await conn.fetchval("""
+                SELECT COUNT(*) FROM bid_per_offer
+                WHERE settlementdate::DATE = $1::DATE
+                LIMIT 1
+            """, target_date)
+        return (count or 0) > 0
+
+    async def search_duids(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Search DUIDs by prefix/substring using generator_info table."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT duid, station_name, region, fuel_source, capacity_mw
+                FROM generator_info
+                WHERE duid ILIKE $1 OR station_name ILIKE $1
+                ORDER BY
+                    CASE WHEN duid ILIKE $2 THEN 0 ELSE 1 END,
+                    duid
+                LIMIT $3
+            """, f'%{query}%', f'{query}%', limit)
+        return [dict(row) for row in rows]
 
     async def update_generator_info(self, generator_data: List[Dict[str, Any]]):
         """Update generator information."""

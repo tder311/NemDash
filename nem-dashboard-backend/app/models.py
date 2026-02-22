@@ -214,3 +214,18 @@ class MetricsSummaryResponse(BaseModel):
     region: str
     periods: Dict[str, Any]
     message: str
+
+
+class BidBandResponse(BaseModel):
+    duid: str
+    date: str
+    data: List[Dict[str, Any]]
+    count: int
+    price_bands: List[Optional[float]]
+    message: str
+
+
+class DUIDSearchResponse(BaseModel):
+    results: List[Dict[str, Any]]
+    count: int
+    message: str

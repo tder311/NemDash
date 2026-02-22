@@ -11,6 +11,7 @@ from .nem_client import NEMDispatchClient
 from .nem_price_client import NEMPriceClient
 from .nem_pasa_client import NEMPASAClient
 from .nem_price_setter_client import NEMPriceSetterClient
+from .nem_bid_client import NEMBidClient
 from .database import NEMDatabase
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,7 @@ class DataIngester:
         self.price_client = NEMPriceClient(nem_base_url)
         self.pasa_client = NEMPASAClient(nem_base_url)
         self.price_setter_client = NEMPriceSetterClient(nem_base_url)
+        self.bid_client = NEMBidClient(nem_base_url)
         self.is_running = False
 
         # Track last fetched timestamps to avoid gaps
@@ -105,6 +107,25 @@ class DataIngester:
                     await self.db.calculate_daily_metrics(region, target_date)
                 except Exception as e:
                     logger.error(f"Error calculating metrics for {region} {target_date}: {e}")
+
+        # Fetch bid data for yesterday and the day before
+        for days_back in [1, 2]:
+            target_date = today - timedelta(days=days_back)
+            try:
+                has_data = await self.db.has_bid_data_for_date(target_date)
+                if not has_data:
+                    result = await self.bid_client.get_daily_bids(
+                        datetime.combine(target_date, datetime.min.time())
+                    )
+                    if result is not None:
+                        day_df, per_df = result
+                        if day_df is not None and not day_df.empty:
+                            await self.db.insert_bid_day_offer(day_df)
+                        if per_df is not None and not per_df.empty:
+                            records = await self.db.insert_bid_per_offer(per_df)
+                            logger.info(f"Ingested {records} bid records for {target_date}")
+            except Exception as e:
+                logger.error(f"Error fetching bid data for {target_date}: {e}")
 
         # Fetch price setter data for T-2 and T-3 (NEMDE archive has ~1-2 day delay)
         for days_back in [2, 3]:
@@ -187,6 +208,45 @@ class DataIngester:
             await asyncio.sleep(0.5)
 
         logger.info(f"Price setter backfill complete: {total_records} records over {days_processed} days")
+        return total_records
+
+    async def backfill_bid_data(self, start_date, end_date=None) -> int:
+        """Fetch and store bid data for a date range (all DUIDs)."""
+        from datetime import date
+
+        if end_date is None:
+            end_date = date.today() - timedelta(days=1)
+
+        current = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
+
+        total_records = 0
+        days_processed = 0
+        while current <= end:
+            try:
+                has_data = await self.db.has_bid_data_for_date(current)
+                if not has_data:
+                    result = await self.bid_client.get_daily_bids(
+                        datetime.combine(current, datetime.min.time())
+                    )
+                    if result is not None:
+                        day_df, per_df = result
+                        if day_df is not None and not day_df.empty:
+                            await self.db.insert_bid_day_offer(day_df)
+                        if per_df is not None and not per_df.empty:
+                            records = await self.db.insert_bid_per_offer(per_df)
+                            total_records += records
+            except Exception as e:
+                logger.error(f"Error backfilling bids for {current}: {e}")
+
+            days_processed += 1
+            if days_processed % 10 == 0:
+                logger.info(f"Bid backfill progress: {days_processed} days, {total_records} records")
+
+            current += timedelta(days=1)
+            await asyncio.sleep(1)
+
+        logger.info(f"Bid backfill complete: {total_records} records over {days_processed} days")
         return total_records
 
     async def ingest_pasa_data(self) -> bool:
@@ -507,6 +567,10 @@ class DataIngester:
             # Backfill price setter data from NEMDE archive
             logger.info("Starting price setter backfill...")
             await self.backfill_price_setter_data(start_date=start_date)
+
+            # Backfill bid data
+            logger.info("Starting bid data backfill...")
+            await self.backfill_bid_data(start_date=start_date)
 
             logger.info("Background historical backfill complete")
         except Exception as e:

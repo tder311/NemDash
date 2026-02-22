@@ -5,7 +5,7 @@ Requires DATABASE_URL environment variable set to a PostgreSQL database.
 """
 import pytest
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 
 from app.database import NEMDatabase
 
@@ -53,8 +53,8 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables (7: dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, daily_metrics, price_setter_data)
-        assert count == 7
+        # Should still have same number of application tables (9: dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, daily_metrics, price_setter_data, bid_day_offer, bid_per_offer)
+        assert count == 9
 
 
 class TestDispatchDataInsert:
@@ -1160,3 +1160,272 @@ class TestExportMethods:
         assert result['prices']['latest_date'] is None
         assert result['pasa']['pdpasa']['earliest_date'] is None
         assert result['pasa']['stpasa']['earliest_date'] is None
+
+
+class TestBidDayOfferInsert:
+    """Tests for insert_bid_day_offer method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_bid_day_offer(self, test_db):
+        """Test inserting bid day offer data."""
+        df = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'priceband1': -987.0, 'priceband2': 0.0, 'priceband3': 30.0,
+            'priceband4': 50.0, 'priceband5': 100.0, 'priceband6': 300.0,
+            'priceband7': 1000.0, 'priceband8': 5000.0, 'priceband9': 10000.0,
+            'priceband10': 15000.0,
+            'minimumload': 200.0,
+            't1': 3.0, 't2': 3.0, 't3': 3.0, 't4': 3.0,
+        }])
+        count = await test_db.insert_bid_day_offer(df)
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_bid_day_offer_empty(self, test_db):
+        """Test empty DataFrame returns 0."""
+        count = await test_db.insert_bid_day_offer(pd.DataFrame())
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_bid_day_offer_upsert(self, test_db):
+        """Test upsert replaces existing data."""
+        df1 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'priceband1': -987.0, 'priceband2': 0.0, 'priceband3': 30.0,
+            'priceband4': 50.0, 'priceband5': 100.0, 'priceband6': 300.0,
+            'priceband7': 1000.0, 'priceband8': 5000.0, 'priceband9': 10000.0,
+            'priceband10': 15000.0,
+            'minimumload': 200.0,
+            't1': 3.0, 't2': 3.0, 't3': 3.0, 't4': 3.0,
+        }])
+        await test_db.insert_bid_day_offer(df1)
+
+        # Insert with updated price
+        df2 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'priceband1': -500.0, 'priceband2': 0.0, 'priceband3': 25.0,
+            'priceband4': 45.0, 'priceband5': 90.0, 'priceband6': 250.0,
+            'priceband7': 900.0, 'priceband8': 4500.0, 'priceband9': 9000.0,
+            'priceband10': 14000.0,
+            'minimumload': 180.0,
+            't1': 3.0, 't2': 3.0, 't3': 3.0, 't4': 3.0,
+        }])
+        count = await test_db.insert_bid_day_offer(df2)
+        assert count == 1
+
+
+class TestBidPerOfferInsert:
+    """Tests for insert_bid_per_offer method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_bid_per_offer(self, test_db):
+        """Test inserting bid per offer data."""
+        df = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21 00:05:00'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'bandavail1': 100.0, 'bandavail2': 50.0, 'bandavail3': 200.0,
+            'bandavail4': 0.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+            'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+            'bandavail10': 0.0,
+            'maxavail': 660.0, 'fixedload': 0.0,
+            'rocup': 5.0, 'rocdown': 5.0, 'pasaavailability': 660.0,
+        }])
+        count = await test_db.insert_bid_per_offer(df)
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_bid_per_offer_empty(self, test_db):
+        """Test empty DataFrame returns 0."""
+        count = await test_db.insert_bid_per_offer(pd.DataFrame())
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_bid_per_offer_upsert(self, test_db):
+        """Test upsert replaces existing data."""
+        df1 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21 00:05:00'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'bandavail1': 100.0, 'bandavail2': 50.0, 'bandavail3': 200.0,
+            'bandavail4': 0.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+            'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+            'bandavail10': 0.0,
+            'maxavail': 660.0, 'fixedload': 0.0,
+            'rocup': 5.0, 'rocdown': 5.0, 'pasaavailability': 660.0,
+        }])
+        await test_db.insert_bid_per_offer(df1)
+
+        # Update band availability
+        df2 = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21 00:05:00'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'bandavail1': 150.0, 'bandavail2': 60.0, 'bandavail3': 250.0,
+            'bandavail4': 0.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+            'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+            'bandavail10': 0.0,
+            'maxavail': 660.0, 'fixedload': 0.0,
+            'rocup': 5.0, 'rocdown': 5.0, 'pasaavailability': 660.0,
+        }])
+        count = await test_db.insert_bid_per_offer(df2)
+        assert count == 1
+
+
+class TestGetBidBandsForDuid:
+    """Tests for get_bid_bands_for_duid method"""
+
+    @pytest.mark.asyncio
+    async def test_get_bid_bands_success(self, test_db):
+        """Test fetching combined bid band data."""
+        # Insert day offer
+        day_df = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'priceband1': -987.0, 'priceband2': 0.0, 'priceband3': 30.0,
+            'priceband4': 50.0, 'priceband5': 100.0, 'priceband6': 300.0,
+            'priceband7': 1000.0, 'priceband8': 5000.0, 'priceband9': 10000.0,
+            'priceband10': 15000.0,
+            'minimumload': 200.0,
+            't1': 3.0, 't2': 3.0, 't3': 3.0, 't4': 3.0,
+        }])
+        await test_db.insert_bid_day_offer(day_df)
+
+        # Insert per-offer intervals
+        per_df = pd.DataFrame([
+            {
+                'settlementdate': pd.Timestamp('2026-02-21 00:05:00'),
+                'duid': 'BAYSW1',
+                'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+                'bandavail1': 100.0, 'bandavail2': 50.0, 'bandavail3': 200.0,
+                'bandavail4': 0.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+                'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+                'bandavail10': 0.0,
+                'maxavail': 660.0, 'fixedload': 0.0,
+                'rocup': 5.0, 'rocdown': 5.0, 'pasaavailability': 660.0,
+            },
+            {
+                'settlementdate': pd.Timestamp('2026-02-21 00:10:00'),
+                'duid': 'BAYSW1',
+                'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+                'bandavail1': 120.0, 'bandavail2': 40.0, 'bandavail3': 180.0,
+                'bandavail4': 10.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+                'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+                'bandavail10': 0.0,
+                'maxavail': 660.0, 'fixedload': 0.0,
+                'rocup': 5.0, 'rocdown': 5.0, 'pasaavailability': 660.0,
+            },
+        ])
+        await test_db.insert_bid_per_offer(per_df)
+
+        result = await test_db.get_bid_bands_for_duid('BAYSW1', date(2026, 2, 21))
+
+        assert len(result) == 2
+        assert result[0]['priceband1'] == -987.0
+        assert result[0]['bandavail1'] == 100.0
+        assert result[1]['bandavail1'] == 120.0
+        assert result[0]['minimumload'] == 200.0
+
+    @pytest.mark.asyncio
+    async def test_get_bid_bands_empty(self, test_db):
+        """Test fetching bids for nonexistent DUID."""
+        result = await test_db.get_bid_bands_for_duid('NONEXIST', date(2026, 2, 21))
+        assert len(result) == 0
+
+
+class TestHasBidDataForDate:
+    """Tests for has_bid_data_for_date method"""
+
+    @pytest.mark.asyncio
+    async def test_has_bid_data_true(self, test_db):
+        """Test returns True when bid data exists."""
+        df = pd.DataFrame([{
+            'settlementdate': pd.Timestamp('2026-02-21 00:05:00'),
+            'duid': 'BAYSW1',
+            'offerdate': pd.Timestamp('2026-02-20 12:00:00'),
+            'bandavail1': 100.0, 'bandavail2': 0.0, 'bandavail3': 0.0,
+            'bandavail4': 0.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+            'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+            'bandavail10': 0.0,
+            'maxavail': 100.0, 'fixedload': 0.0,
+            'rocup': 5.0, 'rocdown': 5.0, 'pasaavailability': 100.0,
+        }])
+        await test_db.insert_bid_per_offer(df)
+
+        result = await test_db.has_bid_data_for_date(datetime(2026, 2, 21))
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_has_bid_data_false(self, test_db):
+        """Test returns False when no bid data exists."""
+        result = await test_db.has_bid_data_for_date(datetime(2026, 2, 21))
+        assert result is False
+
+
+class TestSearchDuids:
+    """Tests for search_duids method"""
+
+    @pytest.mark.asyncio
+    async def test_search_duids_by_duid(self, test_db):
+        """Test searching by DUID prefix."""
+        await test_db.update_generator_info([
+            {'duid': 'BAYSW1', 'station_name': 'Bayswater', 'region': 'NSW1',
+             'fuel_source': 'Black Coal', 'technology_type': 'Steam', 'capacity_mw': 660.0},
+            {'duid': 'BAYSW2', 'station_name': 'Bayswater', 'region': 'NSW1',
+             'fuel_source': 'Black Coal', 'technology_type': 'Steam', 'capacity_mw': 660.0},
+            {'duid': 'LOYS1', 'station_name': 'Loy Yang A', 'region': 'VIC1',
+             'fuel_source': 'Brown Coal', 'technology_type': 'Steam', 'capacity_mw': 560.0},
+        ])
+
+        results = await test_db.search_duids('BAYSW')
+        assert len(results) == 2
+        assert results[0]['duid'] == 'BAYSW1'
+        assert results[1]['duid'] == 'BAYSW2'
+
+    @pytest.mark.asyncio
+    async def test_search_duids_by_station_name(self, test_db):
+        """Test searching by station name."""
+        await test_db.update_generator_info([
+            {'duid': 'BAYSW1', 'station_name': 'Bayswater', 'region': 'NSW1',
+             'fuel_source': 'Black Coal', 'technology_type': 'Steam', 'capacity_mw': 660.0},
+        ])
+
+        results = await test_db.search_duids('Bayswater')
+        assert len(results) == 1
+        assert results[0]['duid'] == 'BAYSW1'
+
+    @pytest.mark.asyncio
+    async def test_search_duids_no_results(self, test_db):
+        """Test search with no matches."""
+        results = await test_db.search_duids('ZZZZZ')
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_search_duids_case_insensitive(self, test_db):
+        """Test that search is case-insensitive."""
+        await test_db.update_generator_info([
+            {'duid': 'BAYSW1', 'station_name': 'Bayswater', 'region': 'NSW1',
+             'fuel_source': 'Black Coal', 'technology_type': 'Steam', 'capacity_mw': 660.0},
+        ])
+
+        results = await test_db.search_duids('baysw')
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_duids_limit(self, test_db):
+        """Test search respects limit."""
+        await test_db.update_generator_info([
+            {'duid': f'TEST{i}', 'station_name': 'TestStation', 'region': 'NSW1',
+             'fuel_source': 'Gas', 'technology_type': 'OCGT', 'capacity_mw': 100.0}
+            for i in range(5)
+        ])
+
+        results = await test_db.search_duids('TEST', limit=2)
+        assert len(results) == 2

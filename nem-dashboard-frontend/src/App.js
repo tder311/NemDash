@@ -3,6 +3,7 @@ import './App.css';
 import LivePricesPage from './components/LivePricesPage';
 import DownloadsPage from './components/DownloadsPage';
 import MarketMetricsPage from './components/MarketMetricsPage';
+import BidBandPage from './components/BidBandPage';
 
 function App() {
   const [darkMode, setDarkMode] = useState(true);
@@ -35,6 +36,12 @@ function App() {
             Market Metrics
           </button>
           <button
+            className={`tab-button ${activeTab === 'bids' ? 'active' : ''}`}
+            onClick={() => setActiveTab('bids')}
+          >
+            Bid Analysis
+          </button>
+          <button
             className={`tab-button ${activeTab === 'downloads' ? 'active' : ''}`}
             onClick={() => setActiveTab('downloads')}
           >
@@ -56,6 +63,7 @@ function App() {
       <div className="content">
         {activeTab === 'dashboard' && <LivePricesPage darkMode={darkMode} />}
         {activeTab === 'metrics' && <MarketMetricsPage darkMode={darkMode} />}
+        {activeTab === 'bids' && <BidBandPage darkMode={darkMode} />}
         {activeTab === 'downloads' && <DownloadsPage darkMode={darkMode} />}
       </div>
     </div>
