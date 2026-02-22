@@ -1424,3 +1424,184 @@ class TestExportEndpoints:
                 assert "PASA export error" in response.json()["detail"]
         finally:
             main_module.db = original_db
+
+
+class TestBidBandEndpoints:
+    """Tests for bid band related endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_get_bid_bands_success(self):
+        """Test successful bid bands retrieval."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_bid_bands_for_duid = AsyncMock(return_value=[
+            {
+                'settlementdate': datetime(2026, 2, 21, 0, 5),
+                'bandavail1': 100.0, 'bandavail2': 50.0, 'bandavail3': 200.0,
+                'bandavail4': 0.0, 'bandavail5': 0.0, 'bandavail6': 0.0,
+                'bandavail7': 0.0, 'bandavail8': 0.0, 'bandavail9': 0.0,
+                'bandavail10': 0.0,
+                'priceband1': -987.0, 'priceband2': 0.0, 'priceband3': 30.0,
+                'priceband4': 50.0, 'priceband5': 100.0, 'priceband6': 300.0,
+                'priceband7': 1000.0, 'priceband8': 5000.0, 'priceband9': 10000.0,
+                'priceband10': 15000.0,
+                'maxavail': 660.0, 'minimumload': 200.0,
+            }
+        ])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/bids/BAYSW1?date=2026-02-21")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["duid"] == "BAYSW1"
+                assert data["count"] == 1
+                assert len(data["price_bands"]) == 10
+                assert data["price_bands"][0] == -987.0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_bid_bands_empty(self):
+        """Test bid bands with no data."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_bid_bands_for_duid = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/bids/NODATA1?date=2026-02-21")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["count"] == 0
+                assert data["data"] == []
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_bid_bands_invalid_date(self):
+        """Test bid bands with invalid date format."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/bids/BAYSW1?date=not-a-date")
+                assert response.status_code == 400
+                assert "Invalid date format" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_get_bid_bands_exception(self):
+        """Test bid bands error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_bid_bands_for_duid = AsyncMock(side_effect=Exception("DB error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/bids/BAYSW1?date=2026-02-21")
+                assert response.status_code == 500
+                assert "DB error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_search_duids_success(self):
+        """Test successful DUID search."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.search_duids = AsyncMock(return_value=[
+            {'duid': 'BAYSW1', 'station_name': 'Bayswater', 'region': 'NSW1',
+             'fuel_source': 'Black Coal', 'capacity_mw': 660.0},
+            {'duid': 'BAYSW2', 'station_name': 'Bayswater', 'region': 'NSW1',
+             'fuel_source': 'Black Coal', 'capacity_mw': 660.0},
+        ])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/duids/search?q=BAYSW")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["count"] == 2
+                assert data["results"][0]["duid"] == "BAYSW1"
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_search_duids_exception(self):
+        """Test DUID search error handling."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.search_duids = AsyncMock(side_effect=Exception("Search error"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/duids/search?q=BAYSW")
+                assert response.status_code == 500
+                assert "Search error" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_trigger_bid_backfill(self):
+        """Test backfill endpoint triggers background task."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        original_ingester = main_module.data_ingester
+        mock_ingester = MagicMock()
+        main_module.db = mock_db
+        main_module.data_ingester = mock_ingester
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/ingest/backfill-bids?start_date=2026-02-20T00:00:00"
+                )
+                assert response.status_code == 200
+                assert "backfill started" in response.json()["message"]
+        finally:
+            main_module.db = original_db
+            main_module.data_ingester = original_ingester
