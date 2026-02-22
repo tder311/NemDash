@@ -27,7 +27,9 @@ from .models import (
     PASADataResponse,
     RegionDataRangeResponse,
     DailyMetricsResponse,
-    MetricsSummaryResponse
+    MetricsSummaryResponse,
+    BidBandResponse,
+    DUIDSearchResponse
 )
 
 # Configure logging
@@ -1112,6 +1114,75 @@ async def export_metrics_csv(
     except Exception as e:
         logger.error(f"Error exporting daily metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---- Bid Band Endpoints ----
+
+@app.get("/api/bids/{duid}", response_model=BidBandResponse)
+async def get_bid_bands(
+    duid: str,
+    date: str = Query(..., description="Date in YYYY-MM-DD format")
+):
+    """Get combined bid band data (price bands + quantity bands) for a DUID on a specific date."""
+    try:
+        target_date = datetime.strptime(date, '%Y-%m-%d').date()
+        duid = duid.upper()
+
+        data = await db.get_bid_bands_for_duid(duid, target_date)
+
+        # Extract price bands from the first record
+        price_bands = [None] * 10
+        if data:
+            for i in range(10):
+                price_bands[i] = data[0].get(f'priceband{i+1}')
+
+        # Convert datetimes to AEST ISO format
+        for record in data:
+            if 'settlementdate' in record and record['settlementdate'] is not None:
+                record['settlementdate'] = to_aest_isoformat(record['settlementdate'])
+
+        return BidBandResponse(
+            duid=duid,
+            date=date,
+            data=data,
+            count=len(data),
+            price_bands=price_bands,
+            message=f"Retrieved {len(data)} bid intervals for {duid} on {date}"
+        )
+
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+    except Exception as e:
+        logger.error(f"Error fetching bid bands for {duid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/duids/search", response_model=DUIDSearchResponse)
+async def search_duids(
+    q: str = Query(..., description="Search query (DUID or station name)", min_length=2)
+):
+    """Search for DUIDs by name or station name."""
+    try:
+        results = await db.search_duids(q)
+        return DUIDSearchResponse(
+            results=results,
+            count=len(results),
+            message=f"Found {len(results)} matching DUIDs"
+        )
+    except Exception as e:
+        logger.error(f"Error searching DUIDs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ingest/backfill-bids")
+async def trigger_bid_backfill(
+    start_date: datetime = Query(..., description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None, description="End date (ISO format, default=yesterday)"),
+    background_tasks: BackgroundTasks = None
+):
+    """Trigger backfill of bid data for a date range."""
+    background_tasks.add_task(data_ingester.backfill_bid_data, start_date, end_date)
+    return {"message": f"Bid data backfill started from {start_date.date()}"}
 
 
 if __name__ == "__main__":
