@@ -422,6 +422,21 @@ async def trigger_price_setter_backfill(
     return {"message": f"Price setter backfill started from {start_date.date()}"}
 
 
+@app.post("/api/ingest/recalculate-price-setter-metrics")
+async def trigger_price_setter_metrics_recalc(
+    start_date: datetime = Query(description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None),
+    background_tasks: BackgroundTasks = None
+):
+    """Recalculate price setter daily metrics from existing raw data (no download)."""
+    background_tasks.add_task(
+        data_ingester.recalculate_price_setter_metrics,
+        start_date,
+        end_date
+    )
+    return {"message": f"Price setter metrics recalculation started from {start_date.date()}"}
+
+
 @app.get("/api/prices/latest", response_model=PriceDataResponse)
 async def get_latest_prices(
     price_type: str = Query(default="DISPATCH", description="Price type: DISPATCH, TRADING, or PUBLIC")
