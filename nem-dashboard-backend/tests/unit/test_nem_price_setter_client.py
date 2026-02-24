@@ -7,7 +7,7 @@ import zipfile
 import io
 from datetime import datetime, date
 
-from app.nem_price_setter_client import NEMPriceSetterClient, REGION_MAPPING, INCREASE_THRESHOLD
+from app.nem_price_setter_client import NEMPriceSetterClient, REGION_MAPPING, INCREASE_THRESHOLD, BAND_PRICE_GAP_THRESHOLD
 
 
 # ============================================================================
@@ -225,6 +225,10 @@ class TestParsePriceSetterXml:
         assert len(records) == 2
         constraint = [r for r in records if r['duid'] == 'SOLARSF1'][0]
         assert abs(constraint['increase']) < INCREASE_THRESHOLD
+
+    def test_band_price_gap_threshold_constant(self):
+        """Test that BAND_PRICE_GAP_THRESHOLD is set for filtering constraint artifacts"""
+        assert BAND_PRICE_GAP_THRESHOLD == 200
 
     def test_parse_missing_increase_defaults_to_zero(self, client):
         """Test that missing Increase attribute defaults to 0.0"""

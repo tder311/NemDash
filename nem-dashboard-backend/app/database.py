@@ -12,7 +12,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 import asyncpg
-from .nem_price_setter_client import INCREASE_THRESHOLD
+from .nem_price_setter_client import INCREASE_THRESHOLD, BAND_PRICE_GAP_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -1925,25 +1925,17 @@ class NEMDatabase:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("""
-                WITH ps_intervals AS (
+                WITH ps_with_rrp AS (
                     SELECT DISTINCT
                         ps.period_id,
-                        COALESCE(g.fuel_source, 'Unknown') AS fuel_source
+                        COALESCE(g.fuel_source, 'Unknown') AS fuel_source,
+                        g.region AS gen_region,
+                        p.price AS rrp
                     FROM price_setter_data ps
                     INNER JOIN generator_info g ON ps.duid = g.duid
-                    WHERE ps.region = $1
-                      AND ps.period_id::DATE = $2::DATE
-                      AND (ps.increase IS NULL OR ABS(ps.increase) >= $3)
-                ),
-                ps_with_rrp AS (
-                    SELECT
-                        pi.period_id,
-                        pi.fuel_source,
-                        p.price AS rrp
-                    FROM ps_intervals pi
                     LEFT JOIN LATERAL (
                         SELECT price FROM price_data
-                        WHERE settlementdate = pi.period_id
+                        WHERE settlementdate = ps.period_id
                           AND region = $1
                         ORDER BY CASE price_type
                             WHEN 'DISPATCH' THEN 1
@@ -1952,35 +1944,40 @@ class NEMDatabase:
                         END
                         LIMIT 1
                     ) p ON true
+                    WHERE ps.region = $1
+                      AND ps.period_id::DATE = $2::DATE
+                      AND (ps.increase IS NULL OR ABS(ps.increase) >= $3)
+                      AND (ps.band_price IS NULL OR p.price IS NULL
+                           OR ABS(ps.band_price - p.price) < $4)
                 )
                 SELECT
                     COUNT(DISTINCT period_id) AS total_intervals,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_solar,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_wind,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_battery,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_gas,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_coal,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_hydro,
-                    AVG(CASE WHEN fuel_source = 'Solar'   THEN rrp END) AS ps_price_solar,
-                    AVG(CASE WHEN fuel_source = 'Wind'    THEN rrp END) AS ps_price_wind,
-                    AVG(CASE WHEN fuel_source = 'Battery' THEN rrp END) AS ps_price_battery,
-                    AVG(CASE WHEN fuel_source = 'Gas'     THEN rrp END) AS ps_price_gas,
-                    AVG(CASE WHEN fuel_source = 'Coal'    THEN rrp END) AS ps_price_coal,
-                    AVG(CASE WHEN fuel_source = 'Hydro'   THEN rrp END) AS ps_price_hydro,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   THEN period_id END) AS ps_count_solar,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    THEN period_id END) AS ps_count_wind,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' THEN period_id END) AS ps_count_battery,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     THEN period_id END) AS ps_count_gas,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    THEN period_id END) AS ps_count_coal,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   THEN period_id END) AS ps_count_hydro
+                    AVG(CASE WHEN fuel_source = 'Solar'   AND gen_region = $1 THEN rrp END) AS ps_price_solar,
+                    AVG(CASE WHEN fuel_source = 'Wind'    AND gen_region = $1 THEN rrp END) AS ps_price_wind,
+                    AVG(CASE WHEN fuel_source = 'Battery' AND gen_region = $1 THEN rrp END) AS ps_price_battery,
+                    AVG(CASE WHEN fuel_source = 'Gas'     AND gen_region = $1 THEN rrp END) AS ps_price_gas,
+                    AVG(CASE WHEN fuel_source = 'Coal'    AND gen_region = $1 THEN rrp END) AS ps_price_coal,
+                    AVG(CASE WHEN fuel_source = 'Hydro'   AND gen_region = $1 THEN rrp END) AS ps_price_hydro,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   AND gen_region = $1 THEN period_id END) AS ps_count_solar,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    AND gen_region = $1 THEN period_id END) AS ps_count_wind,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' AND gen_region = $1 THEN period_id END) AS ps_count_battery,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     AND gen_region = $1 THEN period_id END) AS ps_count_gas,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    AND gen_region = $1 THEN period_id END) AS ps_count_coal,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   AND gen_region = $1 THEN period_id END) AS ps_count_hydro
                 FROM ps_with_rrp
-            """, region, metric_date, INCREASE_THRESHOLD)
+            """, region, metric_date, INCREASE_THRESHOLD, BAND_PRICE_GAP_THRESHOLD)
 
             if not row or not row['total_intervals']:
                 return False

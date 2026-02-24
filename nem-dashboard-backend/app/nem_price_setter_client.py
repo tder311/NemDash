@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 # abs(Increase) below this threshold are stored but excluded from metrics.
 INCREASE_THRESHOLD = 0.01
 
+# Maximum allowed gap between a generator's bid band price and the actual RRP.
+# Records where |band_price - RRP| exceeds this are constraint artifacts: the
+# generator appears in PriceSetting due to a binding network constraint, not
+# because its bid determined the price (e.g. solar bidding -$1000 during
+# $20,000 RRP events).
+BAND_PRICE_GAP_THRESHOLD = 200
+
 REGION_MAPPING = {
     'NSW1': 'NSW',
     'VIC1': 'VIC',
