@@ -210,6 +210,32 @@ class DataIngester:
         logger.info(f"Price setter backfill complete: {total_records} records over {days_processed} days")
         return total_records
 
+    async def recalculate_price_setter_metrics(self, start_date, end_date=None) -> int:
+        """Recalculate price setter daily metrics from existing raw data (no download)."""
+        from datetime import date
+        REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS']
+
+        if end_date is None:
+            end_date = date.today() - timedelta(days=1)
+
+        current = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
+
+        total = 0
+        while current <= end:
+            for region in REGIONS:
+                try:
+                    success = await self.db.calculate_daily_price_setter_metrics(region, current)
+                    if success:
+                        total += 1
+                except Exception as e:
+                    logger.error(f"Error recalculating PS metrics {region} {current}: {e}")
+            current += timedelta(days=1)
+            await asyncio.sleep(0.05)
+
+        logger.info(f"Price setter metrics recalculation complete: {total} region-days")
+        return total
+
     async def backfill_bid_data(self, start_date, end_date=None) -> int:
         """Fetch and store bid data for a date range (all DUIDs)."""
         from datetime import date

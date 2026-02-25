@@ -17,6 +17,18 @@ from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
+# Minimum absolute value of the Increase coefficient to consider a PriceSetting
+# record a genuine price setter (vs a constraint artifact). Records with
+# abs(Increase) below this threshold are stored but excluded from metrics.
+INCREASE_THRESHOLD = 0.01
+
+# Maximum allowed gap between a generator's bid band price and the actual RRP.
+# Records where |band_price - RRP| exceeds this are constraint artifacts: the
+# generator appears in PriceSetting due to a binding network constraint, not
+# because its bid determined the price (e.g. solar bidding -$1000 during
+# $20,000 RRP events).
+BAND_PRICE_GAP_THRESHOLD = 200
+
 REGION_MAPPING = {
     'NSW1': 'NSW',
     'VIC1': 'VIC',
@@ -42,7 +54,7 @@ class NEMPriceSetterClient:
             date: The date to fetch data for.
 
         Returns:
-            DataFrame with columns: period_id, region, price, duid
+            DataFrame with columns: period_id, region, price, duid, increase, band_price, band_no
             or None if data is unavailable.
         """
         try:
@@ -154,11 +166,29 @@ class NEMPriceSetterClient:
             except (ValueError, TypeError):
                 continue
 
+            try:
+                increase = float(ps.get('Increase', 0))
+            except (ValueError, TypeError):
+                increase = 0.0
+
+            try:
+                band_price = float(ps.get('RRNBandPrice', 0))
+            except (ValueError, TypeError):
+                band_price = None
+
+            try:
+                band_no = int(ps.get('BandNo', 0))
+            except (ValueError, TypeError):
+                band_no = None
+
             records.append({
                 'period_id': ps.get('PeriodID'),
                 'region': region,
                 'price': price,
                 'duid': duid,
+                'increase': increase,
+                'band_price': band_price,
+                'band_no': band_no,
             })
 
         return records

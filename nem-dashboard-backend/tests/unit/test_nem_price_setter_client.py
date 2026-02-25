@@ -7,7 +7,7 @@ import zipfile
 import io
 from datetime import datetime, date
 
-from app.nem_price_setter_client import NEMPriceSetterClient, REGION_MAPPING
+from app.nem_price_setter_client import NEMPriceSetterClient, REGION_MAPPING, INCREASE_THRESHOLD, BAND_PRICE_GAP_THRESHOLD
 
 
 # ============================================================================
@@ -17,15 +17,20 @@ from app.nem_price_setter_client import NEMPriceSetterClient, REGION_MAPPING
 SAMPLE_PRICE_SETTER_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 <SolutionAnalysis>
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="NSW1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="BAYSW1" Price="85.50" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="BAYSW1" Price="85.50"
+    Increase="0.61" RRNBandPrice="85.50" BandNo="4" />
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="VIC1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="LOYS1" Price="72.30" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="LOYS1" Price="72.30"
+    Increase="0.39" RRNBandPrice="72.30" BandNo="3" />
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="QLD1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="GSTONE5,ENOF,2,GSTONE6,ENOF,2" Price="65.00" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="GSTONE5,ENOF,2,GSTONE6,ENOF,2" Price="65.00"
+    Increase="0.71" RRNBandPrice="65.00" BandNo="2" />
   <PriceSetting Market="FCAS" DispatchedMarket="R6SE" RegionID="NSW1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="FCAS_UNIT" Price="10.00" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="FCAS_UNIT" Price="10.00"
+    Increase="-1" RRNBandPrice="10.00" BandNo="1" />
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="UNKNOWN_REGION"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="MYSTERY1" Price="50.00" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="MYSTERY1" Price="50.00"
+    Increase="0.50" RRNBandPrice="50.00" BandNo="1" />
 </SolutionAnalysis>
 """
 
@@ -53,11 +58,25 @@ SAMPLE_PRICE_SETTER_XML_NO_ENERGY = b"""<?xml version="1.0" encoding="UTF-8"?>
 SAMPLE_PRICE_SETTER_XML_MULTI_REGION = b"""<?xml version="1.0" encoding="UTF-8"?>
 <SolutionAnalysis>
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="NSW1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="BAYSW1" Price="85.50" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="BAYSW1" Price="85.50"
+    Increase="0.61" RRNBandPrice="85.50" BandNo="4" />
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="SA1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="TORRB1" Price="120.00" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="TORRB1" Price="120.00"
+    Increase="0.50" RRNBandPrice="120.00" BandNo="5" />
   <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="TAS1"
-    PeriodID="2025-01-15T10:30:00+10:00" Unit="GORDON1" Price="45.00" />
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="GORDON1" Price="45.00"
+    Increase="1.0" RRNBandPrice="45.00" BandNo="2" />
+</SolutionAnalysis>
+"""
+
+SAMPLE_PRICE_SETTER_XML_WITH_CONSTRAINT = b"""<?xml version="1.0" encoding="UTF-8"?>
+<SolutionAnalysis>
+  <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="NSW1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="BAYSW1" Price="20300.00"
+    Increase="0.707" RRNBandPrice="20300" BandNo="10" />
+  <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="NSW1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="SOLARSF1" Price="20300.00"
+    Increase="-0.0009" RRNBandPrice="-1000" BandNo="1" />
 </SolutionAnalysis>
 """
 
@@ -182,6 +201,46 @@ class TestParsePriceSetterXml:
         regions = {r['region'] for r in records}
         assert regions == {'NSW', 'SA', 'TAS'}
 
+    def test_parse_extracts_increase(self, client):
+        """Test that Increase coefficient is extracted"""
+        records = client._parse_price_setter_xml(SAMPLE_PRICE_SETTER_XML)
+        nsw_record = [r for r in records if r['region'] == 'NSW'][0]
+        assert nsw_record['increase'] == 0.61
+
+    def test_parse_extracts_band_price(self, client):
+        """Test that RRNBandPrice is extracted as band_price"""
+        records = client._parse_price_setter_xml(SAMPLE_PRICE_SETTER_XML)
+        nsw_record = [r for r in records if r['region'] == 'NSW'][0]
+        assert nsw_record['band_price'] == 85.50
+
+    def test_parse_extracts_band_no(self, client):
+        """Test that BandNo is extracted"""
+        records = client._parse_price_setter_xml(SAMPLE_PRICE_SETTER_XML)
+        nsw_record = [r for r in records if r['region'] == 'NSW'][0]
+        assert nsw_record['band_no'] == 4
+
+    def test_parse_includes_constraint_artifacts(self, client):
+        """Test that constraint artifacts are parsed (filtering happens at query time)"""
+        records = client._parse_price_setter_xml(SAMPLE_PRICE_SETTER_XML_WITH_CONSTRAINT)
+        assert len(records) == 2
+        constraint = [r for r in records if r['duid'] == 'SOLARSF1'][0]
+        assert abs(constraint['increase']) < INCREASE_THRESHOLD
+
+    def test_band_price_gap_threshold_constant(self):
+        """Test that BAND_PRICE_GAP_THRESHOLD is set for filtering constraint artifacts"""
+        assert BAND_PRICE_GAP_THRESHOLD == 200
+
+    def test_parse_missing_increase_defaults_to_zero(self, client):
+        """Test that missing Increase attribute defaults to 0.0"""
+        xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <SolutionAnalysis>
+          <PriceSetting Market="Energy" DispatchedMarket="ENOF" RegionID="NSW1"
+            PeriodID="2025-01-15T10:30:00+10:00" Unit="BAYSW1" Price="85.50" />
+        </SolutionAnalysis>
+        """
+        records = client._parse_price_setter_xml(xml)
+        assert records[0]['increase'] == 0.0
+
 
 class TestParsePriceSetterZip:
     """Tests for _parse_price_setter_zip method"""
@@ -204,6 +263,9 @@ class TestParsePriceSetterZip:
         assert 'region' in df.columns
         assert 'price' in df.columns
         assert 'duid' in df.columns
+        assert 'increase' in df.columns
+        assert 'band_price' in df.columns
+        assert 'band_no' in df.columns
 
     def test_parse_zip_converts_timezone(self, client):
         """Test that period_id is converted from UTC to naive AEST"""

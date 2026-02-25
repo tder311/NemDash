@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
 import asyncpg
+from .nem_price_setter_client import INCREASE_THRESHOLD, BAND_PRICE_GAP_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -230,12 +231,27 @@ class NEMDatabase:
                 )
             """)
 
+            # Add new columns to price_setter_data for constraint filtering
+            for col, col_type in [
+                ('increase', 'REAL'),
+                ('band_price', 'REAL'),
+                ('band_no', 'INTEGER'),
+            ]:
+                await conn.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE price_setter_data ADD COLUMN {col} {col_type};
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$
+                """)
+
             # Add price setter columns to daily_metrics
             for col in [
                 'ps_freq_solar', 'ps_freq_wind', 'ps_freq_battery',
                 'ps_freq_gas', 'ps_freq_coal', 'ps_freq_hydro',
                 'ps_price_solar', 'ps_price_wind', 'ps_price_battery',
                 'ps_price_gas', 'ps_price_coal', 'ps_price_hydro',
+                'ps_count_solar', 'ps_count_wind', 'ps_count_battery',
+                'ps_count_gas', 'ps_count_coal', 'ps_count_hydro',
             ]:
                 await conn.execute(f"""
                     DO $$ BEGIN
@@ -271,6 +287,7 @@ class NEMDatabase:
             # Price setter indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_period ON price_setter_data(period_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_region_period ON price_setter_data(region, period_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_price_setter_increase ON price_setter_data(increase)")
 
             # Bid data tables
             await conn.execute("""
@@ -396,14 +413,20 @@ class NEMDatabase:
                 row['region'],
                 row['price'],
                 row['duid'],
+                row.get('increase'),
+                row.get('band_price'),
+                row.get('band_no'),
             ))
 
         async with self._pool.acquire() as conn:
             await conn.executemany("""
-                INSERT INTO price_setter_data (period_id, region, price, duid)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO price_setter_data (period_id, region, price, duid, increase, band_price, band_no)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (period_id, region, duid) DO UPDATE SET
-                    price = EXCLUDED.price
+                    price = EXCLUDED.price,
+                    increase = EXCLUDED.increase,
+                    band_price = EXCLUDED.band_price,
+                    band_no = EXCLUDED.band_no
             """, records)
 
         return len(records)
@@ -1644,7 +1667,9 @@ class NEMDatabase:
                     ps_freq_solar, ps_freq_wind, ps_freq_battery,
                     ps_freq_gas, ps_freq_coal, ps_freq_hydro,
                     ps_price_solar, ps_price_wind, ps_price_battery,
-                    ps_price_gas, ps_price_coal, ps_price_hydro
+                    ps_price_gas, ps_price_coal, ps_price_hydro,
+                    ps_count_solar, ps_count_wind, ps_count_battery,
+                    ps_count_gas, ps_count_coal, ps_count_hydro
                 FROM daily_metrics
                 WHERE metric_date BETWEEN $1::DATE AND $2::DATE
             """
@@ -1667,7 +1692,9 @@ class NEMDatabase:
                                          'ps_freq_solar', 'ps_freq_wind', 'ps_freq_battery',
                                          'ps_freq_gas', 'ps_freq_coal', 'ps_freq_hydro',
                                          'ps_price_solar', 'ps_price_wind', 'ps_price_battery',
-                                         'ps_price_gas', 'ps_price_coal', 'ps_price_hydro'])
+                                         'ps_price_gas', 'ps_price_coal', 'ps_price_hydro',
+                                         'ps_count_solar', 'ps_count_wind', 'ps_count_battery',
+                                         'ps_count_gas', 'ps_count_coal', 'ps_count_hydro'])
 
         return pd.DataFrame([dict(row) for row in rows])
 
@@ -1898,38 +1925,59 @@ class NEMDatabase:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("""
-                WITH ps_fuel AS (
-                    SELECT
+                WITH ps_with_rrp AS (
+                    SELECT DISTINCT
                         ps.period_id,
                         COALESCE(g.fuel_source, 'Unknown') AS fuel_source,
-                        ps.price
+                        g.region AS gen_region,
+                        p.price AS rrp
                     FROM price_setter_data ps
                     INNER JOIN generator_info g ON ps.duid = g.duid
+                    LEFT JOIN LATERAL (
+                        SELECT price FROM price_data
+                        WHERE settlementdate = ps.period_id
+                          AND region = $1
+                        ORDER BY CASE price_type
+                            WHEN 'DISPATCH' THEN 1
+                            WHEN 'PUBLIC' THEN 2
+                            ELSE 3
+                        END
+                        LIMIT 1
+                    ) p ON true
                     WHERE ps.region = $1
                       AND ps.period_id::DATE = $2::DATE
+                      AND (ps.increase IS NULL OR ABS(ps.increase) >= $3)
+                      AND (ps.band_price IS NULL OR p.price IS NULL
+                           OR ABS(ps.band_price - p.price) < $4)
                 )
                 SELECT
                     COUNT(DISTINCT period_id) AS total_intervals,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_solar,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_wind,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_battery,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_gas,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_coal,
-                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   THEN period_id END)::REAL
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   AND gen_region = $1 THEN period_id END)::REAL
                         / NULLIF(COUNT(DISTINCT period_id), 0) AS ps_freq_hydro,
-                    AVG(CASE WHEN fuel_source = 'Solar'   THEN price END) AS ps_price_solar,
-                    AVG(CASE WHEN fuel_source = 'Wind'    THEN price END) AS ps_price_wind,
-                    AVG(CASE WHEN fuel_source = 'Battery' THEN price END) AS ps_price_battery,
-                    AVG(CASE WHEN fuel_source = 'Gas'     THEN price END) AS ps_price_gas,
-                    AVG(CASE WHEN fuel_source = 'Coal'    THEN price END) AS ps_price_coal,
-                    AVG(CASE WHEN fuel_source = 'Hydro'   THEN price END) AS ps_price_hydro
-                FROM ps_fuel
-            """, region, metric_date)
+                    AVG(CASE WHEN fuel_source = 'Solar'   AND gen_region = $1 THEN rrp END) AS ps_price_solar,
+                    AVG(CASE WHEN fuel_source = 'Wind'    AND gen_region = $1 THEN rrp END) AS ps_price_wind,
+                    AVG(CASE WHEN fuel_source = 'Battery' AND gen_region = $1 THEN rrp END) AS ps_price_battery,
+                    AVG(CASE WHEN fuel_source = 'Gas'     AND gen_region = $1 THEN rrp END) AS ps_price_gas,
+                    AVG(CASE WHEN fuel_source = 'Coal'    AND gen_region = $1 THEN rrp END) AS ps_price_coal,
+                    AVG(CASE WHEN fuel_source = 'Hydro'   AND gen_region = $1 THEN rrp END) AS ps_price_hydro,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Solar'   AND gen_region = $1 THEN period_id END) AS ps_count_solar,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Wind'    AND gen_region = $1 THEN period_id END) AS ps_count_wind,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Battery' AND gen_region = $1 THEN period_id END) AS ps_count_battery,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Gas'     AND gen_region = $1 THEN period_id END) AS ps_count_gas,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Coal'    AND gen_region = $1 THEN period_id END) AS ps_count_coal,
+                    COUNT(DISTINCT CASE WHEN fuel_source = 'Hydro'   AND gen_region = $1 THEN period_id END) AS ps_count_hydro
+                FROM ps_with_rrp
+            """, region, metric_date, INCREASE_THRESHOLD, BAND_PRICE_GAP_THRESHOLD)
 
             if not row or not row['total_intervals']:
                 return False
@@ -1943,6 +1991,8 @@ class NEMDatabase:
                     ps_freq_gas = $6, ps_freq_coal = $7, ps_freq_hydro = $8,
                     ps_price_solar = $9, ps_price_wind = $10, ps_price_battery = $11,
                     ps_price_gas = $12, ps_price_coal = $13, ps_price_hydro = $14,
+                    ps_count_solar = $15, ps_count_wind = $16, ps_count_battery = $17,
+                    ps_count_gas = $18, ps_count_coal = $19, ps_count_hydro = $20,
                     calculated_at = NOW()
                 WHERE metric_date = $1 AND region = $2
             """,
@@ -1959,6 +2009,12 @@ class NEMDatabase:
                 safe_float(row['ps_price_gas']),
                 safe_float(row['ps_price_coal']),
                 safe_float(row['ps_price_hydro']),
+                int(row['ps_count_solar']),
+                int(row['ps_count_wind']),
+                int(row['ps_count_battery']),
+                int(row['ps_count_gas']),
+                int(row['ps_count_coal']),
+                int(row['ps_count_hydro']),
             )
 
             if updated == 'UPDATE 0':
@@ -1984,7 +2040,9 @@ class NEMDatabase:
                     ps_freq_solar, ps_freq_wind, ps_freq_battery,
                     ps_freq_gas, ps_freq_coal, ps_freq_hydro,
                     ps_price_solar, ps_price_wind, ps_price_battery,
-                    ps_price_gas, ps_price_coal, ps_price_hydro
+                    ps_price_gas, ps_price_coal, ps_price_hydro,
+                    ps_count_solar, ps_count_wind, ps_count_battery,
+                    ps_count_gas, ps_count_coal, ps_count_hydro
                 FROM daily_metrics
                 WHERE region = $1
                   AND metric_date >= $2::DATE
@@ -2024,12 +2082,18 @@ class NEMDatabase:
                     AVG(ps_freq_gas) AS ps_freq_gas,
                     AVG(ps_freq_coal) AS ps_freq_coal,
                     AVG(ps_freq_hydro) AS ps_freq_hydro,
-                    AVG(ps_price_solar) AS ps_price_solar,
-                    AVG(ps_price_wind) AS ps_price_wind,
-                    AVG(ps_price_battery) AS ps_price_battery,
-                    AVG(ps_price_gas) AS ps_price_gas,
-                    AVG(ps_price_coal) AS ps_price_coal,
-                    AVG(ps_price_hydro) AS ps_price_hydro,
+                    SUM(ps_price_solar * ps_count_solar)
+                        / NULLIF(SUM(ps_count_solar), 0) AS ps_price_solar,
+                    SUM(ps_price_wind * ps_count_wind)
+                        / NULLIF(SUM(ps_count_wind), 0) AS ps_price_wind,
+                    SUM(ps_price_battery * ps_count_battery)
+                        / NULLIF(SUM(ps_count_battery), 0) AS ps_price_battery,
+                    SUM(ps_price_gas * ps_count_gas)
+                        / NULLIF(SUM(ps_count_gas), 0) AS ps_price_gas,
+                    SUM(ps_price_coal * ps_count_coal)
+                        / NULLIF(SUM(ps_count_coal), 0) AS ps_price_coal,
+                    SUM(ps_price_hydro * ps_count_hydro)
+                        / NULLIF(SUM(ps_count_hydro), 0) AS ps_price_hydro,
                     COUNT(*) AS days_count
                 FROM daily_metrics
                 WHERE region = $1
