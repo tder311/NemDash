@@ -80,6 +80,36 @@ SAMPLE_PRICE_SETTER_XML_WITH_CONSTRAINT = b"""<?xml version="1.0" encoding="UTF-
 </SolutionAnalysis>
 """
 
+# Batteries and scheduled loads bid via BDOF/LDOF rather than ENOF. The parser
+# must keep these — otherwise every battery price-setter event is silently
+# dropped, which makes ps_freq_battery structurally near-zero.
+SAMPLE_PRICE_SETTER_XML_BATTERY_BDOF = b"""<?xml version="1.0" encoding="UTF-8"?>
+<SolutionAnalysis>
+  <PriceSetting Market="Energy" DispatchedMarket="BDOF,GEN" RegionID="NSW1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="ERB01" Price="120.00"
+    Increase="0.5" RRNBandPrice="120" BandNo="6" />
+  <PriceSetting Market="Energy" DispatchedMarket="BDOF,LOAD" RegionID="VIC1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="WALGRV1" Price="-50.00"
+    Increase="0.3" RRNBandPrice="-50" BandNo="2" />
+  <PriceSetting Market="Energy" DispatchedMarket="LDOF" RegionID="QLD1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="PUMP1" Price="80.00"
+    Increase="0.2" RRNBandPrice="80" BandNo="3" />
+</SolutionAnalysis>
+"""
+
+# Co-optimised FCAS records that happen to live under Market="Energy" should
+# still be excluded — they aren't direct energy-market price setters.
+SAMPLE_PRICE_SETTER_XML_ENERGY_FCAS_DM = b"""<?xml version="1.0" encoding="UTF-8"?>
+<SolutionAnalysis>
+  <PriceSetting Market="Energy" DispatchedMarket="L5RE" RegionID="NSW1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="FCAS_BATT1" Price="10.00"
+    Increase="0.1" RRNBandPrice="10" BandNo="1" />
+  <PriceSetting Market="Energy" DispatchedMarket="R6SE" RegionID="VIC1"
+    PeriodID="2025-01-15T10:30:00+10:00" Unit="FCAS_BATT2" Price="5.00"
+    Increase="0.1" RRNBandPrice="5" BandNo="1" />
+</SolutionAnalysis>
+"""
+
 
 def create_price_setter_zip(*xml_entries):
     """Create a ZIP file containing XML files."""
@@ -229,6 +259,17 @@ class TestParsePriceSetterXml:
     def test_band_price_gap_threshold_constant(self):
         """Test that BAND_PRICE_GAP_THRESHOLD is set for filtering constraint artifacts"""
         assert BAND_PRICE_GAP_THRESHOLD == 200
+
+    def test_parse_keeps_battery_bdof_records(self, client):
+        """Batteries and scheduled loads bid via BDOF/LDOF, not ENOF — must be kept."""
+        records = client._parse_price_setter_xml(SAMPLE_PRICE_SETTER_XML_BATTERY_BDOF)
+        duids = {r['duid'] for r in records}
+        assert duids == {'ERB01', 'WALGRV1', 'PUMP1'}
+
+    def test_parse_excludes_energy_market_fcas_dispatched_market(self, client):
+        """Records under Market=Energy with FCAS DispatchedMarket are co-opt artefacts."""
+        records = client._parse_price_setter_xml(SAMPLE_PRICE_SETTER_XML_ENERGY_FCAS_DM)
+        assert len(records) == 0
 
     def test_parse_missing_increase_defaults_to_zero(self, client):
         """Test that missing Increase attribute defaults to 0.0"""

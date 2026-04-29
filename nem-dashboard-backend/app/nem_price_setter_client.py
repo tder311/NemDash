@@ -143,8 +143,11 @@ class NEMPriceSetterClient:
             market = ps.get('Market')
             dispatched_market = ps.get('DispatchedMarket')
 
-            # Only energy market, only direct energy offer price setters
-            if market != 'Energy' or dispatched_market != 'ENOF':
+            # Only energy market; accept ENOF (gen offer), BDOF (bid offer — batteries
+            # and scheduled loads on either GEN or LOAD side), and LDOF (load offer).
+            if market != 'Energy':
+                continue
+            if dispatched_market not in ('ENOF', 'BDOF,GEN', 'BDOF,LOAD', 'LDOF'):
                 continue
 
             region_id = ps.get('RegionID')

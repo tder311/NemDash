@@ -36,14 +36,19 @@ async def import_geninfo_csv():
     # Clean column names (remove extra spaces)
     df.columns = df.columns.str.strip()
     
-    # Filter for existing plants with DUIDs
+    # Include any AEMO-registered unit with a DUID. Filtering on Asset Type =
+    # 'Existing Plant' drops Committed/Committed* projects that have already
+    # been commissioned and are actively dispatching (e.g. Eraring Big Battery,
+    # Tarong BESS, Smithfield North BESS). A non-empty DUID is the correct
+    # signal that AEMO has registered the unit and it can appear in dispatch
+    # and price-setter feeds.
     df_valid = df[
-        (df['DUID'].notna()) & 
-        (df['DUID'] != '') & 
-        (df['Asset Type'].str.contains('Existing', na=False))
+        (df['DUID'].notna()) &
+        (df['DUID'].astype(str).str.strip() != '') &
+        (df['DUID'].astype(str).str.strip().str.lower() != 'nan')
     ].copy()
-    
-    print(f"Found {len(df_valid)} existing generators with DUIDs")
+
+    print(f"Found {len(df_valid)} registered generators with DUIDs")
     
     # Create standardized generator info
     generators = []
