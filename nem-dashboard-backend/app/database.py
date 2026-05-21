@@ -1213,16 +1213,25 @@ class NEMDatabase:
         }
 
     async def get_missing_dates(self, start_date: datetime, end_date: datetime, price_type: str = 'PUBLIC') -> List[datetime]:
-        """Find dates with no price data in the specified range."""
+        """Find dates with incomplete price data in the specified range.
+
+        A full day at 5-minute granularity across 5 NEM regions is 1440 rows.
+        Days with fewer than ``MIN_FULL_DAY_ROWS`` rows are treated as missing
+        so that boundary-day spillover (e.g. the 245-row 00:00-04:00 slice the
+        previous market day's file contributes) doesn't mask the real gap.
+        """
+        MIN_FULL_DAY_ROWS = 1000
+
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT DISTINCT settlementdate::DATE as data_date
+                SELECT settlementdate::DATE as data_date, COUNT(*) as row_count
                 FROM price_data
                 WHERE price_type = $1
                 AND settlementdate::DATE BETWEEN $2::DATE AND $3::DATE
+                GROUP BY 1
             """, price_type, start_date, end_date)
 
-        existing_dates = {str(row['data_date']) for row in rows}
+        complete_dates = {str(row['data_date']) for row in rows if row['row_count'] >= MIN_FULL_DAY_ROWS}
 
         missing = []
         current = start_date.date() if hasattr(start_date, 'date') else start_date
@@ -1231,7 +1240,7 @@ class NEMDatabase:
         from datetime import timedelta
         while current <= end:
             date_str = current.strftime('%Y-%m-%d')
-            if date_str not in existing_dates:
+            if date_str not in complete_dates:
                 missing.append(datetime.combine(current, datetime.min.time()))
             current += timedelta(days=1)
 

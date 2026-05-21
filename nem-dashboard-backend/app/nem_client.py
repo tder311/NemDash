@@ -6,6 +6,8 @@ import logging
 import zipfile
 import io
 
+from .nem_price_client import _fetch_zip_with_retry
+
 logger = logging.getLogger(__name__)
 
 class NEMDispatchClient:
@@ -159,19 +161,11 @@ class NEMDispatchClient:
                 all_dataframes = []
                 for i, (filename, _) in enumerate(files_to_fetch):
                     file_url = f"{dispatch_url}{filename}"
-                    try:
-                        file_response = await client.get(file_url)
-                        file_response.raise_for_status()
-                        df = self._parse_dispatch_zip(file_response.content)
+                    content = await _fetch_zip_with_retry(client, file_url, filename)
+                    if content is not None:
+                        df = self._parse_dispatch_zip(content)
                         if df is not None and not df.empty:
                             all_dataframes.append(df)
-                    except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 403:
-                            logger.error(f"403 Forbidden fetching {filename}")
-                        else:
-                            logger.debug(f"HTTP error fetching {filename}: {e}")
-                    except Exception as e:
-                        logger.debug(f"Error fetching {filename}: {e}")
 
                     # Small delay between requests to avoid rate limiting
                     if i < len(files_to_fetch) - 1:

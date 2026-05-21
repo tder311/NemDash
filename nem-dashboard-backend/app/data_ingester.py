@@ -417,30 +417,28 @@ class DataIngester:
             months_processed = 0
             total_months = len(months_with_missing)
 
-            # Determine cutoff for recent data (use Current directory for last ~14 days)
-            recent_cutoff = (datetime.now() - timedelta(days=14)).date()
-
             for (year, month), dates in sorted(months_with_missing.items()):
                 try:
-                    # Check if this month is recent enough for Current directory
-                    month_end = datetime(year, month, 1) + timedelta(days=32)
-                    month_end = month_end.replace(day=1) - timedelta(days=1)  # Last day of month
-
-                    if month_end.date() >= recent_cutoff:
-                        # Recent month - fetch day by day from Current directory
+                    # Try the monthly Archive ZIP first (one request per month).
+                    price_df = await self.price_client.get_monthly_archive_prices(year, month)
+                    if price_df is not None and not price_df.empty:
+                        records = await self.db.insert_price_data(price_df)
+                        total_records += records
+                        logger.info(f"Backfilled {year}-{month:02d} from Archive: {records} records")
+                    else:
+                        # Archive not yet published (recent months) or 404 — fall back
+                        # to per-day fetches from the Current directory, which retains
+                        # ~60 days of daily files.
+                        logger.info(f"Archive unavailable for {year}-{month:02d}, falling back to Current directory ({len(dates)} days)")
+                        month_records = 0
                         for date in dates:
                             price_df = await self.price_client.get_daily_prices(date)
                             if price_df is not None and not price_df.empty:
                                 records = await self.db.insert_price_data(price_df)
+                                month_records += records
                                 total_records += records
                             await asyncio.sleep(0.5)
-                    else:
-                        # Historical month - fetch entire month from Archive at once
-                        price_df = await self.price_client.get_monthly_archive_prices(year, month)
-                        if price_df is not None and not price_df.empty:
-                            records = await self.db.insert_price_data(price_df)
-                            total_records += records
-                            logger.info(f"Backfilled {year}-{month:02d}: {records} records")
+                        logger.info(f"Backfilled {year}-{month:02d} from Current: {month_records} records")
 
                     months_processed += 1
                     logger.info(f"Price backfill progress: {months_processed}/{total_months} months ({total_records} records)")

@@ -14,6 +14,44 @@ import re
 
 logger = logging.getLogger(__name__)
 
+
+async def _fetch_zip_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    filename: str,
+    max_attempts: int = 4,
+    initial_backoff: float = 1.0,
+) -> Optional[bytes]:
+    """GET a NEMWEB zip file, retrying on 403/429/5xx with exponential backoff.
+
+    NEMWEB throttles bursty Current/* directory traffic with sporadic 403s.
+    Without retries those files are permanently lost from the backfill,
+    leaving holes in DISPATCH/TRADING price coverage.
+    """
+    backoff = initial_backoff
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            retryable = status in (403, 429) or 500 <= status < 600
+            if not retryable or attempt == max_attempts:
+                if status == 403:
+                    logger.error(f"403 Forbidden fetching {filename} after {attempt} attempts")
+                else:
+                    logger.debug(f"HTTP {status} fetching {filename} after {attempt} attempts: {e}")
+                return None
+            logger.debug(f"HTTP {status} on {filename}, retry {attempt}/{max_attempts - 1} in {backoff:.1f}s")
+            await asyncio.sleep(backoff)
+            backoff *= 2
+        except Exception as e:
+            logger.debug(f"Error fetching {filename}: {e}")
+            return None
+    return None
+
+
 # NEM Region mapping
 REGION_MAPPING = {
     '1': 'NSW',
@@ -386,19 +424,11 @@ class NEMPriceClient:
                 all_dfs = []
                 for i, (filename, _) in enumerate(files_to_fetch):
                     file_url = f"{dispatch_url}{filename}"
-                    try:
-                        file_response = await client.get(file_url)
-                        file_response.raise_for_status()
-                        df = self._parse_dispatch_price_zip(file_response.content)
+                    content = await _fetch_zip_with_retry(client, file_url, filename)
+                    if content is not None:
+                        df = self._parse_dispatch_price_zip(content)
                         if df is not None and not df.empty:
                             all_dfs.append(df)
-                    except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 403:
-                            logger.error(f"403 Forbidden fetching {filename}")
-                        else:
-                            logger.debug(f"HTTP error fetching {filename}: {e}")
-                    except Exception as e:
-                        logger.debug(f"Error fetching {filename}: {e}")
 
                     # Small delay between requests to avoid rate limiting
                     if i < len(files_to_fetch) - 1:
@@ -488,19 +518,11 @@ class NEMPriceClient:
                 all_dfs = []
                 for i, (filename, _) in enumerate(files_to_fetch):
                     file_url = f"{trading_url}{filename}"
-                    try:
-                        file_response = await client.get(file_url)
-                        file_response.raise_for_status()
-                        df = self._parse_trading_price_zip(file_response.content)
+                    content = await _fetch_zip_with_retry(client, file_url, filename)
+                    if content is not None:
+                        df = self._parse_trading_price_zip(content)
                         if df is not None and not df.empty:
                             all_dfs.append(df)
-                    except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 403:
-                            logger.error(f"403 Forbidden fetching {filename}")
-                        else:
-                            logger.debug(f"HTTP error fetching {filename}: {e}")
-                    except Exception as e:
-                        logger.debug(f"Error fetching {filename}: {e}")
 
                     # Small delay between requests to avoid rate limiting
                     if i < len(files_to_fetch) - 1:
