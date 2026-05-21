@@ -309,6 +309,39 @@ async def trigger_historical_ingestion(
         logger.error(f"Error triggering historical ingestion: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/ingest/backfill-dispatch-prices")
+async def trigger_dispatch_price_backfill(background_tasks: BackgroundTasks):
+    """Refetch DISPATCH price files from NEMWEB Current/ since the latest PUBLIC price.
+
+    Used to fill DISPATCH gaps caused by transient NEMWEB 403s during the
+    initial polling pass. Idempotent — inserts collide on the unique constraint.
+    """
+    background_tasks.add_task(data_ingester.backfill_dispatch_prices)
+    return {"message": "DISPATCH price backfill started"}
+
+
+@app.post("/api/ingest/refetch-current-scada")
+async def trigger_current_scada_refetch(
+    since: datetime = Query(description="Refetch SCADA files newer than this timestamp (ISO)"),
+    background_tasks: BackgroundTasks = None,
+):
+    """Refetch dispatch SCADA files from NEMWEB Current/Dispatch_SCADA newer than `since`.
+
+    Fills SCADA gaps caused by transient NEMWEB 403s during the initial polling
+    pass. Idempotent — inserts collide on the unique constraint.
+    """
+    async def _refetch():
+        df = await data_ingester.nem_client.get_all_current_dispatch_data(since=since)
+        if df is not None and not df.empty:
+            inserted = await data_ingester.db.insert_dispatch_data(df)
+            logger.info(f"Refetched {inserted} SCADA records since {since}")
+        else:
+            logger.info(f"No SCADA records to refetch since {since}")
+
+    background_tasks.add_task(_refetch)
+    return {"message": f"SCADA refetch started for files newer than {since.isoformat()}"}
+
+
 @app.post("/api/ingest/historical-prices")
 async def trigger_historical_price_ingestion(
     start_date: datetime = Query(description="Start date for historical price data (ISO format)"),
