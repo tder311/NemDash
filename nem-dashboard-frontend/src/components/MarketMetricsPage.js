@@ -221,6 +221,7 @@ function MarketMetricsPage({ darkMode }) {
     if (fuelPrice) return { label: `${fuelPrice.label} Capture Price`, type: 'capture_price', prefix: '$', multiplier: 1 };
     const tb = TB_TYPES.find(t => t.key === key);
     if (tb) return { label: `${tb.label} Spread`, type: 'spread', prefix: '$', multiplier: 1 };
+    if (key === 'baseload_price') return { label: 'Flat Price', type: 'spread', prefix: '$', multiplier: 1 };
     const psFreq = PS_FUELS.find(f => f.freqKey === key);
     if (psFreq) return { label: `${psFreq.label} Price Setting Frequency`, type: 'ps_freq', suffix: '%', multiplier: 100 };
     const psPrice = PS_FUELS.find(f => f.priceKey === key);
@@ -553,17 +554,28 @@ function MarketMetricsPage({ darkMode }) {
             </table>
           </div>
 
-          {/* TB Spreads Table */}
+          {/* Price Shape Table */}
           <div className="metrics-table-section">
-            <h2 className="section-title">Price Shape (TB Spreads)</h2>
+            <h2 className="section-title">Price Shape</h2>
             <table className="metrics-table">
               <thead>
                 <tr>
-                  <th>Spread</th>
+                  <th>Metric</th>
                   {PERIODS.map(p => <th key={p}>{p}</th>)}
                 </tr>
               </thead>
               <tbody>
+                <tr className="clickable" onClick={() => openDetail('baseload_price')}>
+                  <td className="fuel-label">Flat</td>
+                  {PERIODS.map(p => {
+                    const val = summaryData[p]?.baseload_price;
+                    return (
+                      <td key={p} className={getSpreadClass(val)}>
+                        {formatSpread(val)}
+                      </td>
+                    );
+                  })}
+                </tr>
                 {TB_TYPES.map(tb => (
                   <tr key={tb.key} className="clickable" onClick={() => openDetail(tb.key)}>
                     <td className="fuel-label">{tb.label}</td>
