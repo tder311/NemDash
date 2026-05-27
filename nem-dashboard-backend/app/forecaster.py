@@ -22,9 +22,10 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -521,3 +522,37 @@ async def generate_forecast(db, region: str, model: "PriceForecaster") -> List[D
         {"interval_datetime": t, "predicted_price": round(float(p), 2)}
         for t, p in zip(intervals, preds)
     ]
+
+
+async def train_and_save(db, days: int = 365, out: Optional[str] = None) -> Dict[str, Any]:
+    """Load the last ``days`` of data, walk-forward validate, train, and save.
+
+    Returns ``{"model", "metrics", "n_rows", "trained_at", "path"}``. The CPU-
+    bound fitting runs in a worker thread so it never blocks the event loop.
+    Raises ValueError if the training window has no data.
+    """
+    out = out or default_model_path()
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    merged = await load_training_frame(db, start, end)
+    if merged.empty:
+        raise ValueError(f"No training data in the last {days} days.")
+
+    def _fit() -> Tuple["PriceForecaster", Dict[str, Any], int]:
+        X, y, _ = assemble_features(merged)
+        order = merged.loc[merged[TARGET].notna(), "interval_datetime"].reset_index(drop=True)
+        metrics = walk_forward_validate(X, y, order)
+        model = PriceForecaster().train(X, y)
+        model.card.metrics = metrics
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        model.save(out)
+        return model, metrics, int(len(X))
+
+    model, metrics, n_rows = await asyncio.to_thread(_fit)
+    return {
+        "model": model,
+        "metrics": metrics,
+        "n_rows": n_rows,
+        "trained_at": model.card.trained_at,
+        "path": out,
+    }

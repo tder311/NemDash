@@ -38,6 +38,7 @@ from .forecaster import (
     PriceForecaster,
     generate_forecast,
     default_model_path,
+    train_and_save,
 )
 
 # Configure logging
@@ -62,6 +63,33 @@ def _get_forecaster() -> Optional[PriceForecaster]:
         if os.path.exists(path):
             _forecaster = PriceForecaster.load(path)
     return _forecaster
+
+
+# In-process state for the retrain-on-demand flow (fire-and-poll).
+_training_state: dict = {
+    "status": "idle",  # idle | running | done | error
+    "started_at": None,
+    "finished_at": None,
+    "metrics": None,
+    "n_rows": None,
+    "error": None,
+}
+
+
+async def _run_retrain(days: int):
+    """Background task: retrain, hot-swap the cached model, record status."""
+    global _forecaster
+    _training_state.update(status="running", started_at=datetime.now().isoformat(),
+                           finished_at=None, error=None)
+    try:
+        result = await train_and_save(db, days=days)
+        _forecaster = result["model"]  # hot-reload — no restart needed
+        _training_state.update(status="done", finished_at=datetime.now().isoformat(),
+                               metrics=result["metrics"], n_rows=result["n_rows"], error=None)
+        logger.info(f"Retrain complete: {result['n_rows']} rows, metrics={result['metrics']}")
+    except Exception as e:
+        logger.error(f"Retrain failed: {e}")
+        _training_state.update(status="error", finished_at=datetime.now().isoformat(), error=str(e))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1070,6 +1098,25 @@ async def get_price_forecast(region: str):
     except Exception as e:
         logger.error(f"Error generating price forecast for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/forecast/retrain")
+async def retrain_forecast(
+    days: int = Query(default=365, description="Training window length in days"),
+    background_tasks: BackgroundTasks = None,
+):
+    """Kick off a model retrain (background); poll /api/forecast/status for progress."""
+    if _training_state["status"] == "running":
+        raise HTTPException(status_code=409, detail="A retrain is already in progress.")
+    background_tasks.add_task(_run_retrain, days)
+    return {"message": f"Retraining started on the last {days} days."}
+
+
+@app.get("/api/forecast/status")
+async def forecast_status():
+    """Current training status plus the live model's trained-at timestamp."""
+    model = _get_forecaster()
+    return {**_training_state, "model_trained_at": model.card.trained_at if model else None}
 
 
 # CSV Export endpoints

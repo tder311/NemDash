@@ -35,6 +35,35 @@
   opacity: 0.75;
 }
 
+.retrain-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid #1f77b4;
+  background: #1f77b4;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.retrain-btn:hover:not(:disabled) {
+  background: #18608f;
+}
+
+.retrain-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.forecast-trainnote {
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: rgba(31, 119, 180, 0.12);
+  border: 1px solid rgba(31, 119, 180, 0.4);
+}
+
 .chart-container {
   border-radius: 8px;
   padding: 8px;

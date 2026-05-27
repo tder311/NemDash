@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
 import './ForecastPage.css';
@@ -26,43 +26,83 @@ function ForecastPage({ darkMode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const [training, setTraining] = useState(false);
+  const [trainNote, setTrainNote] = useState(null);
+  const pollRef = useRef(null);
 
-    const fetchForecast = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const response = await api.get('/api/forecast/prices', { params: { region } });
-        if (cancelled) return;
-        setForecast(response.data.data || []);
-        setMeta({
-          trainedAt: response.data.model_trained_at,
-          count: response.data.count,
-          horizon: response.data.horizon_intervals,
-        });
-      } catch (err) {
-        if (cancelled) return;
-        const status = err.response?.status;
-        if (status === 503) {
-          setError(
-            'No trained model found. Run `python -m scripts.train_forecaster` on the backend, then reload.'
-          );
-        } else {
-          setError(err.response?.data?.detail || 'Failed to load forecast.');
-        }
-        setForecast([]);
-        setMeta(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    fetchForecast();
-    return () => {
-      cancelled = true;
-    };
+  const fetchForecast = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await api.get('/api/forecast/prices', { params: { region } });
+      setForecast(response.data.data || []);
+      setMeta({ trainedAt: response.data.model_trained_at, count: response.data.count });
+    } catch (err) {
+      const status = err.response?.status;
+      setError(
+        status === 503
+          ? 'No trained model found. Click “Retrain model”, or run the training CLI on the backend.'
+          : err.response?.data?.detail || 'Failed to load forecast.'
+      );
+      setForecast([]);
+      setMeta(null);
+    } finally {
+      setLoading(false);
+    }
   }, [region]);
+
+  useEffect(() => {
+    fetchForecast();
+  }, [fetchForecast]);
+
+  // Stop polling if the component unmounts mid-train.
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const { data } = await api.get('/api/forecast/status');
+        if (data.status === 'done') {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setTraining(false);
+          const m = data.metrics || {};
+          setTrainNote(
+            `Done — ${data.n_rows?.toLocaleString() ?? '?'} rows` +
+              (m.mae != null ? ` · MAE $${m.mae.toFixed(0)}` : '') +
+              (m.spearman != null ? ` · Spearman ${m.spearman.toFixed(2)}` : '')
+          );
+          fetchForecast(); // refresh chart with the freshly trained model
+        } else if (data.status === 'error') {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setTraining(false);
+          setTrainNote(`Retrain failed: ${data.error || 'unknown error'}`);
+        }
+      } catch (e) {
+        /* transient — keep polling */
+      }
+    }, 3000);
+  }, [fetchForecast]);
+
+  const handleRetrain = async () => {
+    setTraining(true);
+    setTrainNote('Retraining on the last year of data… (~1–2 min)');
+    try {
+      await api.post('/api/forecast/retrain');
+    } catch (err) {
+      if (err.response?.status !== 409) {
+        // 409 just means one is already running — fall through to polling.
+        setTraining(false);
+        setTrainNote(err.response?.data?.detail || 'Could not start retraining.');
+        return;
+      }
+    }
+    startPolling();
+  };
 
   const color = REGION_COLORS[region];
 
@@ -127,13 +167,19 @@ function ForecastPage({ darkMode }) {
           ))}
         </select>
 
+        <button className="retrain-btn" onClick={handleRetrain} disabled={training}>
+          {training ? 'Retraining…' : 'Retrain model'}
+        </button>
+
         {meta && !error && (
           <span className="forecast-meta">
-            {meta.count} intervals · P50 point forecast
-            {meta.trainedAt && ` · model trained ${formatTrainedAt(meta.trainedAt)}`}
+            {meta.count} intervals · P50
+            {meta.trainedAt && ` · trained ${formatTrainedAt(meta.trainedAt)}`}
           </span>
         )}
       </div>
+
+      {trainNote && <div className="forecast-trainnote">{trainNote}</div>}
 
       {loading && (
         <div className="loading">
