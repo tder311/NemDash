@@ -229,3 +229,12 @@ class DUIDSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
     count: int
     message: str
+
+
+class PriceForecastResponse(BaseModel):
+    region: str
+    data: List[Dict[str, Any]]  # [{interval_datetime, predicted_price}, ...]
+    count: int
+    horizon_intervals: int
+    model_trained_at: Optional[str] = None
+    message: str

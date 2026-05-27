@@ -8,7 +8,8 @@ Fetches PDPASA and STPASA data from AEMO NEMWEB.
 
 import httpx
 import pandas as pd
-from typing import Optional
+from datetime import datetime
+from typing import List, Optional, Tuple
 import logging
 import zipfile
 import io
@@ -16,6 +17,16 @@ import re
 import csv
 
 logger = logging.getLogger(__name__)
+
+# NEMWEB archive directories (nested zip-of-zips, ~1 year retention).
+ARCHIVE_PATHS = {
+    "PDPASA": "Reports/Archive/PDPASA/",
+    "STPASA": "Reports/Archive/Short_Term_PASA_Reports/",
+}
+ARCHIVE_FILE_RE = {
+    "PDPASA": r"PUBLIC_PDPASA_\d{8}\.zip",
+    "STPASA": r"PUBLIC_STPASA_\d{8}\.zip",
+}
 
 
 class NEMPASAClient:
@@ -89,6 +100,56 @@ class NEMPASAClient:
         except Exception as e:
             logger.error(f"Error fetching STPASA data: {e}")
             return None
+
+    async def list_archive_files(self, pasa_type: str) -> List[Tuple[str, datetime]]:
+        """List (filename, file_date) in a PASA archive directory, sorted by date."""
+        url = f"{self.base_url}/{ARCHIVE_PATHS[pasa_type]}"
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        names = sorted(set(re.findall(ARCHIVE_FILE_RE[pasa_type], resp.text)))
+        out: List[Tuple[str, datetime]] = []
+        for name in names:
+            m = re.search(r"(\d{8})", name)
+            if m:
+                out.append((name, datetime.strptime(m.group(1), "%Y%m%d")))
+        return out
+
+    async def get_archive_pasa_file(self, pasa_type: str, filename: str) -> Optional[pd.DataFrame]:
+        """Download one archive file and parse every run inside it.
+
+        Archive files are a zip of per-run zips (each holding one CSV). Returns
+        one DataFrame concatenated across all runs, or None if nothing parsed.
+        """
+        url = f"{self.base_url}/{ARCHIVE_PATHS[pasa_type]}{filename}"
+        try:
+            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                blob = resp.content
+        except Exception as e:
+            logger.error(f"Error downloading archive {filename}: {e}")
+            return None
+
+        frames = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(blob)) as outer:
+                for inner_name in outer.namelist():
+                    if not inner_name.lower().endswith(".zip"):
+                        continue
+                    df = self._parse_pasa_zip(outer.read(inner_name), pasa_type)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+        except zipfile.BadZipFile as e:
+            logger.error(f"Bad archive zip {filename}: {e}")
+            return None
+
+        if not frames:
+            logger.warning(f"No runs parsed from {filename}")
+            return None
+        result = pd.concat(frames, ignore_index=True)
+        logger.info(f"Parsed {len(result)} rows from {len(frames)} runs in {filename}")
+        return result
 
     def _parse_pasa_zip(self, content: bytes, pasa_type: str) -> Optional[pd.DataFrame]:
         """Parse PASA ZIP file and extract REGIONSOLUTION data.

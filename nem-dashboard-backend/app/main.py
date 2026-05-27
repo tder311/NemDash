@@ -29,7 +29,15 @@ from .models import (
     DailyMetricsResponse,
     MetricsSummaryResponse,
     BidBandResponse,
-    DUIDSearchResponse
+    DUIDSearchResponse,
+    PriceForecastResponse,
+)
+from .forecaster import (
+    REGIONS,
+    HORIZON_INTERVALS,
+    PriceForecaster,
+    generate_forecast,
+    default_model_path,
 )
 
 # Configure logging
@@ -43,6 +51,17 @@ logger = logging.getLogger(__name__)
 db: NEMDatabase = None
 data_ingester: DataIngester = None
 background_task: Optional[asyncio.Task] = None
+_forecaster: Optional[PriceForecaster] = None
+
+
+def _get_forecaster() -> Optional[PriceForecaster]:
+    """Lazily load the trained price model from disk (cached after first load)."""
+    global _forecaster
+    if _forecaster is None:
+        path = default_model_path()
+        if os.path.exists(path):
+            _forecaster = PriceForecaster.load(path)
+    return _forecaster
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -453,6 +472,21 @@ async def trigger_price_setter_backfill(
         end_date
     )
     return {"message": f"Price setter backfill started from {start_date.date()}"}
+
+
+@app.post("/api/ingest/backfill-pasa")
+async def trigger_pasa_backfill(
+    start_date: datetime = Query(description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None),
+    background_tasks: BackgroundTasks = None
+):
+    """Trigger backfill of historical PD/ST PASA from the NEMWEB archive."""
+    background_tasks.add_task(
+        data_ingester.backfill_pasa_data,
+        start_date,
+        end_date
+    )
+    return {"message": f"PASA backfill started from {start_date.date()}"}
 
 
 @app.post("/api/ingest/recalculate-price-setter-metrics")
@@ -1003,6 +1037,38 @@ async def get_region_stpasa(region: str):
 
     except Exception as e:
         logger.error(f"Error getting STPASA data for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/forecast/prices", response_model=PriceForecastResponse)
+async def get_price_forecast(region: str):
+    """7-day-ahead 30-min price forecast for a region, driven by latest PASA."""
+    region = region.upper()
+    if region not in REGIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown region '{region}'. Expected one of {REGIONS}.",
+        )
+
+    model = _get_forecaster()
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Price model not trained yet. Run: python -m scripts.train_forecaster",
+        )
+
+    try:
+        data = await generate_forecast(db, region, model)
+        return PriceForecastResponse(
+            region=region,
+            data=data,
+            count=len(data),
+            horizon_intervals=HORIZON_INTERVALS,
+            model_trained_at=model.card.trained_at or None,
+            message=f"{len(data)}-interval price forecast for {region}",
+        )
+    except Exception as e:
+        logger.error(f"Error generating price forecast for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

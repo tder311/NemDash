@@ -210,6 +210,59 @@ class DataIngester:
         logger.info(f"Price setter backfill complete: {total_records} records over {days_processed} days")
         return total_records
 
+    async def backfill_pasa_data(self, start_date, end_date=None,
+                                 report_types=("PDPASA", "STPASA")) -> int:
+        """Backfill historical PD/ST PASA from the NEMWEB archive over a window.
+
+        Downloads the nested archive files overlapping the window, parses every
+        run, thins to the day-ahead lead via ``select_runs_at_lead`` (one run
+        per interval at ~24h lead), and upserts into pdpasa_data / stpasa_data.
+        ``report_types`` limits which PASA reports to pull (e.g. ("PDPASA",)).
+        """
+        from .forecaster import select_runs_at_lead
+
+        if end_date is None:
+            end_date = datetime.now()
+        start = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
+        win_lo = pd.Timestamp(start)
+        win_hi = pd.Timestamp(end) + pd.Timedelta(days=1)
+
+        inserters = {"PDPASA": self.db.insert_pdpasa_data, "STPASA": self.db.insert_stpasa_data}
+        total = 0
+        for pasa_type in report_types:
+            insert = inserters[pasa_type]
+            try:
+                files = await self.pasa_client.list_archive_files(pasa_type)
+            except Exception as e:
+                logger.error(f"Could not list {pasa_type} archive: {e}")
+                continue
+
+            # A file dated D holds runs forecasting intervals in ~[D, D+8], so a
+            # window [start, end] needs files dated from ~start-8 up to end.
+            wanted = [n for (n, d) in files
+                      if (start - timedelta(days=8)) <= d.date() <= (end + timedelta(days=1))]
+            logger.info(f"{pasa_type}: {len(wanted)} archive files cover {start}..{end}")
+
+            for name in wanted:
+                try:
+                    df = await self.pasa_client.get_archive_pasa_file(pasa_type, name)
+                    if df is None or df.empty:
+                        continue
+                    df = df[(df['interval_datetime'] >= win_lo) & (df['interval_datetime'] < win_hi)]
+                    if df.empty:
+                        continue
+                    df = select_runs_at_lead(df)  # ~1 run per (interval, region) at day-ahead lead
+                    if not df.empty:
+                        total += await insert(df)
+                        logger.info(f"{pasa_type} {name}: +{len(df)} rows (running total {total})")
+                except Exception as e:
+                    logger.error(f"Error backfilling {pasa_type} file {name}: {e}")
+                await asyncio.sleep(0.3)
+
+        logger.info(f"PASA backfill complete: {total} rows over {start}..{end}")
+        return total
+
     async def recalculate_price_setter_metrics(self, start_date, end_date=None) -> int:
         """Recalculate price setter daily metrics from existing raw data (no download)."""
         from datetime import date
