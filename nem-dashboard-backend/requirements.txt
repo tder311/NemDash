@@ -13,3 +13,6 @@ xgboost>=2.0.0
 scikit-learn>=1.3.0
 joblib>=1.3.0
 holidays>=0.40
+
+# Dispatch optimiser (single-asset BESS arbitrage LP; PuLP ships CBC)
+pulp>=2.7

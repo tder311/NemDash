@@ -38,8 +38,10 @@ from .forecaster import (
     PriceForecaster,
     generate_forecast,
     default_model_path,
+    forecast_price_series,
     train_and_save,
 )
+from .optimiser import DispatchInputs, optimise_dispatch
 
 # Configure logging
 logging.basicConfig(
@@ -1154,6 +1156,73 @@ async def get_predispatch_prices(region: str):
         "run_datetime": iso(rows[0]["run_datetime"]) if rows else None,
         "message": f"Latest pre-dispatch price forecast for {region} ({len(data)} intervals)",
     }
+
+
+@app.get("/api/optimise/dispatch")
+async def optimise_dispatch_endpoint(
+    region: str,
+    power_mw: float = Query(default=100.0, gt=0, description="Battery max power (MW)"),
+    energy_mwh: float = Query(default=200.0, gt=0, description="Battery capacity (MWh)"),
+    eff_rt: float = Query(default=0.85, gt=0, le=1.0, description="Round-trip efficiency"),
+    cyclic: bool = Query(default=True, description="Force end-of-horizon SOC == start"),
+):
+    """Optimise BESS dispatch against the model's 7-day forecast for `region`."""
+    region = region.upper()
+    if region not in REGIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown region '{region}'.")
+
+    model = _get_forecaster()
+    if model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Price model not trained yet. Run: python -m scripts.train_forecaster",
+        )
+
+    try:
+        prices = await forecast_price_series(db, region, model)
+        if prices.empty:
+            raise HTTPException(status_code=503, detail="No forward PASA inputs available.")
+
+        cfg = DispatchInputs(
+            power_mw=power_mw, energy_mwh=energy_mwh, eff_rt=eff_rt, cyclic=cyclic,
+        )
+        result = optimise_dispatch(prices, cfg)
+
+        schedule = [
+            {
+                "interval_datetime": row.interval_datetime.isoformat()
+                if hasattr(row.interval_datetime, "isoformat")
+                else str(row.interval_datetime),
+                "charge_mw": round(float(row.charge_mw), 3),
+                "discharge_mw": round(float(row.discharge_mw), 3),
+                "soc_mwh": round(float(row.soc_mwh), 3),
+                "net_mw": round(float(row.net_mw), 3),
+                "price": round(float(row.price), 2),
+                "revenue": round(float(row.revenue), 2),
+            }
+            for row in result.schedule.itertuples(index=False)
+        ]
+        return {
+            "region": region,
+            "inputs": {
+                "power_mw": power_mw,
+                "energy_mwh": energy_mwh,
+                "duration_h": energy_mwh / power_mw if power_mw else None,
+                "eff_rt": eff_rt,
+                "cyclic": cyclic,
+            },
+            "total_revenue": round(result.total_revenue, 2),
+            "n_cycles": round(result.n_cycles, 3),
+            "solver_status": result.solver_status,
+            "schedule": schedule,
+            "count": len(schedule),
+            "message": f"Optimal dispatch for {region}: ${result.total_revenue:,.0f} over {len(schedule)} intervals",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error optimising dispatch for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # CSV Export endpoints

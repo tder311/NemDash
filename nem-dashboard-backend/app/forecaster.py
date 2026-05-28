@@ -524,6 +524,21 @@ async def generate_forecast(db, region: str, model: "PriceForecaster") -> List[D
     ]
 
 
+async def forecast_price_series(db, region: str, model: "PriceForecaster") -> pd.Series:
+    """Return the model's 7-day forecast as a Series indexed by interval_datetime.
+
+    Same predictions as ``generate_forecast`` but in pandas form (un-rounded),
+    convenient for downstream numerics like the dispatch optimiser.
+    """
+    inputs = await load_forecast_inputs(db, region)
+    if inputs.empty:
+        return pd.Series(dtype=float)
+    X, _, _ = assemble_features(inputs, include_target=False)
+    preds = model.predict(X)
+    idx = pd.to_datetime(inputs["interval_datetime"]).values
+    return pd.Series(preds.astype(float), index=idx, name="price")
+
+
 async def train_and_save(db, days: int = 365, out: Optional[str] = None) -> Dict[str, Any]:
     """Load the last ``days`` of data, walk-forward validate, train, and save.
 
