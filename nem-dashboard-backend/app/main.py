@@ -42,6 +42,7 @@ from .forecaster import (
     train_and_save,
 )
 from .optimiser import DispatchInputs, optimise_dispatch
+from .bid_bands import compute_bid_curves, DEFAULT_PRICE_GRID
 
 # Configure logging
 logging.basicConfig(
@@ -1230,6 +1231,105 @@ async def optimise_dispatch_endpoint(
         raise
     except Exception as e:
         logger.error(f"Error optimising dispatch for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bid-bands")
+async def bid_bands_endpoint(
+    region: str,
+    power_mw: float = Query(default=100.0, gt=0),
+    energy_mwh: float = Query(default=200.0, gt=0),
+    eff_rt: float = Query(default=0.85, gt=0, le=1.0),
+    cycle_cost_per_mwh: float = Query(default=0.0, ge=0),
+    cyclic: bool = Query(default=True),
+    day_offset: int = Query(
+        default=0, ge=0, le=6,
+        description="Which day of the 7-day forecast to compute bands for (0 = first day)",
+    ),
+):
+    """Compute parametric bid bands for one day of the forecast.
+
+    Sweeps the AEMO-flavoured 10-band price grid at each of the 48 30-min
+    intervals in the chosen day; the LP sees the full 7-day forecast for
+    intertemporal correctness. Each curve is returned both as the raw
+    cumulative response (`grid`) and as bid-stack `tranches` (BANDAVAIL MW
+    per band) on the discharge (offer) and charge (load) sides.
+    """
+    region = region.upper()
+    if region not in REGIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown region '{region}'.")
+    model = _get_forecaster()
+    if model is None:
+        raise HTTPException(status_code=503, detail="Price model not trained yet.")
+
+    try:
+        prices = await forecast_price_series(db, region, model)
+        if prices.empty:
+            raise HTTPException(status_code=503, detail="No forward PASA inputs available.")
+
+        start_offset = day_offset * 48  # 48 × 30-min intervals per day
+        if start_offset >= len(prices):
+            raise HTTPException(
+                status_code=400,
+                detail=f"day_offset {day_offset} is beyond the {len(prices)}-interval forecast.",
+            )
+
+        cfg = DispatchInputs(
+            power_mw=power_mw,
+            energy_mwh=energy_mwh,
+            eff_rt=eff_rt,
+            cycle_cost_per_mwh=cycle_cost_per_mwh,
+            cyclic=cyclic,
+        )
+
+        result = await asyncio.to_thread(
+            compute_bid_curves, prices, cfg, 48, None, start_offset
+        )
+
+        curves = [
+            {
+                "interval_datetime": c.interval_datetime.isoformat()
+                if hasattr(c.interval_datetime, "isoformat")
+                else str(c.interval_datetime),
+                "forecast_price": round(c.forecast_price, 2),
+                "grid": [
+                    {
+                        "price": round(p, 2),
+                        "discharge_mw": round(d, 3),
+                        "charge_mw": round(ch, 3),
+                    }
+                    for (p, d, ch) in c.grid
+                ],
+                "discharge_tranches": [round(t, 3) for t in c.discharge_tranches()],
+                "charge_tranches": [round(t, 3) for t in c.charge_tranches()],
+            }
+            for c in result.curves
+        ]
+        return {
+            "region": region,
+            "inputs": {
+                "power_mw": power_mw,
+                "energy_mwh": energy_mwh,
+                "duration_h": energy_mwh / power_mw if power_mw else None,
+                "eff_rt": eff_rt,
+                "cycle_cost_per_mwh": cycle_cost_per_mwh,
+                "cyclic": cyclic,
+            },
+            "day_offset": day_offset,
+            "horizon_intervals": result.horizon_intervals,
+            "price_grid": result.price_grid,
+            "n_lp_solves": result.n_lp_solves,
+            "curves": curves,
+            "message": (
+                f"Bid bands for {region} day {day_offset}: "
+                f"{result.horizon_intervals} intervals × "
+                f"{len(result.price_grid)} bands = {result.n_lp_solves} LP solves"
+            ),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing bid bands for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
