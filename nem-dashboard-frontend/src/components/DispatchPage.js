@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
 import './DispatchPage.css';
@@ -13,6 +13,8 @@ const DEFAULTS = {
   cyclic: true,
 };
 
+const DT_HOURS = 0.5; // 30-minute intervals
+
 function fmtMoney(v) {
   if (v == null || Number.isNaN(v)) return '–';
   const abs = Math.abs(v);
@@ -21,12 +23,14 @@ function fmtMoney(v) {
   return `$${v.toFixed(0)}`;
 }
 
-function DispatchPage({ darkMode }) {
-  // Form state (controlled inputs)
-  const [form, setForm] = useState(DEFAULTS);
-  // Last-applied parameters that are actually shown in the chart
-  const [applied, setApplied] = useState(null);
+function fmtNum(v, digits = 0) {
+  if (v == null || Number.isNaN(v)) return '–';
+  return v.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
 
+function DispatchPage({ darkMode }) {
+  const [form, setForm] = useState(DEFAULTS);
+  const [applied, setApplied] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -62,7 +66,6 @@ function DispatchPage({ darkMode }) {
     }
   }, []);
 
-  // Auto-run once on mount with default config so the page isn't blank.
   useEffect(() => {
     if (firstLoad.current) {
       firstLoad.current = false;
@@ -80,12 +83,44 @@ function DispatchPage({ darkMode }) {
     setForm((f) => ({ ...f, [key]: v }));
   };
 
-  // ---- chart traces ----
   const schedule = result?.schedule ?? [];
+
+  // ---- daily roll-up (charge/discharge MWh, weighted prices, revenue) ----
+  const daily = useMemo(() => {
+    if (!schedule.length) return [];
+    const byDay = new Map();
+    for (const r of schedule) {
+      const d = new Date(r.interval_datetime);
+      const key = d.toISOString().slice(0, 10);
+      if (!byDay.has(key)) {
+        byDay.set(key, {
+          key,
+          label: d.toLocaleDateString('en-AU', { weekday: 'short', day: '2-digit', month: 'short' }),
+          chargeMwh: 0,
+          dischargeMwh: 0,
+          buyDollars: 0,
+          sellDollars: 0,
+          revenue: 0,
+        });
+      }
+      const b = byDay.get(key);
+      b.chargeMwh += r.charge_mw * DT_HOURS;
+      b.dischargeMwh += r.discharge_mw * DT_HOURS;
+      b.buyDollars += r.price * r.charge_mw * DT_HOURS;
+      b.sellDollars += r.price * r.discharge_mw * DT_HOURS;
+      b.revenue += r.revenue;
+    }
+    return Array.from(byDay.values()).map((b) => ({
+      ...b,
+      avgBuy: b.chargeMwh > 1e-6 ? b.buyDollars / b.chargeMwh : null,
+      avgSell: b.dischargeMwh > 1e-6 ? b.sellDollars / b.dischargeMwh : null,
+    }));
+  }, [schedule]);
+
+  // ---- chart traces (2 stacked subplots: price on top, net dispatch below) ----
   const x = schedule.map((d) => new Date(d.interval_datetime));
   const yPrice = schedule.map((d) => d.price);
   const yNet = schedule.map((d) => d.net_mw);
-  const ySoc = schedule.map((d) => d.soc_mwh);
 
   const plotData = schedule.length
     ? [
@@ -97,7 +132,7 @@ function DispatchPage({ darkMode }) {
           mode: 'lines',
           line: { color: '#1f77b4', width: 2, shape: 'hv' },
           yaxis: 'y',
-          hovertemplate: '%{x|%a %d %b %H:%M}<br>Price: $%{y:.0f}/MWh<extra></extra>',
+          hovertemplate: '%{x|%a %d %b %H:%M}<br>Price $%{y:.0f}/MWh<extra></extra>',
         },
         {
           x,
@@ -109,17 +144,7 @@ function DispatchPage({ darkMode }) {
           fill: 'tozeroy',
           fillcolor: 'rgba(44, 160, 44, 0.18)',
           yaxis: 'y2',
-          hovertemplate: '%{x|%a %d %b %H:%M}<br>Net: %{y:.1f} MW<extra></extra>',
-        },
-        {
-          x,
-          y: ySoc,
-          name: 'SOC',
-          type: 'scatter',
-          mode: 'lines',
-          line: { color: darkMode ? '#cfcfcf' : '#666', width: 1.5, dash: 'dot' },
-          yaxis: 'y3',
-          hovertemplate: '%{x|%a %d %b %H:%M}<br>SOC: %{y:.0f} MWh<extra></extra>',
+          hovertemplate: '%{x|%a %d %b %H:%M}<br>Net %{y:.1f} MW<extra></extra>',
         },
       ]
     : [];
@@ -127,46 +152,35 @@ function DispatchPage({ darkMode }) {
   const plotLayout = {
     title: {
       text: result
-        ? `${result.region} dispatch — ${fmtMoney(result.total_revenue)} over ${result.count} intervals · ${result.n_cycles.toFixed(2)} cycles`
+        ? `${result.region} dispatch — ${fmtMoney(result.total_revenue)} · ${result.n_cycles.toFixed(2)} cycles`
         : 'Dispatch',
       font: { size: 18, color: darkMode ? '#f5f5f5' : '#333' },
     },
     xaxis: {
-      title: 'Settlement interval (30-min)',
+      anchor: 'y2',
       gridcolor: darkMode ? '#404040' : '#e0e0e0',
       color: darkMode ? '#f5f5f5' : '#333',
       tickformat: '%a %d %b\n%H:%M',
-      domain: [0, 0.92],
     },
     yaxis: {
       title: 'Price ($/MWh)',
+      domain: [0.56, 1.0],
       gridcolor: darkMode ? '#404040' : '#e0e0e0',
       color: darkMode ? '#f5f5f5' : '#333',
-      side: 'left',
     },
     yaxis2: {
       title: 'Net MW',
-      overlaying: 'y',
-      side: 'right',
+      domain: [0, 0.44],
+      gridcolor: darkMode ? '#404040' : '#e0e0e0',
       color: darkMode ? '#f5f5f5' : '#333',
       zeroline: true,
       zerolinecolor: darkMode ? '#666' : '#bbb',
-      showgrid: false,
-    },
-    yaxis3: {
-      title: 'SOC (MWh)',
-      overlaying: 'y',
-      side: 'right',
-      position: 1.0,
-      anchor: 'free',
-      color: darkMode ? '#cfcfcf' : '#666',
-      showgrid: false,
     },
     plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
     paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
     font: { color: darkMode ? '#f5f5f5' : '#333' },
     legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.18 },
-    margin: { l: 60, r: 90, t: 60, b: 90 },
+    margin: { l: 65, r: 30, t: 60, b: 90 },
     hovermode: 'x unified',
   };
 
@@ -184,26 +198,17 @@ function DispatchPage({ darkMode }) {
 
         <label>
           Power (MW)
-          <input
-            type="number" min="1" step="1" value={form.powerMw}
-            onChange={setField('powerMw')}
-          />
+          <input type="number" min="1" step="1" value={form.powerMw} onChange={setField('powerMw')} />
         </label>
 
         <label>
           Duration (h)
-          <input
-            type="number" min="0.5" step="0.5" value={form.durationH}
-            onChange={setField('durationH')}
-          />
+          <input type="number" min="0.5" step="0.5" value={form.durationH} onChange={setField('durationH')} />
         </label>
 
         <label>
           RTE (%)
-          <input
-            type="number" min="50" max="100" step="1" value={form.rtePct}
-            onChange={setField('rtePct')}
-          />
+          <input type="number" min="50" max="100" step="1" value={form.rtePct} onChange={setField('rtePct')} />
         </label>
 
         <label className="dispatch-checkbox">
@@ -233,9 +238,7 @@ function DispatchPage({ darkMode }) {
         </div>
       )}
 
-      {!loading && error && (
-        <div className="dispatch-error"><p>{error}</p></div>
-      )}
+      {!loading && error && <div className="dispatch-error"><p>{error}</p></div>}
 
       {loading && (
         <div className="loading">
@@ -245,22 +248,64 @@ function DispatchPage({ darkMode }) {
       )}
 
       {!loading && !error && schedule.length > 0 && (
-        <div className="chart-container">
-          <Plot
-            data={plotData}
-            layout={plotLayout}
-            useResizeHandler
-            style={{ width: '100%', height: '620px' }}
-            config={{
-              displayModeBar: true,
-              displaylogo: false,
-              modeBarButtonsToRemove: [
-                'pan2d', 'lasso2d', 'select2d', 'autoScale2d',
-                'hoverClosestCartesian', 'hoverCompareCartesian',
-              ],
-            }}
-          />
-        </div>
+        <>
+          <div className="chart-container">
+            <Plot
+              data={plotData}
+              layout={plotLayout}
+              useResizeHandler
+              style={{ width: '100%', height: '640px' }}
+              config={{
+                displayModeBar: true,
+                displaylogo: false,
+                modeBarButtonsToRemove: [
+                  'pan2d', 'lasso2d', 'select2d', 'autoScale2d',
+                  'hoverClosestCartesian', 'hoverCompareCartesian',
+                ],
+              }}
+            />
+          </div>
+
+          {daily.length > 0 && (
+            <div className="daily-table-wrap">
+              <h3 className="daily-title">Daily summary</h3>
+              <table className="daily-table">
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th className="num">Charge (MWh)</th>
+                    <th className="num">Discharge (MWh)</th>
+                    <th className="num">Avg buy ($/MWh)</th>
+                    <th className="num">Avg sell ($/MWh)</th>
+                    <th className="num">Revenue ($)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daily.map((d) => (
+                    <tr key={d.key}>
+                      <td>{d.label}</td>
+                      <td className="num">{fmtNum(d.chargeMwh, 1)}</td>
+                      <td className="num">{fmtNum(d.dischargeMwh, 1)}</td>
+                      <td className="num">{d.avgBuy != null ? fmtNum(d.avgBuy, 0) : '—'}</td>
+                      <td className="num">{d.avgSell != null ? fmtNum(d.avgSell, 0) : '—'}</td>
+                      <td className="num">{fmtNum(d.revenue, 0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td>Total</td>
+                    <td className="num">{fmtNum(daily.reduce((s, d) => s + d.chargeMwh, 0), 1)}</td>
+                    <td className="num">{fmtNum(daily.reduce((s, d) => s + d.dischargeMwh, 0), 1)}</td>
+                    <td className="num">—</td>
+                    <td className="num">—</td>
+                    <td className="num">{fmtNum(daily.reduce((s, d) => s + d.revenue, 0), 0)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
