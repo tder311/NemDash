@@ -163,9 +163,9 @@ function ForecastPage({ darkMode }) {
       customdata: pyTrue,
       type: 'scatter',
       mode: 'lines',
-      name: 'AEMO pre-dispatch',
+      name: 'AEMO 7-day pre-dispatch',
       line: { color: darkMode ? '#cfcfcf' : '#444', width: 2, dash: 'dot', shape: 'hv' },
-      hovertemplate: '%{x|%a %d %b %H:%M}<br>Pre-dispatch: $%{customdata:.0f}/MWh<extra></extra>',
+      hovertemplate: '%{x|%a %d %b %H:%M}<br>PD7Day: $%{customdata:.0f}/MWh<extra></extra>',
     });
 
     // Markers for pre-dispatch intervals clipped at the cap (e.g. VOLL).
@@ -186,7 +186,7 @@ function ForecastPage({ darkMode }) {
 
   const plotLayout = {
     title: {
-      text: `${region} — 7-day price forecast vs AEMO pre-dispatch`,
+      text: `${region} — 7-day price forecast vs AEMO PD7Day`,
       font: { size: 19, color: darkMode ? '#f5f5f5' : '#333' },
     },
     xaxis: {

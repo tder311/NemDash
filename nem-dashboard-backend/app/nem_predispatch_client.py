@@ -1,8 +1,8 @@
-"""NEM Pre-dispatch price client.
+"""NEM 7-day Pre-dispatch price client.
 
-Fetches AEMO PREDISPATCH region prices (the RRP forecast out to ~end of next
-trading day) from NEMWEB's PredispatchIS reports. Used to overlay AEMO's own
-short-term price forecast against the model's forecast.
+Fetches AEMO's PD7Day forecast (RRP at 30-min resolution, ~7 days ahead) from
+NEMWEB's PD7Day reports. Published every ~6 hours. Used to overlay AEMO's
+official 7-day pre-dispatch price against the model's forecast.
 """
 
 import csv
@@ -18,20 +18,20 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-CURRENT_PATH = "Reports/Current/PredispatchIS_Reports/"
-ARCHIVE_PATH = "Reports/Archive/PredispatchIS_Reports/"
-CURRENT_FILE_RE = r"PUBLIC_PREDISPATCHIS_\d+_\d+\.zip"
-ARCHIVE_FILE_RE = r"PUBLIC_PREDISPATCHIS_\d{8}\.zip"
+CURRENT_PATH = "Reports/Current/PD7Day/"
+ARCHIVE_PATH = "Reports/Archive/PD7Day/"
+CURRENT_FILE_RE = r"PUBLIC_PD7DAY_\d+_\d+\.zip"
+ARCHIVE_FILE_RE = r"PUBLIC_PD7DAY_\d{8}\.zip"
 
 
 class NEMPredispatchClient:
-    """Client for fetching PREDISPATCH REGION_PRICES (RRP forecast) from NEMWEB."""
+    """Client for fetching PD7Day PRICESOLUTION (7-day RRP forecast) from NEMWEB."""
 
     def __init__(self, base_url: str = "https://www.nemweb.com.au"):
         self.base_url = base_url.rstrip("/")
 
     async def get_latest_predispatch(self) -> Optional[pd.DataFrame]:
-        """Fetch the most recent pre-dispatch run's RRP forecast."""
+        """Fetch the most recent PD7Day run's 7-day RRP forecast."""
         url = f"{self.base_url}/{CURRENT_PATH}"
         try:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -104,25 +104,24 @@ class NEMPredispatchClient:
             return None
 
     def _parse_csv(self, text: str) -> Optional[pd.DataFrame]:
-        """Extract REGION_PRICES rows -> run_datetime, interval_datetime, regionid, rrp."""
+        """Extract PD7DAY PRICESOLUTION rows -> run_datetime, interval_datetime, regionid, rrp."""
         headers: Optional[List[str]] = None
         rows: List[List[str]] = []
         for line in text.splitlines():
-            if line.startswith("I,PREDISPATCH,REGION_PRICES"):
+            if line.startswith("I,PD7DAY,PRICESOLUTION"):
                 # skip record type, report, table, version (4 fields)
                 headers = [h.lower().strip() for h in next(csv.reader([line]))[4:]]
-            elif line.startswith("D,PREDISPATCH,REGION_PRICES") and headers is not None:
+            elif line.startswith("D,PD7DAY,PRICESOLUTION") and headers is not None:
                 rows.append(next(csv.reader([line]))[4:])
 
         if not headers or not rows:
-            logger.warning("No PREDISPATCH REGION_PRICES rows found")
+            logger.warning("No PD7DAY PRICESOLUTION rows found")
             return None
 
         df = pd.DataFrame(rows, columns=headers[: len(rows[0])])
         # Non-intervention runs only (avoid duplicate intervals).
         if "intervention" in df.columns:
             df = df[df["intervention"].astype(str).str.strip().isin(["0", "0.0", ""])]
-        df = df.rename(columns={"datetime": "interval_datetime", "lastchanged": "run_datetime"})
         df["interval_datetime"] = pd.to_datetime(df["interval_datetime"], errors="coerce")
         df["run_datetime"] = pd.to_datetime(df["run_datetime"], errors="coerce")
         df["rrp"] = pd.to_numeric(df["rrp"], errors="coerce")
