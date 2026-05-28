@@ -5,10 +5,16 @@ spot price — these tests verify the curve has the properties the LP's
 convexity and intertemporal structure imply.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from app.bid_bands import compute_bid_curves
+from app.bid_bands import (
+    NEM_MPC,
+    NEM_MPF,
+    compute_bid_curves,
+    compute_kink_grid,
+)
 from app.optimiser import DispatchInputs
 
 
@@ -142,3 +148,74 @@ def test_start_offset_beyond_horizon_raises():
             DispatchInputs(power_mw=10, energy_mwh=20),
             start_offset=5,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Kink grid (merit-order density)
+# --------------------------------------------------------------------------- #
+
+
+def test_kink_grid_returns_10_bands_with_mpf_mpc_anchors():
+    """Standard case: dense bid distribution → 8 interior centroids + MPF + MPC."""
+    # Three dense clusters around $0 (coal), $80 (mid-merit), $300 (peaker).
+    rng = np.random.default_rng(0)
+    prices = np.concatenate([
+        rng.normal(0, 5, 100),
+        rng.normal(80, 5, 100),
+        rng.normal(300, 10, 100),
+    ])
+    mws = np.full(len(prices), 50.0)
+    bids = pd.DataFrame({"price": prices, "mw": mws})
+    grid = compute_kink_grid(bids, k=8)
+    assert len(grid) == 10
+    assert grid[0] == NEM_MPF
+    assert grid[-1] == NEM_MPC
+    # Interior centroids should fall within the relevant range.
+    for c in grid[1:-1]:
+        assert -200 <= c <= 2000
+
+
+def test_kink_grid_centroids_track_dense_clusters():
+    """Centroids should sit near the actual cluster means, not somewhere random."""
+    rng = np.random.default_rng(42)
+    prices = np.concatenate([
+        rng.normal(50, 2, 200),     # tight cluster at $50
+        rng.normal(500, 5, 200),    # tight cluster at $500
+    ])
+    mws = np.full(len(prices), 100.0)
+    bids = pd.DataFrame({"price": prices, "mw": mws})
+    grid = compute_kink_grid(bids, k=2)
+    interior = grid[1:-1]
+    assert len(interior) == 2
+    # The two centroids should be close to $50 and $500.
+    assert min(interior) == pytest.approx(50, abs=10)
+    assert max(interior) == pytest.approx(500, abs=15)
+
+
+def test_kink_grid_mw_weight_pulls_centroids_to_heavy_volume():
+    """A small high-MW cluster should outweigh many low-MW points."""
+    bids = pd.DataFrame({
+        "price": [10.0] * 100 + [200.0] * 5,    # 100 points at $10, 5 at $200
+        "mw":    [1.0]  * 100 + [1000.0] * 5,    # but the $200 points carry 50x the MW
+    })
+    grid = compute_kink_grid(bids, k=2)
+    interior = grid[1:-1]
+    # Heavier (MW-weighted) cluster should anchor one centroid near $200.
+    assert any(abs(c - 200) < 20 for c in interior)
+
+
+def test_kink_grid_empty_returns_just_anchors():
+    grid = compute_kink_grid(pd.DataFrame({"price": [], "mw": []}))
+    assert grid == [NEM_MPF, NEM_MPC]
+
+
+def test_kink_grid_filters_out_of_range_prices():
+    """A massive cluster outside [range_lo, range_hi] should not pull centroids."""
+    bids = pd.DataFrame({
+        "price": [-5000.0] * 50 + [50.0] * 50 + [50000.0] * 50,
+        "mw":    [100.0]   * 50 + [10.0] * 50 + [100.0]   * 50,
+    })
+    grid = compute_kink_grid(bids, k=2)
+    interior = grid[1:-1]
+    # Only the $50 cluster sits in [-200, 2000]; both centroids should land near it.
+    assert all(-200 <= c <= 2000 for c in interior)

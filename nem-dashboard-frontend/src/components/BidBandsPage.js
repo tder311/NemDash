@@ -12,6 +12,7 @@ const DEFAULTS = {
   cycleCost: 0,
   cyclic: true,
   dayOffset: 0,
+  gridMode: 'kinks',
 };
 
 function fmtMw(mw) {
@@ -57,6 +58,7 @@ function BidBandsPage({ darkMode }) {
           cycle_cost_per_mwh: cfg.cycleCost,
           cyclic: cfg.cyclic,
           day_offset: cfg.dayOffset,
+          grid_mode: cfg.gridMode,
         },
       });
       setResult(r.data);
@@ -149,6 +151,13 @@ function BidBandsPage({ darkMode }) {
             {[0, 1, 2, 3, 4, 5, 6].map((d) => (
               <option key={d} value={d}>Day {d + 1}</option>
             ))}
+          </select>
+        </label>
+        <label>
+          Grid
+          <select value={form.gridMode} onChange={setField('gridMode')}>
+            <option value="kinks">Kink-derived</option>
+            <option value="static">Static (default)</option>
           </select>
         </label>
         <button type="submit" className="bidbands-btn" disabled={loading}>

@@ -8,6 +8,11 @@ natural intertemporal coordination is baked in.
 
 This is the textbook self-scheduling-under-intertemporal-constraints approach
 used for hydro / BESS / pumped-storage bidding.
+
+The price grid itself can be derived from real regional bids using
+``compute_kink_grid`` — k-means clustering of bid prices weighted by MW
+availability picks out the supply-curve kinks where price-setting actually
+transitions, giving a much sharper grid than a hardcoded list.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from .optimiser import DispatchInputs, optimise_dispatch
@@ -159,3 +165,107 @@ def compute_bid_curves(
         price_grid=list(price_grid),
         n_lp_solves=H * len(price_grid),
     )
+
+
+# --------------------------------------------------------------------------- #
+# Merit-order-density-derived price grid
+# --------------------------------------------------------------------------- #
+
+# AEMO floor and cap anchors. MPC drifts upward over time (CPI-linked); update
+# annually if the auto-grid starts looking off-by-one at the tail.
+NEM_MPF: float = -1000.0
+NEM_MPC: float = 16600.0
+
+
+async def fetch_regional_bid_distribution(
+    db, region: str, lookback_days: int = 7
+) -> pd.DataFrame:
+    """Return long-format (price, mw) rows for every band offer in ``region``
+    over the last ``lookback_days``.
+
+    Joins ``bid_per_offer`` (BANDAVAIL per interval) with ``bid_day_offer``
+    (PRICEBAND per day) on (duid, settlementdate, offerdate), filters DUIDs
+    by ``generator_info.region``, then unpivots the 10 bands into long form.
+    """
+    short = region[:-1] if region.endswith("1") else region  # NSW1 -> NSW
+    lookback_days = int(lookback_days)
+    band_cols_p = ", ".join(f"bdo.priceband{i}" for i in range(1, 11))
+    band_cols_a = ", ".join(f"bpo.bandavail{i}" for i in range(1, 11))
+    sql = f"""
+        SELECT {band_cols_p}, {band_cols_a}
+        FROM bid_per_offer bpo
+        JOIN bid_day_offer bdo
+          ON bdo.duid = bpo.duid
+         AND bdo.settlementdate = bpo.settlementdate::date
+         AND bdo.offerdate = bpo.offerdate
+        JOIN generator_info gi ON gi.duid = bpo.duid
+        WHERE gi.region = $1
+          AND bpo.settlementdate >= NOW() - INTERVAL '{lookback_days} days'
+    """
+    async with db._pool.acquire() as conn:
+        rows = await conn.fetch(sql, short)
+
+    if not rows:
+        return pd.DataFrame(columns=["price", "mw"])
+
+    wide = pd.DataFrame([dict(r) for r in rows])
+    parts = []
+    for i in range(1, 11):
+        p = wide[[f"priceband{i}", f"bandavail{i}"]].rename(
+            columns={f"priceband{i}": "price", f"bandavail{i}": "mw"}
+        )
+        parts.append(p)
+    long = pd.concat(parts, ignore_index=True)
+    long = long.dropna(subset=["price", "mw"])
+    long = long[long["mw"] > 0]
+    return long.reset_index(drop=True)
+
+
+def compute_kink_grid(
+    bid_distribution: pd.DataFrame,
+    k: int = 8,
+    mpf: float = NEM_MPF,
+    mpc: float = NEM_MPC,
+    range_lo: float = -200.0,
+    range_hi: float = 2000.0,
+) -> List[float]:
+    """Cluster regional bid prices weighted by MW; return MPF + k centroids + MPC = 10 bands.
+
+    The k-means clustering with sample_weight=mw places centroids at the
+    bid-MW *density* — i.e. where the cumulative supply curve has the most
+    weight. The interior is restricted to ``[range_lo, range_hi]`` (cents
+    BESS competes in), and MPF/MPC bookend the grid for safety.
+    """
+    if bid_distribution is None or bid_distribution.empty:
+        return [mpf, mpc]
+
+    in_range = bid_distribution[
+        (bid_distribution["price"] >= range_lo)
+        & (bid_distribution["price"] <= range_hi)
+        & (bid_distribution["mw"] > 0)
+    ]
+    if in_range.empty:
+        return [mpf, mpc]
+
+    # Fewer distinct prices than clusters -> use the distinct prices directly.
+    unique_prices = sorted(in_range["price"].unique().tolist())
+    if len(unique_prices) <= k:
+        return [mpf] + [round(p, 1) for p in unique_prices] + [mpc]
+
+    from sklearn.cluster import KMeans
+
+    X = in_range["price"].to_numpy().reshape(-1, 1).astype(float)
+    w = in_range["mw"].to_numpy().astype(float)
+    km = KMeans(n_clusters=k, n_init=10, random_state=42)
+    km.fit(X, sample_weight=w)
+    centroids = sorted(float(c) for c in km.cluster_centers_.flatten())
+    # Snap to nearest whole dollar for readability; AEMO accepts cents but
+    # operators almost always pick round numbers.
+    centroids = [round(c, 0) for c in centroids]
+    return [mpf] + centroids + [mpc]
+
+
+async def derived_grid(db, region: str, lookback_days: int = 7) -> List[float]:
+    """End-to-end: pull recent regional bids and return the kink-derived 10-band grid."""
+    bids = await fetch_regional_bid_distribution(db, region, lookback_days)
+    return compute_kink_grid(bids)

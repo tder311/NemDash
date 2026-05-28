@@ -42,7 +42,7 @@ from .forecaster import (
     train_and_save,
 )
 from .optimiser import DispatchInputs, optimise_dispatch
-from .bid_bands import compute_bid_curves, DEFAULT_PRICE_GRID
+from .bid_bands import compute_bid_curves, DEFAULT_PRICE_GRID, derived_grid
 
 # Configure logging
 logging.basicConfig(
@@ -1246,6 +1246,14 @@ async def bid_bands_endpoint(
         default=0, ge=0, le=6,
         description="Which day of the 7-day forecast to compute bands for (0 = first day)",
     ),
+    grid_mode: str = Query(
+        default="kinks",
+        description="'kinks' = derive grid from regional bid merit-order density (recommended); 'static' = use a hardcoded NEM-flavoured grid",
+    ),
+    lookback_days: int = Query(
+        default=7, ge=1, le=30,
+        description="Window of recent bids to inform the kink grid (ignored if grid_mode='static')",
+    ),
 ):
     """Compute parametric bid bands for one day of the forecast.
 
@@ -1282,8 +1290,15 @@ async def bid_bands_endpoint(
             cyclic=cyclic,
         )
 
+        if grid_mode == "kinks":
+            grid = await derived_grid(db, region, lookback_days)
+            if len(grid) < 2:  # fallback if no bids returned
+                grid = list(DEFAULT_PRICE_GRID)
+        else:
+            grid = list(DEFAULT_PRICE_GRID)
+
         result = await asyncio.to_thread(
-            compute_bid_curves, prices, cfg, 48, None, start_offset
+            compute_bid_curves, prices, cfg, 48, grid, start_offset
         )
 
         curves = [
@@ -1316,12 +1331,15 @@ async def bid_bands_endpoint(
                 "cyclic": cyclic,
             },
             "day_offset": day_offset,
+            "grid_mode": grid_mode,
+            "lookback_days": lookback_days if grid_mode == "kinks" else None,
             "horizon_intervals": result.horizon_intervals,
             "price_grid": result.price_grid,
             "n_lp_solves": result.n_lp_solves,
             "curves": curves,
             "message": (
-                f"Bid bands for {region} day {day_offset}: "
+                f"Bid bands for {region} day {day_offset}"
+                f" (grid={grid_mode}): "
                 f"{result.horizon_intervals} intervals × "
                 f"{len(result.price_grid)} bands = {result.n_lp_solves} LP solves"
             ),
