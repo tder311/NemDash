@@ -1164,6 +1164,9 @@ async def optimise_dispatch_endpoint(
     power_mw: float = Query(default=100.0, gt=0, description="Battery max power (MW)"),
     energy_mwh: float = Query(default=200.0, gt=0, description="Battery capacity (MWh)"),
     eff_rt: float = Query(default=0.85, gt=0, le=1.0, description="Round-trip efficiency"),
+    cycle_cost_per_mwh: float = Query(
+        default=0.0, ge=0, description="Degradation cost per MWh discharged ($/MWh)"
+    ),
     cyclic: bool = Query(default=True, description="Force end-of-horizon SOC == start"),
 ):
     """Optimise BESS dispatch against the model's 7-day forecast for `region`."""
@@ -1184,7 +1187,11 @@ async def optimise_dispatch_endpoint(
             raise HTTPException(status_code=503, detail="No forward PASA inputs available.")
 
         cfg = DispatchInputs(
-            power_mw=power_mw, energy_mwh=energy_mwh, eff_rt=eff_rt, cyclic=cyclic,
+            power_mw=power_mw,
+            energy_mwh=energy_mwh,
+            eff_rt=eff_rt,
+            cycle_cost_per_mwh=cycle_cost_per_mwh,
+            cyclic=cyclic,
         )
         result = optimise_dispatch(prices, cfg)
 
@@ -1209,6 +1216,7 @@ async def optimise_dispatch_endpoint(
                 "energy_mwh": energy_mwh,
                 "duration_h": energy_mwh / power_mw if power_mw else None,
                 "eff_rt": eff_rt,
+                "cycle_cost_per_mwh": cycle_cost_per_mwh,
                 "cyclic": cyclic,
             },
             "total_revenue": round(result.total_revenue, 2),

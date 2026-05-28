@@ -36,6 +36,8 @@ class DispatchInputs:
     eff_rt: float = 0.85       # round-trip efficiency in (0, 1]
     soc0_frac: float = 0.5     # initial SOC as a fraction of energy_mwh
     cyclic: bool = True        # require end-of-horizon SOC == start SOC
+    cycle_cost_per_mwh: float = 0.0 # cycle cost $/MWh
+
 
 
 @dataclass
@@ -50,6 +52,7 @@ class DispatchResult:
 
 
 def optimise_dispatch(prices: pd.Series, inputs: DispatchInputs) -> DispatchResult:
+
     """Find the revenue-maximising charge/discharge schedule for a price series.
 
     Parameters
@@ -158,7 +161,10 @@ def optimise_dispatch(prices: pd.Series, inputs: DispatchInputs) -> DispatchResu
     if inputs.cyclic: 
         m+= soc[T] == soc0, "cyclic"
 
-    m += pulp.lpSum(p[i] * (discharge[i] - charge[i]) * dt for i in range(T))
+    m += pulp.lpSum(
+        ((p[i] - inputs.cycle_cost_per_mwh) * discharge[i] - p[i] * charge[i]) * dt
+        for i in range(T)
+    )
 
     # --- solve + extract -----------------------------------------------------
     m.solve(pulp.PULP_CBC_CMD(msg=0))

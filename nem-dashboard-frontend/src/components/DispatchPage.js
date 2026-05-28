@@ -10,6 +10,7 @@ const DEFAULTS = {
   powerMw: 100,
   durationH: 2.0,
   rtePct: 85,
+  cycleCost: 0,
   cyclic: true,
 };
 
@@ -47,6 +48,7 @@ function DispatchPage({ darkMode }) {
           power_mw: cfg.powerMw,
           energy_mwh: energyMwh,
           eff_rt: cfg.rtePct / 100,
+          cycle_cost_per_mwh: cfg.cycleCost,
           cyclic: cfg.cyclic,
         },
       });
@@ -211,6 +213,11 @@ function DispatchPage({ darkMode }) {
           <input type="number" min="50" max="100" step="1" value={form.rtePct} onChange={setField('rtePct')} />
         </label>
 
+        <label>
+          Cycle cost ($/MWh)
+          <input type="number" min="0" step="1" value={form.cycleCost} onChange={setField('cycleCost')} />
+        </label>
+
         <label className="dispatch-checkbox">
           <input type="checkbox" checked={form.cyclic} onChange={setField('cyclic')} />
           Cyclic SOC
@@ -224,7 +231,9 @@ function DispatchPage({ darkMode }) {
       {applied && (
         <div className="dispatch-summary">
           {applied.powerMw} MW · {applied.durationH}h ({applied.energyMwh} MWh)
-          · RTE {applied.rtePct}% · {applied.cyclic ? 'cyclic' : 'free-end'}
+          · RTE {applied.rtePct}%
+          {Number(applied.cycleCost) > 0 && ` · cycle cost $${applied.cycleCost}/MWh`}
+          {' · '}{applied.cyclic ? 'cyclic' : 'free-end'}
           {result && (
             <>
               <span className="sep">|</span>

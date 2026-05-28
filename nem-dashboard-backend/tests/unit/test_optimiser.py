@@ -82,6 +82,33 @@ def test_negative_prices_get_charged_into():
     assert r.schedule.loc[0, "charge_mw"] > 0
 
 
+def test_cycle_cost_suppresses_marginal_arbitrage():
+    """A degradation cost should drop arbs whose post-cost spread is negative,
+    leaving only the higher-spread cycles. Free vs costed worked example:
+
+      no cost: charge i=0 ($50) + i=3 ($30), discharge i=1 ($200) + i=2 ($100) -> 0.5 cycles.
+      $80 cost: only the 30->200 round-trip survives (net $90/MWh);
+                30->100 (net -$10/MWh) gets dropped -> 0.25 cycles.
+    """
+    free = optimise_dispatch(
+        _prices([50.0, 200.0, 100.0, 30.0]),
+        DispatchInputs(power_mw=10, energy_mwh=20, eff_rt=1.0, cyclic=True),
+    )
+    costed = optimise_dispatch(
+        _prices([50.0, 200.0, 100.0, 30.0]),
+        DispatchInputs(power_mw=10, energy_mwh=20, eff_rt=1.0, cyclic=True, cycle_cost_per_mwh=80.0),
+    )
+    assert costed.n_cycles < free.n_cycles
+    # Gross market revenue is reported (not net), so it drops as cycles drop.
+    assert costed.total_revenue < free.total_revenue
+    # And a high enough cost should suppress everything.
+    no_arb = optimise_dispatch(
+        _prices([50.0, 200.0, 100.0, 30.0]),
+        DispatchInputs(power_mw=10, energy_mwh=20, eff_rt=1.0, cyclic=True, cycle_cost_per_mwh=500.0),
+    )
+    assert no_arb.schedule["discharge_mw"].sum() < 1e-3
+
+
 def test_input_validation():
     px = _prices([50.0, 100.0])
     with pytest.raises(ValueError):
