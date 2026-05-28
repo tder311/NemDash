@@ -13,15 +13,33 @@ const REGION_COLORS = {
   TAS1: '#9467bd',
 };
 
-// Hex -> rgba so the area fill can be a translucent tint of the line colour.
+// Display y-range guards ($/MWh): cap hides the VOLL spikes that would flatten
+// the chart; floor keeps moderate negative prices visible.
+const CAP_MIN = 300;
+const CAP_MAX = 2000;
+const FLOOR_MIN = -100;
+
 const fillFor = (hex, alpha) => {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 };
 
+const arrMin = (a) => a.reduce((m, v) => (v < m ? v : m), Infinity);
+const arrMax = (a) => a.reduce((m, v) => (v > m ? v : m), -Infinity);
+
+const quantile = (arr, q) => {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const pos = (s.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  return s[base + 1] !== undefined ? s[base] + rest * (s[base + 1] - s[base]) : s[base];
+};
+
 function ForecastPage({ darkMode }) {
   const [region, setRegion] = useState('NSW1');
   const [forecast, setForecast] = useState([]);
+  const [pd, setPd] = useState([]);
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -30,13 +48,13 @@ function ForecastPage({ darkMode }) {
   const [trainNote, setTrainNote] = useState(null);
   const pollRef = useRef(null);
 
-  const fetchForecast = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await api.get('/api/forecast/prices', { params: { region } });
-      setForecast(response.data.data || []);
-      setMeta({ trainedAt: response.data.model_trained_at, count: response.data.count });
+      const fc = await api.get('/api/forecast/prices', { params: { region } });
+      setForecast(fc.data.data || []);
+      setMeta({ trainedAt: fc.data.model_trained_at, count: fc.data.count });
     } catch (err) {
       const status = err.response?.status;
       setError(
@@ -46,16 +64,21 @@ function ForecastPage({ darkMode }) {
       );
       setForecast([]);
       setMeta(null);
-    } finally {
-      setLoading(false);
     }
+    // Pre-dispatch overlay is best-effort — absence shouldn't break the page.
+    try {
+      const r = await api.get('/api/predispatch/prices', { params: { region } });
+      setPd(r.data.data || []);
+    } catch {
+      setPd([]);
+    }
+    setLoading(false);
   }, [region]);
 
   useEffect(() => {
-    fetchForecast();
-  }, [fetchForecast]);
+    fetchAll();
+  }, [fetchAll]);
 
-  // Stop polling if the component unmounts mid-train.
   useEffect(() => () => {
     if (pollRef.current) clearInterval(pollRef.current);
   }, []);
@@ -75,7 +98,7 @@ function ForecastPage({ darkMode }) {
               (m.mae != null ? ` · MAE $${m.mae.toFixed(0)}` : '') +
               (m.spearman != null ? ` · Spearman ${m.spearman.toFixed(2)}` : '')
           );
-          fetchForecast(); // refresh chart with the freshly trained model
+          fetchAll();
         } else if (data.status === 'error') {
           clearInterval(pollRef.current);
           pollRef.current = null;
@@ -86,7 +109,7 @@ function ForecastPage({ darkMode }) {
         /* transient — keep polling */
       }
     }, 3000);
-  }, [fetchForecast]);
+  }, [fetchAll]);
 
   const handleRetrain = async () => {
     setTraining(true);
@@ -95,7 +118,6 @@ function ForecastPage({ darkMode }) {
       await api.post('/api/forecast/retrain');
     } catch (err) {
       if (err.response?.status !== 409) {
-        // 409 just means one is already running — fall through to polling.
         setTraining(false);
         setTrainNote(err.response?.data?.detail || 'Could not start retraining.');
         return;
@@ -106,24 +128,66 @@ function ForecastPage({ darkMode }) {
 
   const color = REGION_COLORS[region];
 
+  // --- assemble traces + clamp/clip the y-axis around VOLL spikes ---
+  const fx = forecast.map((d) => new Date(d.interval_datetime));
+  const fy = forecast.map((d) => d.predicted_price);
+  const px = pd.map((d) => new Date(d.interval_datetime));
+  const pyTrue = pd.map((d) => d.rrp);
+
+  const allVals = [...fy, ...pyTrue];
+  const cap = allVals.length
+    ? Math.min(CAP_MAX, Math.max(CAP_MIN, quantile(allVals, 0.98) * 1.15))
+    : CAP_MIN;
+  const yMin = allVals.length ? Math.max(FLOOR_MIN, Math.min(0, arrMin(allVals))) : FLOOR_MIN;
+  const clamp = (v) => Math.max(yMin, Math.min(cap, v));
+
   const plotData = [
     {
-      x: forecast.map((d) => new Date(d.interval_datetime)),
-      y: forecast.map((d) => d.predicted_price),
+      x: fx,
+      y: fy.map(clamp),
+      customdata: fy,
       type: 'scatter',
       mode: 'lines',
-      name: region,
+      name: 'Model forecast',
       line: { color, width: 2, shape: 'hv' },
       fill: 'tozeroy',
-      fillcolor: fillFor(color, 0.12),
-      hovertemplate: '%{x|%a %d %b %H:%M}<br>$%{y:.0f}/MWh<extra></extra>',
+      fillcolor: fillFor(color, 0.1),
+      hovertemplate: '%{x|%a %d %b %H:%M}<br>Model: $%{customdata:.0f}/MWh<extra></extra>',
     },
   ];
 
+  if (pd.length) {
+    plotData.push({
+      x: px,
+      y: pyTrue.map(clamp),
+      customdata: pyTrue,
+      type: 'scatter',
+      mode: 'lines',
+      name: 'AEMO pre-dispatch',
+      line: { color: darkMode ? '#cfcfcf' : '#444', width: 2, dash: 'dot', shape: 'hv' },
+      hovertemplate: '%{x|%a %d %b %H:%M}<br>Pre-dispatch: $%{customdata:.0f}/MWh<extra></extra>',
+    });
+
+    // Markers for pre-dispatch intervals clipped at the cap (e.g. VOLL).
+    const clipIdx = pyTrue.map((v, i) => (v > cap ? i : -1)).filter((i) => i >= 0);
+    if (clipIdx.length) {
+      plotData.push({
+        x: clipIdx.map((i) => px[i]),
+        y: clipIdx.map(() => cap),
+        customdata: clipIdx.map((i) => pyTrue[i]),
+        type: 'scatter',
+        mode: 'markers',
+        name: 'PD spike (clipped)',
+        marker: { color: '#d62728', symbol: 'triangle-up', size: 10 },
+        hovertemplate: '%{x|%a %d %b %H:%M}<br>Pre-dispatch: $%{customdata:.0f}/MWh (clipped)<extra></extra>',
+      });
+    }
+  }
+
   const plotLayout = {
     title: {
-      text: `${region} — 7-day price forecast (P50)`,
-      font: { size: 20, color: darkMode ? '#f5f5f5' : '#333' },
+      text: `${region} — 7-day price forecast vs AEMO pre-dispatch`,
+      font: { size: 19, color: darkMode ? '#f5f5f5' : '#333' },
     },
     xaxis: {
       title: 'Settlement interval (30-min)',
@@ -132,7 +196,8 @@ function ForecastPage({ darkMode }) {
       tickformat: '%a %d %b\n%H:%M',
     },
     yaxis: {
-      title: 'Forecast price ($/MWh)',
+      title: 'Price ($/MWh)',
+      range: [yMin, cap],
       gridcolor: darkMode ? '#404040' : '#e0e0e0',
       color: darkMode ? '#f5f5f5' : '#333',
       zeroline: true,
@@ -141,7 +206,8 @@ function ForecastPage({ darkMode }) {
     plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
     paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
     font: { color: darkMode ? '#f5f5f5' : '#333' },
-    margin: { l: 60, r: 30, t: 60, b: 70 },
+    legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.18 },
+    margin: { l: 60, r: 30, t: 60, b: 90 },
     hovermode: 'x unified',
   };
 
@@ -175,6 +241,7 @@ function ForecastPage({ darkMode }) {
           <span className="forecast-meta">
             {meta.count} intervals · P50
             {meta.trainedAt && ` · trained ${formatTrainedAt(meta.trainedAt)}`}
+            {` · y-axis capped at $${cap.toFixed(0)}`}
           </span>
         )}
       </div>

@@ -517,6 +517,21 @@ async def trigger_pasa_backfill(
     return {"message": f"PASA backfill started from {start_date.date()}"}
 
 
+@app.post("/api/ingest/backfill-predispatch")
+async def trigger_predispatch_backfill(
+    start_date: datetime = Query(description="Start date (ISO format)"),
+    end_date: Optional[datetime] = Query(default=None),
+    background_tasks: BackgroundTasks = None
+):
+    """Trigger backfill of historical pre-dispatch price from the NEMWEB archive."""
+    background_tasks.add_task(
+        data_ingester.backfill_predispatch_data,
+        start_date,
+        end_date
+    )
+    return {"message": f"Pre-dispatch backfill started from {start_date.date()}"}
+
+
 @app.post("/api/ingest/recalculate-price-setter-metrics")
 async def trigger_price_setter_metrics_recalc(
     start_date: datetime = Query(description="Start date (ISO format)"),
@@ -1117,6 +1132,28 @@ async def forecast_status():
     """Current training status plus the live model's trained-at timestamp."""
     model = _get_forecaster()
     return {**_training_state, "model_trained_at": model.card.trained_at if model else None}
+
+
+@app.get("/api/predispatch/prices")
+async def get_predispatch_prices(region: str):
+    """Latest AEMO pre-dispatch price (RRP) forecast for a region, for overlay."""
+    region = region.upper()
+    if region not in REGIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown region '{region}'.")
+
+    rows = await db.get_latest_predispatch_price(region)
+
+    def iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+
+    data = [{"interval_datetime": iso(r["interval_datetime"]), "rrp": r["rrp"]} for r in rows]
+    return {
+        "region": region,
+        "data": data,
+        "count": len(data),
+        "run_datetime": iso(rows[0]["run_datetime"]) if rows else None,
+        "message": f"Latest pre-dispatch price forecast for {region} ({len(data)} intervals)",
+    }
 
 
 # CSV Export endpoints

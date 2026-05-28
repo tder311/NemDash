@@ -10,6 +10,7 @@ import pandas as pd
 from .nem_client import NEMDispatchClient
 from .nem_price_client import NEMPriceClient
 from .nem_pasa_client import NEMPASAClient
+from .nem_predispatch_client import NEMPredispatchClient
 from .nem_price_setter_client import NEMPriceSetterClient
 from .nem_bid_client import NEMBidClient
 from .database import NEMDatabase
@@ -29,6 +30,7 @@ class DataIngester:
         self.nem_client = NEMDispatchClient(nem_base_url)
         self.price_client = NEMPriceClient(nem_base_url)
         self.pasa_client = NEMPASAClient(nem_base_url)
+        self.predispatch_client = NEMPredispatchClient(nem_base_url)
         self.price_setter_client = NEMPriceSetterClient(nem_base_url)
         self.bid_client = NEMBidClient(nem_base_url)
         self.is_running = False
@@ -40,6 +42,7 @@ class DataIngester:
         self.last_trading_price_timestamp: Optional[datetime] = None
         self.last_pdpasa_run: Optional[datetime] = None
         self.last_stpasa_run: Optional[datetime] = None
+        self.last_predispatch_run: Optional[datetime] = None
         self.pasa_ingestion_counter: int = 0  # Track cycles for PASA ingestion (every 6 cycles = 30 min)
         
     async def initialize(self):
@@ -370,6 +373,60 @@ class DataIngester:
         except Exception as e:
             logger.error(f"Error ingesting PASA data: {e}")
             return False
+
+    async def ingest_predispatch_data(self) -> bool:
+        """Fetch the latest pre-dispatch price run and store new RRP forecasts."""
+        try:
+            df = await self.predispatch_client.get_latest_predispatch()
+            if df is None or df.empty:
+                return False
+            current_run = df['run_datetime'].max()
+            if self.last_predispatch_run is None or current_run > self.last_predispatch_run:
+                inserted = await self.db.insert_predispatch_price(df)
+                self.last_predispatch_run = current_run
+                logger.info(f"Ingested {inserted} pre-dispatch price records, run: {current_run}")
+            else:
+                logger.debug(f"Pre-dispatch already ingested for run: {current_run}")
+            return True
+        except Exception as e:
+            logger.error(f"Error ingesting pre-dispatch data: {e}")
+            return False
+
+    async def backfill_predispatch_data(self, start_date, end_date=None) -> int:
+        """Backfill historical pre-dispatch price (RRP) from the NEMWEB archive."""
+        if end_date is None:
+            end_date = datetime.now()
+        start = start_date.date() if hasattr(start_date, 'date') else start_date
+        end = end_date.date() if hasattr(end_date, 'date') else end_date
+        win_lo = pd.Timestamp(start)
+        win_hi = pd.Timestamp(end) + pd.Timedelta(days=1)
+
+        try:
+            files = await self.predispatch_client.list_archive_files()
+        except Exception as e:
+            logger.error(f"Could not list pre-dispatch archive: {e}")
+            return 0
+
+        wanted = [n for (n, d) in files
+                  if (start - timedelta(days=2)) <= d.date() <= (end + timedelta(days=1))]
+        logger.info(f"Pre-dispatch backfill: {len(wanted)} archive files cover {start}..{end}")
+
+        total = 0
+        for name in wanted:
+            try:
+                df = await self.predispatch_client.get_archive_predispatch_file(name)
+                if df is None or df.empty:
+                    continue
+                df = df[(df['interval_datetime'] >= win_lo) & (df['interval_datetime'] < win_hi)]
+                if not df.empty:
+                    total += await self.db.insert_predispatch_price(df)
+                    logger.info(f"Pre-dispatch {name}: +{len(df)} rows (total {total})")
+            except Exception as e:
+                logger.error(f"Error backfilling pre-dispatch {name}: {e}")
+            await asyncio.sleep(0.3)
+
+        logger.info(f"Pre-dispatch backfill complete: {total} rows over {start}..{end}")
+        return total
 
     async def ingest_historical_data(self, start_date: datetime, end_date: Optional[datetime] = None) -> int:
         """Fetch and ingest historical dispatch data for a date range"""
@@ -731,6 +788,7 @@ class DataIngester:
         # Fetch PASA data for immediate use
         logger.info("Fetching PASA data...")
         await self.ingest_pasa_data()
+        await self.ingest_predispatch_data()
 
         logger.info("Site is now usable with recent data. Starting background historical backfill...")
 
@@ -751,6 +809,7 @@ class DataIngester:
                     self.pasa_ingestion_counter += 1
                     if self.pasa_ingestion_counter >= 6:
                         await self.ingest_pasa_data()
+                        await self.ingest_predispatch_data()
                         self.pasa_ingestion_counter = 0
             except Exception as e:
                 logger.error(f"Error in continuous ingestion: {e}")

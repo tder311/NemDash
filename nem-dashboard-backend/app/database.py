@@ -181,6 +181,19 @@ class NEMDatabase:
                 )
             """)
 
+            # PREDISPATCH region price forecast (RRP), one row per run x interval x region
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS predispatch_price (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_datetime TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    regionid TEXT NOT NULL,
+                    rrp REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_datetime, interval_datetime, regionid)
+                )
+            """)
+
 
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_metrics (
@@ -279,6 +292,8 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_run ON stpasa_data(run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region ON stpasa_data(regionid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region_run ON stpasa_data(regionid, run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_region ON predispatch_price(regionid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_region_run ON predispatch_price(regionid, run_datetime)")
 
             # Daily metrics indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
@@ -1497,6 +1512,41 @@ class NEMDatabase:
         async with self._pool.acquire() as conn:
             result = await conn.fetchval("SELECT MAX(run_datetime) FROM stpasa_data")
         return result
+
+    async def insert_predispatch_price(self, df: pd.DataFrame) -> int:
+        """Insert PREDISPATCH region price (RRP) forecast rows."""
+        if df.empty:
+            return 0
+        records = []
+        for _, row in df.iterrows():
+            run = row['run_datetime']
+            interval = row['interval_datetime']
+            records.append((
+                run.to_pydatetime() if hasattr(run, 'to_pydatetime') else run,
+                interval.to_pydatetime() if hasattr(interval, 'to_pydatetime') else interval,
+                row['regionid'],
+                row.get('rrp'),
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO predispatch_price (run_datetime, interval_datetime, regionid, rrp)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (run_datetime, interval_datetime, regionid) DO UPDATE SET
+                    rrp = EXCLUDED.rrp
+            """, records)
+        return len(records)
+
+    async def get_latest_predispatch_price(self, region: str) -> List[Dict[str, Any]]:
+        """Get the latest pre-dispatch run's RRP forecast for a region."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT * FROM predispatch_price
+                WHERE regionid = $1
+                AND run_datetime = (SELECT MAX(run_datetime) FROM predispatch_price WHERE regionid = $1)
+                ORDER BY interval_datetime ASC
+            """, region)
+        return [dict(row) for row in rows]
 
     # Export methods for CSV downloads
     async def get_unique_fuel_sources(self) -> List[str]:
