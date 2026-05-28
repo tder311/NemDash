@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
 import './DispatchPage.css';
@@ -35,7 +35,6 @@ function DispatchPage({ darkMode }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const firstLoad = useRef(true);
 
   const runOptimisation = useCallback(async (cfg) => {
     setLoading(true);
@@ -67,13 +66,6 @@ function DispatchPage({ darkMode }) {
       setLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    if (firstLoad.current) {
-      firstLoad.current = false;
-      runOptimisation(DEFAULTS);
-    }
-  }, [runOptimisation]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -248,6 +240,12 @@ function DispatchPage({ darkMode }) {
       )}
 
       {!loading && error && <div className="dispatch-error"><p>{error}</p></div>}
+
+      {!loading && !error && !result && (
+        <div className="dispatch-empty">
+          Configure your battery above and click <b>Run optimisation</b>.
+        </div>
+      )}
 
       {loading && (
         <div className="loading">

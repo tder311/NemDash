@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useCallback } from 'react';
 import api from '../api';
 import './BidBandsPage.css';
 
@@ -42,7 +42,6 @@ function BidBandsPage({ darkMode }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const firstLoad = useRef(true);
 
   const runCompute = useCallback(async (cfg) => {
     setLoading(true);
@@ -70,13 +69,6 @@ function BidBandsPage({ darkMode }) {
       setLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    if (firstLoad.current) {
-      firstLoad.current = false;
-      runCompute(DEFAULTS);
-    }
-  }, [runCompute]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -184,6 +176,14 @@ function BidBandsPage({ darkMode }) {
       )}
 
       {!loading && error && <div className="bidbands-error"><p>{error}</p></div>}
+
+      {!loading && !error && !result && (
+        <div className="bidbands-empty">
+          Configure your battery above and click <b>Compute</b>. Heads-up: the LP
+          solves ~480 LPs to build a day’s bid stack — it takes ~15-20s.
+        </div>
+      )}
+
       {loading && (
         <div className="loading">
           <div className="spinner"></div>
