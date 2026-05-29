@@ -80,6 +80,51 @@
   background: #2a2a2a;
 }
 
+/* Assistant messages carrying a chart/table get a wider bubble. */
+.chat-msg.assistant.has-artifact .chat-bubble {
+  max-width: 96%;
+  width: 640px;
+}
+
+.chat-artifact {
+  margin-top: 10px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.chat-artifact-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  opacity: 0.85;
+}
+
+.chat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-table th,
+.chat-table td {
+  padding: 5px 9px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  text-align: right;
+}
+
+.chat-table th:first-child,
+.chat-table td:first-child {
+  text-align: left;
+}
+
+.chat-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.7;
+}
+
 .chat-cursor {
   opacity: 0.5;
   animation: chat-blink 1s steps(2) infinite;

@@ -1389,11 +1389,12 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=400, detail="messages must be non-empty.")
 
     client = _get_openai_client()
+    forecaster = _get_forecaster()  # may be None if the model isn't trained yet
     # Copy so the agent's in-place mutation doesn't leak across requests.
     messages = [dict(m) for m in req.messages]
 
     async def event_source():
-        async for ev in nem_agent.stream_chat(client, db, messages):
+        async for ev in nem_agent.stream_chat(client, db, forecaster, messages):
             yield f"event: {ev['event']}\ndata: {ev['data']}\n\n"
 
     return StreamingResponse(

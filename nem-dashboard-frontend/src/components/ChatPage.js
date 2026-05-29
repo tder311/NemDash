@@ -1,18 +1,71 @@
 import React, { useState, useRef, useEffect } from 'react';
+import Plot from 'react-plotly.js';
 import './ChatPage.css';
 
 const SUGGESTIONS = [
   'What are prices across the NEM right now?',
-  'How have NSW1 prices moved over the last 24 hours?',
-  "What's the generation mix in SA1?",
-  'Is the QLD1 system tight this week?',
+  "What's the price forecast for NSW1 this week?",
+  'I have a 100MW 2hr battery in NSW1 — what should my bid bands be?',
+  'How should I dispatch a 100MW 2hr battery in SA1 and how much could it earn?',
 ];
 
-// API base mirrors the axios client (proxy in dev, REACT_APP_API_URL in prod).
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
+// Render one tool artifact: a line chart (Plotly) or a table.
+function ChatArtifact({ artifact, darkMode }) {
+  if (artifact.kind === 'line') {
+    const data = artifact.series.map((s, i) => ({
+      x: artifact.x.map((t) => new Date(t)),
+      y: s.y,
+      name: s.name,
+      type: 'scatter',
+      mode: 'lines',
+      line: { width: 2, shape: 'hv' },
+      yaxis: s.axis === 'right' ? 'y2' : 'y',
+    }));
+    const hasRight = artifact.series.some((s) => s.axis === 'right');
+    const layout = {
+      title: { text: artifact.title, font: { size: 14, color: darkMode ? '#f5f5f5' : '#333' } },
+      height: 320,
+      margin: { l: 50, r: hasRight ? 50 : 20, t: 36, b: 40 },
+      xaxis: { gridcolor: darkMode ? '#404040' : '#e0e0e0', color: darkMode ? '#ccc' : '#333' },
+      yaxis: { gridcolor: darkMode ? '#404040' : '#e0e0e0', color: darkMode ? '#ccc' : '#333' },
+      ...(hasRight && { yaxis2: { overlaying: 'y', side: 'right', color: darkMode ? '#ccc' : '#333', showgrid: false } }),
+      plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
+      paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
+      font: { color: darkMode ? '#f5f5f5' : '#333', size: 11 },
+      legend: { orientation: 'h', y: -0.2 },
+      showlegend: artifact.series.length > 1,
+    };
+    return (
+      <div className="chat-artifact">
+        <Plot data={data} layout={layout} useResizeHandler style={{ width: '100%' }}
+          config={{ displayModeBar: false, responsive: true }} />
+      </div>
+    );
+  }
+  if (artifact.kind === 'table') {
+    return (
+      <div className="chat-artifact">
+        <div className="chat-artifact-title">{artifact.title}</div>
+        <table className="chat-table">
+          <thead>
+            <tr>{artifact.columns.map((c) => <th key={c}>{c}</th>)}</tr>
+          </thead>
+          <tbody>
+            {artifact.rows.map((row, i) => (
+              <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  return null;
+}
+
 function ChatPage({ darkMode }) {
-  const [messages, setMessages] = useState([]); // {role, content} (content = string)
+  const [messages, setMessages] = useState([]); // {role, content, artifacts?}
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [toolStatus, setToolStatus] = useState(null);
@@ -29,8 +82,12 @@ function ChatPage({ darkMode }) {
     setError(null);
     setInput('');
 
-    const history = [...messages, { role: 'user', content: question }];
-    setMessages([...history, { role: 'assistant', content: '' }]);
+    // History sent to the backend is text-only {role, content}.
+    const history = [...messages.map((m) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: question }];
+    setMessages((prev) => [...prev,
+      { role: 'user', content: question },
+      { role: 'assistant', content: '', artifacts: [] }]);
     setStreaming(true);
 
     try {
@@ -44,17 +101,23 @@ function ChatPage({ darkMode }) {
         throw new Error(detail.detail || `Request failed (${resp.status})`);
       }
 
-      // Parse the SSE stream: blocks separated by \n\n, each "event:" + "data:".
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+
+      const patchLast = (fn) =>
+        setMessages((prev) => {
+          const next = [...prev];
+          next[next.length - 1] = fn(next[next.length - 1]);
+          return next;
+        });
 
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const blocks = buffer.split('\n\n');
-        buffer = blocks.pop(); // keep the trailing partial block
+        buffer = blocks.pop();
 
         for (const block of blocks) {
           const evLine = block.split('\n').find((l) => l.startsWith('event:'));
@@ -65,20 +128,15 @@ function ChatPage({ darkMode }) {
 
           if (event === 'text') {
             setToolStatus(null);
-            setMessages((prev) => {
-              const next = [...prev];
-              next[next.length - 1] = {
-                role: 'assistant',
-                content: next[next.length - 1].content + data.text,
-              };
-              return next;
-            });
+            patchLast((m) => ({ ...m, content: m.content + data.text }));
           } else if (event === 'tool') {
-            setToolStatus(`Calling ${data.name}…`);
+            setToolStatus(`Running ${data.name}…`);
+          } else if (event === 'artifact') {
+            setToolStatus(null);
+            patchLast((m) => ({ ...m, artifacts: [...(m.artifacts || []), data] }));
           } else if (event === 'error') {
             setError(data.message);
           }
-          // 'done' carries usage; nothing to render.
         }
       }
     } catch (e) {
@@ -101,21 +159,23 @@ function ChatPage({ darkMode }) {
       <div className="chat-log">
         {messages.length === 0 && (
           <div className="chat-empty">
-            <p>Ask the NemDash analyst about live NEM prices, generation, and system adequacy.</p>
+            <p>Ask the NemDash analyst about live prices, forecasts, battery dispatch, and bid bands.</p>
             <div className="chat-suggestions">
               {SUGGESTIONS.map((s) => (
-                <button key={s} className="chat-suggestion" onClick={() => send(s)}>
-                  {s}
-                </button>
+                <button key={s} className="chat-suggestion" onClick={() => send(s)}>{s}</button>
               ))}
             </div>
           </div>
         )}
 
         {messages.map((m, i) => (
-          <div key={i} className={`chat-msg ${m.role}`}>
+          <div key={i} className={`chat-msg ${m.role} ${(m.artifacts || []).length ? 'has-artifact' : ''}`}>
             <div className="chat-bubble">
-              {m.content || (m.role === 'assistant' && streaming ? <span className="chat-cursor">▋</span> : '')}
+              {m.content || (m.role === 'assistant' && streaming
+                ? <span className="chat-cursor">▋</span> : '')}
+              {(m.artifacts || []).map((a, j) => (
+                <ChatArtifact key={j} artifact={a} darkMode={darkMode} />
+              ))}
             </div>
           </div>
         ))}
@@ -130,7 +190,7 @@ function ChatPage({ darkMode }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Ask about NEM prices, generation, or reserve outlook…"
+          placeholder="Ask about prices, forecasts, dispatch, or bid bands…"
           rows={2}
           disabled={streaming}
         />

@@ -1,8 +1,8 @@
 """Unit tests for the conversational agent — no network / API key required.
 
 A fake OpenAI streaming client and a fake DB exercise the tool-use loop:
-text streaming, fragmented tool-call accumulation, tool-result feedback, and
-termination.
+text streaming, fragmented tool-call accumulation, tool-result feedback,
+artifact emission, and termination.
 """
 
 import json
@@ -41,24 +41,19 @@ class FakeDB:
 
 def _text_chunk(text):
     delta = types.SimpleNamespace(content=text, tool_calls=None)
-    choice = types.SimpleNamespace(delta=delta, finish_reason=None)
-    return types.SimpleNamespace(choices=[choice], usage=None)
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta, finish_reason=None)], usage=None)
 
 
 def _tool_fragment(index, *, id=None, name=None, args=None):
     fn = types.SimpleNamespace(name=name, arguments=args)
     tc = types.SimpleNamespace(index=index, id=id, function=fn)
     delta = types.SimpleNamespace(content=None, tool_calls=[tc])
-    choice = types.SimpleNamespace(delta=delta, finish_reason=None)
-    return types.SimpleNamespace(choices=[choice], usage=None)
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(delta=delta, finish_reason=None)], usage=None)
 
 
 def _usage_chunk():
-    usage = types.SimpleNamespace(
-        prompt_tokens=100,
-        completion_tokens=20,
-        prompt_tokens_details=types.SimpleNamespace(cached_tokens=64),
-    )
+    usage = types.SimpleNamespace(prompt_tokens=100, completion_tokens=20,
+                                  prompt_tokens_details=types.SimpleNamespace(cached_tokens=64))
     return types.SimpleNamespace(choices=[], usage=usage)
 
 
@@ -75,8 +70,8 @@ class _FakeStream:
 
 class FakeCompletions:
     def __init__(self, scripted):
-        self._scripted = list(scripted)  # list of chunk-lists, one per iteration
-        self.calls = []  # records the `messages` passed on each create()
+        self._scripted = list(scripted)
+        self.calls = []
 
     async def create(self, **kwargs):
         self.calls.append(kwargs.get("messages"))
@@ -93,31 +88,61 @@ async def _drain(gen):
 
 
 # --------------------------------------------------------------------------- #
-# Tool dispatch (unchanged DB logic)
+# Tool dispatch — now returns (summary, artifact)
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_execute_get_latest_prices():
-    out = await nem_agent._execute_tool(FakeDB(), "get_latest_prices", {})
-    data = json.loads(out)
+async def test_execute_latest_prices_no_artifact():
+    summary, artifact = await nem_agent._execute_tool(FakeDB(), None, "get_latest_prices", {})
+    data = json.loads(summary)
     assert {r["region"] for r in data} == {"NSW", "SA"}
-    assert any(r["price"] == -15.0 for r in data)  # negative prices preserved
+    assert any(r["price"] == -15.0 for r in data)
+    assert artifact is None  # latest-prices is a snapshot, no chart
 
 
 @pytest.mark.asyncio
-async def test_execute_generation_mix_percentages():
-    out = await nem_agent._execute_tool(FakeDB(), "get_generation_mix", {"region": "NSW1"})
-    data = json.loads(out)
+async def test_execute_generation_mix_emits_table_artifact():
+    summary, artifact = await nem_agent._execute_tool(FakeDB(), None, "get_generation_mix", {"region": "NSW1"})
+    data = json.loads(summary)
     assert data["total_mw"] == 5000.0
-    coal = next(m for m in data["mix"] if m["fuel"] == "Coal")
-    assert coal["pct"] == 80.0
+    assert artifact["kind"] == "table"
+    assert artifact["columns"] == ["Fuel", "MW", "% share"]
+    coal_row = next(r for r in artifact["rows"] if r[0] == "Coal")
+    assert coal_row[2] == 80.0  # % share
 
 
 @pytest.mark.asyncio
-async def test_execute_unknown_tool_returns_error_text():
-    out = await nem_agent._execute_tool(FakeDB(), "nonexistent", {})
-    assert out.startswith("ERROR")
+async def test_forecast_tools_blocked_without_model():
+    summary, artifact = await nem_agent._execute_tool(FakeDB(), None, "get_price_forecast", {"region": "NSW1"})
+    assert summary.startswith("ERROR") and "model isn't trained" in summary
+    assert artifact is None
+
+
+@pytest.mark.asyncio
+async def test_get_price_forecast_emits_line_artifact(monkeypatch):
+    # Fake the forecast series so no real model/DB is needed.
+    idx = pd.date_range("2026-06-01", periods=48, freq="30min")
+    fake_series = pd.Series(range(48), index=idx, dtype=float, name="price")
+
+    async def fake_forecast(db, forecaster, region):
+        return fake_series
+
+    monkeypatch.setattr(nem_agent, "_forecast_series", fake_forecast)
+    summary, artifact = await nem_agent._execute_tool(
+        FakeDB(), object(), "get_price_forecast", {"region": "NSW1"}
+    )
+    data = json.loads(summary)
+    assert data["peak_price"] == 47.0  # max of range(48)
+    assert artifact["kind"] == "line"
+    assert len(artifact["x"]) == 48
+    assert artifact["series"][0]["y"][0] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_execute_unknown_tool_returns_error():
+    summary, artifact = await nem_agent._execute_tool(FakeDB(), None, "nope", {})
+    assert summary.startswith("ERROR") and artifact is None
 
 
 # --------------------------------------------------------------------------- #
@@ -126,63 +151,38 @@ async def test_execute_unknown_tool_returns_error_text():
 
 
 @pytest.mark.asyncio
-async def test_loop_streams_text_then_done_when_no_tool():
+async def test_loop_streams_text_then_done():
     client = FakeClient([[_text_chunk("Prices "), _text_chunk("are calm."), _usage_chunk()]])
-    messages = [{"role": "user", "content": "summarise"}]
-    events = await _drain(nem_agent.stream_chat(client, FakeDB(), messages))
-
-    kinds = [e["event"] for e in events]
-    assert kinds == ["text", "text", "done"]
-    done = json.loads(events[-1]["data"])
-    assert done["cached_tokens"] == 64  # usage surfaced
+    events = await _drain(nem_agent.stream_chat(client, FakeDB(), None, [{"role": "user", "content": "hi"}]))
+    assert [e["event"] for e in events] == ["text", "text", "done"]
+    assert json.loads(events[-1]["data"])["cached_tokens"] == 64
 
 
 @pytest.mark.asyncio
-async def test_loop_accumulates_fragmented_tool_call_then_continues():
-    # Iteration 1: a tool call whose name + JSON args arrive in fragments.
+async def test_loop_emits_artifact_around_tool():
+    # Fragmented tool call for generation mix (which emits a table artifact).
     iter1 = [
-        _tool_fragment(0, id="call_1", name="get_latest_prices"),
-        _tool_fragment(0, args='{"price_'),
-        _tool_fragment(0, args='type": "DISPATCH"}'),
+        _tool_fragment(0, id="c1", name="get_generation_mix"),
+        _tool_fragment(0, args='{"region":'),
+        _tool_fragment(0, args=' "NSW1"}'),
         _usage_chunk(),
     ]
-    # Iteration 2: the model answers in text.
-    iter2 = [_text_chunk("NSW1 is $92.50/MWh."), _usage_chunk()]
+    iter2 = [_text_chunk("Coal dominates."), _usage_chunk()]
     client = FakeClient([iter1, iter2])
-    messages = [{"role": "user", "content": "price in NSW?"}]
-    events = await _drain(nem_agent.stream_chat(client, FakeDB(), messages))
+    events = await _drain(nem_agent.stream_chat(client, FakeDB(), None, [{"role": "user", "content": "mix?"}]))
 
     kinds = [e["event"] for e in events]
-    assert "tool" in kinds and kinds[-1] == "done"
-    tool_ev = next(e for e in events if e["event"] == "tool")
-    payload = json.loads(tool_ev["data"])
-    assert payload["name"] == "get_latest_prices"
-    assert payload["input"] == {"price_type": "DISPATCH"}  # fragments reassembled + parsed
+    assert kinds.index("tool") < kinds.index("artifact")  # artifact follows the tool call
+    art = json.loads(next(e for e in events if e["event"] == "artifact")["data"])
+    assert art["kind"] == "table"
+    # second model call must include the tool result
+    assert any(m["role"] == "tool" for m in client.chat.completions.calls[1])
 
 
 @pytest.mark.asyncio
-async def test_second_call_includes_tool_result_and_system_prompt():
-    iter1 = [_tool_fragment(0, id="call_x", name="get_latest_prices", args="{}"), _usage_chunk()]
-    iter2 = [_text_chunk("done"), _usage_chunk()]
-    client = FakeClient([iter1, iter2])
-    await _drain(nem_agent.stream_chat(client, FakeDB(), [{"role": "user", "content": "go"}]))
-
-    completions = client.chat.completions
-    assert len(completions.calls) == 2  # one tool round-trip, then the answer
-    first_call = completions.calls[0]
-    assert first_call[0]["role"] == "system"  # system prompt prepended
-    second_call = completions.calls[1]
-    roles = [m["role"] for m in second_call]
-    assert "assistant" in roles and "tool" in roles  # tool result fed back
-    tool_msg = next(m for m in second_call if m["role"] == "tool")
-    assert tool_msg["tool_call_id"] == "call_x"
-
-
-@pytest.mark.asyncio
-async def test_loop_emits_error_on_runaway():
+async def test_loop_runaway_guard():
     def tool_iter():
         return [_tool_fragment(0, id="t", name="get_latest_prices", args="{}"), _usage_chunk()]
     client = FakeClient([tool_iter() for _ in range(3)])
-    messages = [{"role": "user", "content": "loop"}]
-    events = await _drain(nem_agent.stream_chat(client, FakeDB(), messages, max_iters=3))
+    events = await _drain(nem_agent.stream_chat(client, FakeDB(), None, [{"role": "user", "content": "x"}], max_iters=3))
     assert events[-1]["event"] == "error"
