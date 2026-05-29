@@ -43,6 +43,9 @@ from .forecaster import (
 )
 from .optimiser import DispatchInputs, optimise_dispatch
 from .bid_bands import compute_bid_curves, DEFAULT_PRICE_GRID, derived_grid
+from . import agent as nem_agent
+from pydantic import BaseModel
+from typing import List, Dict, Any
 
 # Configure logging
 logging.basicConfig(
@@ -56,6 +59,25 @@ db: NEMDatabase = None
 data_ingester: DataIngester = None
 background_task: Optional[asyncio.Task] = None
 _forecaster: Optional[PriceForecaster] = None
+_openai_client = None
+
+
+def _get_openai_client():
+    """Lazily build the async OpenAI client (so the app boots without a key)."""
+    global _openai_client
+    if _openai_client is None:
+        from openai import AsyncOpenAI
+        # Reads OPENAI_API_KEY (and optional OPENAI_BASE_URL) from the env.
+        kwargs = {}
+        base_url = os.getenv("OPENAI_BASE_URL")
+        if base_url:
+            kwargs["base_url"] = base_url
+        _openai_client = AsyncOpenAI(**kwargs)
+    return _openai_client
+
+
+class ChatRequest(BaseModel):
+    messages: List[Dict[str, Any]]  # [{role: "user"|"assistant", content: ...}]
 
 
 def _get_forecaster() -> Optional[PriceForecaster]:
@@ -1349,6 +1371,36 @@ async def bid_bands_endpoint(
     except Exception as e:
         logger.error(f"Error computing bid bands for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    """Conversational NEM analyst — streams SSE (text + tool-call status).
+
+    Body: {"messages": [{"role": "user", "content": "what are prices now?"}, ...]}.
+    The agent calls read-only data tools and never reports a figure from memory.
+    """
+    if not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="Chat is not configured: set OPENAI_API_KEY on the backend.",
+        )
+    if not req.messages:
+        raise HTTPException(status_code=400, detail="messages must be non-empty.")
+
+    client = _get_openai_client()
+    # Copy so the agent's in-place mutation doesn't leak across requests.
+    messages = [dict(m) for m in req.messages]
+
+    async def event_source():
+        async for ev in nem_agent.stream_chat(client, db, messages):
+            yield f"event: {ev['event']}\ndata: {ev['data']}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # CSV Export endpoints

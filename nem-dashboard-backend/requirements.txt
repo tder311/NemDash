@@ -16,3 +16,6 @@ holidays>=0.40
 
 # Dispatch optimiser (single-asset BESS arbitrage LP; PuLP ships CBC)
 pulp>=2.7
+
+# Conversational agent (OpenAI SDK, streaming tool use)
+openai>=1.40
