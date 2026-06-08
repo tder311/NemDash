@@ -54,7 +54,7 @@ run-frontend: ## Start the frontend development server (blocking)
 	@echo "Starting frontend server..."
 	cd $(FRONTEND_DIR) && $(NPM) start
 
-dev: ## Start both servers in separate macOS Terminal windows
+dev: ## Start both servers in the current terminal (combined logs; Ctrl+C stops both)
 	@./scripts/dev.sh
 
 ##@ Verification

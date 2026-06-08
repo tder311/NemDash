@@ -1,6 +1,7 @@
 #!/bin/bash
 # NEM Dashboard Development Launcher
-# Opens backend and frontend in separate macOS Terminal windows
+# Runs the backend and frontend together in the current terminal (cmux-friendly):
+# combined, prefixed logs in one pane; Ctrl+C stops both.
 
 # Get the project root directory (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,15 +15,6 @@ echo "NEM Dashboard Development Environment"
 echo "======================================"
 echo "Project root: $PROJECT_ROOT"
 echo ""
-
-# Check if we're on macOS
-if [[ "$OSTYPE" != "darwin"* ]]; then
-    echo "Error: This script is designed for macOS."
-    echo "On other platforms, run these commands in separate terminals:"
-    echo "  Terminal 1: cd $BACKEND_DIR && python3 run.py"
-    echo "  Terminal 2: cd $FRONTEND_DIR && npm start"
-    exit 1
-fi
 
 # Function to kill process on a port
 kill_port() {
@@ -87,53 +79,36 @@ else
 fi
 echo ""
 
-# Create temporary launcher scripts
-BACKEND_LAUNCHER=$(mktemp /tmp/nem-backend.XXXXXX.sh)
-FRONTEND_LAUNCHER=$(mktemp /tmp/nem-frontend.XXXXXX.sh)
+# Run both servers in THIS terminal with combined, prefixed logs.
+# Ctrl+C (or any exit) stops both via the process-group kill in the trap.
+cleanup() {
+    trap - INT TERM EXIT
+    echo ""
+    echo "Stopping servers..."
+    kill 0 2>/dev/null   # signal the whole process group (covers npm/uvicorn children)
+    kill_port 8000       # backstop: free the ports regardless of process-tree state
+    kill_port 3000
+}
+trap cleanup INT TERM EXIT
 
-# Make them executable
-chmod +x "$BACKEND_LAUNCHER" "$FRONTEND_LAUNCHER"
-
-# Write backend launcher
-cat > "$BACKEND_LAUNCHER" << EOF
-#!/bin/bash
-echo "NEM Dashboard Backend"
-echo "==================="
-echo ""
-cd "$BACKEND_DIR"
-python3 run.py
-# Keep window open on error
-read -p "Press Enter to close..."
-EOF
-
-# Write frontend launcher
-cat > "$FRONTEND_LAUNCHER" << EOF
-#!/bin/bash
-echo "NEM Dashboard Frontend"
-echo "====================="
-echo ""
-cd "$FRONTEND_DIR"
-npm start
-# Keep window open on error
-read -p "Press Enter to close..."
-EOF
-
-echo "Starting backend server in new Terminal window..."
-open -a Terminal "$BACKEND_LAUNCHER"
-
-# Give backend a moment to start initializing
-sleep 2
-
-echo "Starting frontend server in new Terminal window..."
-open -a Terminal "$FRONTEND_LAUNCHER"
-
-echo ""
-echo "Development servers starting..."
+echo "Starting backend + frontend in this terminal (Ctrl+C stops both)..."
 echo "  Backend:  http://localhost:8000 (health check: /health)"
 echo "  Frontend: http://localhost:3000"
 echo ""
-echo "To stop: Close the Terminal windows or use Ctrl+C in each"
-echo ""
 
-# Clean up temp files after a delay (windows have already started)
-(sleep 5 && rm -f "$BACKEND_LAUNCHER" "$FRONTEND_LAUNCHER") &
+# Portable line prefixer (BSD sed has no -u; this works on macOS and Linux).
+# Pipeline subshells inherit shell functions, so it's usable on both sides.
+prefix() { while IFS= read -r line; do printf '%s%s\n' "$1" "$line"; done; }
+
+# Backend (uvicorn via run.py). 'exec' so the subshell becomes the server
+# process, keeping the tree tidy for the process-group kill.
+( cd "$BACKEND_DIR" && exec python3 run.py ) 2>&1 | prefix "[backend]  " &
+
+# Give the backend a moment before the frontend starts hitting it.
+sleep 2
+
+# Frontend (CRA). BROWSER=none stops it auto-opening a browser tab.
+( cd "$FRONTEND_DIR" && BROWSER=none exec npm start ) 2>&1 | prefix "[frontend] " &
+
+# Wait for either to exit; Ctrl+C triggers the trap and tears both down.
+wait
