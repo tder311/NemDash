@@ -131,6 +131,9 @@ function ForecastPage({ darkMode }) {
   // --- assemble traces + clamp/clip the y-axis around VOLL spikes ---
   const fx = forecast.map((d) => new Date(d.interval_datetime));
   const fy = forecast.map((d) => d.predicted_price);
+  const hasBand = forecast.length > 0 && forecast[0].p10 != null;
+  const fp10 = forecast.map((d) => d.p10);
+  const fp90 = forecast.map((d) => d.p90);
   const px = pd.map((d) => new Date(d.interval_datetime));
   const pyTrue = pd.map((d) => d.rrp);
 
@@ -142,6 +145,32 @@ function ForecastPage({ darkMode }) {
   const clamp = (v) => Math.max(yMin, Math.min(cap, v));
 
   const plotData = [
+    ...(hasBand
+      ? [
+          {
+            x: fx,
+            y: fp90.map(clamp),
+            type: 'scatter',
+            mode: 'lines',
+            line: { width: 0, shape: 'hv' },
+            hoverinfo: 'skip',
+            showlegend: false,
+            name: 'P90',
+          },
+          {
+            x: fx,
+            y: fp10.map(clamp),
+            type: 'scatter',
+            mode: 'lines',
+            line: { width: 0, shape: 'hv' },
+            fill: 'tonexty',
+            fillcolor: darkMode ? 'rgba(136,132,216,0.18)' : 'rgba(99,110,250,0.15)',
+            hoverinfo: 'skip',
+            showlegend: true,
+            name: 'P10–P90 range',
+          },
+        ]
+      : []),
     {
       x: fx,
       y: fy.map(clamp),
