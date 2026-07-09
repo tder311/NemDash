@@ -173,12 +173,17 @@ def _pasa_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _longest_true_run(above: pd.Series) -> float:
-    """Length (in intervals) of the longest contiguous True run."""
-    if not above.any():
-        return 0.0
-    blocks = (~above).cumsum()[above]
-    return float(blocks.value_counts().max())
+def _vectorised_longest_run(above: pd.Series, group_id: pd.Series) -> pd.Series:
+    """Per-row longest contiguous True run (in intervals) within its group.
+
+    Block-id trick: a new block starts wherever ``above`` or ``group_id``
+    changes vs. the previous row; block sizes then give run lengths per row.
+    """
+    change = above.ne(above.shift()) | group_id.ne(group_id.shift())
+    block_id = change.cumsum()
+    block_len = block_id.groupby(block_id).transform("size")
+    len_if_above = block_len.where(above, 0)
+    return len_if_above.groupby(group_id).transform("max")
 
 
 def predispatch_window_features(pd_frame: pd.DataFrame) -> pd.DataFrame:
@@ -186,6 +191,8 @@ def predispatch_window_features(pd_frame: pd.DataFrame) -> pd.DataFrame:
 
     Grouping by run keeps different forecast runs from bleeding into each other;
     the calendar-day window captures "how much of that day does this run think is tight".
+    All aggregates are computed via vectorised groupby ops (no per-group Python
+    callbacks) so this scales to large stored PD histories.
     """
     df = pd_frame.copy()
     df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
@@ -193,17 +200,27 @@ def predispatch_window_features(pd_frame: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["run_datetime", "regionid", "interval_datetime"]).reset_index(drop=True)
     df["pd_rrp"] = df["rrp"].astype("float32")
 
-    keys = [df["run_datetime"], df["regionid"], df["interval_datetime"].dt.date]
-    grouped = df.groupby(keys)["rrp"]
+    group_id = df.groupby(
+        [df["run_datetime"], df["regionid"], df["interval_datetime"].dt.date]
+    ).ngroup()
+
+    indicators = pd.DataFrame({
+        "pd_hours_above_300": (df["rrp"] > 300).astype("float32"),
+        "pd_hours_above_1000": (df["rrp"] > 1000).astype("float32"),
+        "pd_hours_above_5000": (df["rrp"] > 5000).astype("float32"),
+        "pd_exceedance_sum": (df["rrp"] - SPIKE_THRESHOLD_LOW).clip(lower=0),
+    })
+    sums = indicators.groupby(group_id).transform("sum")
     for threshold in (300, 1000, 5000):
-        counts = grouped.transform(lambda s, t=threshold: (s > t).sum())
-        df[f"pd_hours_above_{threshold}"] = counts * HOURS_PER_INTERVAL
+        col = f"pd_hours_above_{threshold}"
+        df[col] = sums[col] * HOURS_PER_INTERVAL
+    df["pd_exceedance_sum"] = sums["pd_exceedance_sum"]
+
+    above = df["rrp"] > SPIKE_THRESHOLD_LOW
     df["pd_longest_run_above_300"] = (
-        grouped.transform(lambda s: _longest_true_run(s > SPIKE_THRESHOLD_LOW)) * HOURS_PER_INTERVAL
+        _vectorised_longest_run(above, group_id) * HOURS_PER_INTERVAL
     )
-    df["pd_exceedance_sum"] = grouped.transform(
-        lambda s: (s - SPIKE_THRESHOLD_LOW).clip(lower=0).sum()
-    )
+
     df[PD_FEATURES] = df[PD_FEATURES].astype("float32")
     return df
 
@@ -342,6 +359,16 @@ LEAD_BUCKETS: List[Tuple[float, float]] = [
     (96.0, 36.0),
     (168.0, 36.0),
 ]
+
+
+def lead_envelope_hours(buckets: List[Tuple[float, float]] = LEAD_BUCKETS) -> Tuple[float, float]:
+    """Union envelope (min, max lead hours) any bucket in ``buckets`` could select from.
+
+    Used to SQL-prefilter stored PD history to only rows a lead bucket could ever pick.
+    """
+    lows = [target - tolerance for target, tolerance in buckets]
+    highs = [target + tolerance for target, tolerance in buckets]
+    return min(lows), max(highs)
 
 
 def select_runs_at_leads(
@@ -641,13 +668,28 @@ async def _fetch_pasa_history(db, table: str, start: datetime, end: datetime) ->
 
 
 async def _fetch_predispatch_history(db, start: datetime, end: datetime) -> pd.DataFrame:
-    """Pull stored PD7Day price rows (all runs) for a date window."""
-    sql = (
-        "SELECT run_datetime, interval_datetime, regionid, rrp FROM predispatch_price "
-        "WHERE interval_datetime >= $1 AND interval_datetime <= $2"
-    )
+    """Pull stored PD7Day price rows for runs that can win a LEAD_BUCKETS band.
+
+    Two-stage: first qualify run_datetimes whose lead envelope overlaps
+    [start, end], then fetch those runs' full row sets (unbounded by
+    [start, end]) so a boundary-day run's window isn't truncated.
+    """
+    low, high = lead_envelope_hours(LEAD_BUCKETS)
     async with db._pool.acquire() as conn:
-        rows = await conn.fetch(sql, start, end)
+        run_rows = await conn.fetch(
+            "SELECT DISTINCT run_datetime FROM predispatch_price "
+            "WHERE interval_datetime >= $1 AND interval_datetime <= $2 "
+            "AND interval_datetime - run_datetime BETWEEN $3::interval AND $4::interval",
+            start, end, timedelta(hours=low), timedelta(hours=high),
+        )
+        run_datetimes = [r["run_datetime"] for r in run_rows]
+        if not run_datetimes:
+            return pd.DataFrame()  # skip the second query; no runs qualified
+        rows = await conn.fetch(
+            "SELECT run_datetime, interval_datetime, regionid, rrp FROM predispatch_price "
+            "WHERE run_datetime = ANY($1::timestamp[])",
+            run_datetimes,
+        )
     return pd.DataFrame([dict(r) for r in rows])
 
 

@@ -22,6 +22,7 @@ from app.forecaster import (
     assemble_features,
     build_calendar_features,
     dedup_pasa_runs,
+    lead_envelope_hours,
     merge_price_pasa,
     pinball_loss,
     predict_intervals,
@@ -428,6 +429,12 @@ def test_select_runs_at_leads_causal():
     out = select_runs_at_leads(_runs_frame())
     assert (out["lead_hours"] >= 0).all()
     assert "lead_dist" not in out.columns
+
+
+def test_lead_envelope_hours_is_union_of_bucket_bands():
+    # min(target - tolerance) .. max(target + tolerance) across all buckets.
+    low, high = lead_envelope_hours([(12.0, 6.0), (24.0, 12.0), (168.0, 36.0)])
+    assert low == 6.0 and high == 204.0
 
 
 def test_to_30min_price_is_period_ending_block_mean():
