@@ -137,7 +137,9 @@ function ForecastPage({ darkMode }) {
   const px = pd.map((d) => new Date(d.interval_datetime));
   const pyTrue = pd.map((d) => d.rrp);
 
-  const allVals = [...fy, ...pyTrue];
+  const allVals = hasBand
+    ? [...fy, ...pyTrue, ...fp10.filter((v) => v != null), ...fp90.filter((v) => v != null)]
+    : [...fy, ...pyTrue];
   const cap = allVals.length
     ? Math.min(CAP_MAX, Math.max(CAP_MIN, quantile(allVals, 0.98) * 1.15))
     : CAP_MIN;
