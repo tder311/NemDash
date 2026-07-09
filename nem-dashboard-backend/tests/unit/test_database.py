@@ -42,6 +42,21 @@ class TestFilterBindingConstraints:
         out = filter_binding_constraints(df)
         assert out.empty
 
+    def test_nan_in_both_columns_is_dropped(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': float('nan'), 'violationdegree': float('nan')},
+        ])
+        out = filter_binding_constraints(df)
+        assert out.empty
+
+    def test_nan_marginalvalue_with_nonzero_violationdegree_is_kept(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': float('nan'), 'violationdegree': 5.0},
+            {'constraintid': 'B', 'marginalvalue': float('nan'), 'violationdegree': 0.0},
+        ])
+        out = filter_binding_constraints(df)
+        assert list(out['constraintid']) == ['A']
+
 
 class TestNEMDatabaseInit:
     """Tests for NEMDatabase initialization"""

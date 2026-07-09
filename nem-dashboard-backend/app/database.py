@@ -67,10 +67,13 @@ def filter_binding_constraints(df: pd.DataFrame) -> pd.DataFrame:
     """Keep only binding-or-violated constraint rows (marginalvalue != 0 or violationdegree != 0).
 
     Non-binding rows carry no signal and would be ~50x the volume of the binding-only set.
+    NaN values (blank source fields) are treated as 0, i.e. non-binding.
     """
     if df.empty:
         return df
-    return df[(df["marginalvalue"] != 0) | (df["violationdegree"] != 0)]
+    marginal = df["marginalvalue"].fillna(0)
+    violation = df["violationdegree"].fillna(0)
+    return df[(marginal != 0) | (violation != 0)]
 
 
 @dataclass
