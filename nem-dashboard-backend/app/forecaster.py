@@ -278,6 +278,24 @@ def to_regionid(region: pd.Series) -> pd.Series:
     return s.where(s.str.endswith("1"), s + "1")
 
 
+def _causal_band_select(
+    df: pd.DataFrame,
+    target_lead_hours: float,
+    tolerance_hours: float,
+    prefer_longer: bool,
+) -> pd.DataFrame:
+    """Keep causal, in-band runs and the one closest to the target lead per (interval, region).
+
+    ``df`` must already carry a numeric ``lead_hours`` column. Ties are broken
+    by the longer lead if ``prefer_longer`` else the shorter lead. Adds a
+    ``lead_dist`` column callers can use or drop.
+    """
+    band = df[(df["lead_hours"] >= 0) & ((df["lead_hours"] - target_lead_hours).abs() <= tolerance_hours)].copy()
+    band["lead_dist"] = (band["lead_hours"] - target_lead_hours).abs()
+    band = band.sort_values(["lead_dist", "lead_hours"], ascending=[True, not prefer_longer])
+    return band.drop_duplicates(subset=["interval_datetime", "regionid"], keep="first")
+
+
 def select_runs_at_lead(
     pasa: pd.DataFrame,
     target_lead_hours: float = 24.0,
@@ -299,10 +317,7 @@ def select_runs_at_lead(
     df["run_datetime"] = pd.to_datetime(df["run_datetime"])
     df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
     df["lead_hours"] = (df["interval_datetime"] - df["run_datetime"]).dt.total_seconds() / 3600
-    df = df[(df["lead_hours"] >= 0) & ((df["lead_hours"] - target_lead_hours).abs() <= tolerance_hours)]
-    df["lead_dist"] = (df["lead_hours"] - target_lead_hours).abs()
-    df = df.sort_values(["lead_dist", "lead_hours"], ascending=[True, False])
-    df = df.drop_duplicates(subset=["interval_datetime", "regionid"], keep="first")
+    df = _causal_band_select(df, target_lead_hours, tolerance_hours, prefer_longer=True)
 
     return df.reset_index(drop=True)
 
@@ -328,22 +343,18 @@ def select_runs_at_leads(
     trust far-lead inputs, e.g. phantom VOLL a week out vs. real tightness at 12h.
 
     Ties within a bucket favour the shorter lead (unlike ``select_runs_at_lead``'s
-    longer-lead tie-break) so that overlapping bucket bands don't both starve for the
-    same run; a run selected by more than one bucket is then kept only by its nearest.
+    longer-lead tie-break); this only resolves exact ties, not general bucket contention.
     """
+    df = pasa.copy()
+    df["run_datetime"] = pd.to_datetime(df["run_datetime"])
+    df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
+    df["lead_hours"] = (df["interval_datetime"] - df["run_datetime"]).dt.total_seconds() / 3600
+
     frames = []
     for target, tolerance in buckets:
-        df = pasa.copy()
-        df["run_datetime"] = pd.to_datetime(df["run_datetime"])
-        df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
-        df["lead_hours"] = (df["interval_datetime"] - df["run_datetime"]).dt.total_seconds() / 3600
-        df = df[(df["lead_hours"] >= 0) & ((df["lead_hours"] - target).abs() <= tolerance)]
-        df["lead_dist"] = (df["lead_hours"] - target).abs()
-        df = df.sort_values(["lead_dist", "lead_hours"]).drop_duplicates(
-            subset=["interval_datetime", "regionid"], keep="first"
-        )
-        df["lead_bucket"] = target
-        frames.append(df)
+        bucket_df = _causal_band_select(df, target, tolerance, prefer_longer=False)
+        bucket_df["lead_bucket"] = target
+        frames.append(bucket_df)
 
     out = pd.concat(frames, ignore_index=True)
     # A run selected by several buckets keeps only its nearest bucket.
