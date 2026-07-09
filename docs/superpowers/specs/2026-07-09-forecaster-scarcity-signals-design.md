@@ -50,8 +50,8 @@ Fix: **lead time becomes a feature and training spans leads.**
   (generalising `select_runs_at_lead` to multiple targets), for both PASA and PD.
 - New feature `lead_hours` (actual run→interval gap). The model learns
   lead-conditional trust: hours-above-VOLL at 12h lead is an alarm, at 144h lead noise.
-- At inference each forward interval's lead is `interval − now`, so train and serve
-  align exactly.
+- At inference each forward interval's lead is `interval − run_datetime` (the serving
+  run's actual age, matching training), so stale runs get far-lead trust, not fresh-lead trust.
 - Row count ~5× (~440k rows/yr, 5 regions) — trivial for `tree_method=hist`.
 
 ## 3. Quantile heads (P10/P90)
