@@ -386,16 +386,23 @@ class DataIngester:
             return False
 
     async def ingest_predispatch_data(self) -> bool:
-        """Fetch the latest pre-dispatch price run and store new RRP forecasts."""
+        """Fetch the latest pre-dispatch run and store RRP, interconnector, and constraint forecasts."""
         try:
-            df = await self.predispatch_client.get_latest_predispatch()
-            if df is None or df.empty:
+            result = await self.predispatch_client.get_latest_predispatch_all()
+            if result is None or result["prices"] is None or result["prices"].empty:
                 return False
+            df = result["prices"]
             current_run = df['run_datetime'].max()
             if self.last_predispatch_run is None or current_run > self.last_predispatch_run:
                 inserted = await self.db.insert_predispatch_price(df)
+                ic_df, con_df = result["interconnector"], result["constraint"]
+                ic_inserted = await self.db.insert_predispatch_interconnector(ic_df) if ic_df is not None else 0
+                con_inserted = await self.db.insert_predispatch_constraint(con_df) if con_df is not None else 0
                 self.last_predispatch_run = current_run
-                logger.info(f"Ingested {inserted} pre-dispatch price records, run: {current_run}")
+                logger.info(
+                    f"Ingested {inserted} price, {ic_inserted} interconnector, "
+                    f"{con_inserted} constraint rows, run: {current_run}"
+                )
             else:
                 logger.debug(f"Pre-dispatch already ingested for run: {current_run}")
             return True

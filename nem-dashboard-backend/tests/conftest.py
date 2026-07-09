@@ -77,7 +77,7 @@ async def test_db():
 
     # Clean all tables before each test to ensure isolation
     async with db._pool.acquire() as conn:
-        await conn.execute("TRUNCATE dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, price_setter_data, bid_day_offer, bid_per_offer RESTART IDENTITY CASCADE")
+        await conn.execute("TRUNCATE dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, price_setter_data, bid_day_offer, bid_per_offer, predispatch_price, predispatch_interconnector, predispatch_constraint RESTART IDENTITY CASCADE")
 
     yield db
     await db.close()

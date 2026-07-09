@@ -8,7 +8,54 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
-from app.database import NEMDatabase
+from app.database import NEMDatabase, filter_binding_constraints
+
+
+class TestFilterBindingConstraints:
+    """Tests for the pure filter_binding_constraints helper (no DB required)."""
+
+    def test_keeps_nonzero_marginalvalue(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': 15.0, 'violationdegree': 0.0},
+            {'constraintid': 'B', 'marginalvalue': 0.0, 'violationdegree': 0.0},
+        ])
+        out = filter_binding_constraints(df)
+        assert list(out['constraintid']) == ['A']
+
+    def test_keeps_nonzero_violationdegree(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': 0.0, 'violationdegree': 5.0},
+            {'constraintid': 'B', 'marginalvalue': 0.0, 'violationdegree': 0.0},
+        ])
+        out = filter_binding_constraints(df)
+        assert list(out['constraintid']) == ['A']
+
+    def test_drops_all_zero_rows(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': 0.0, 'violationdegree': 0.0},
+        ])
+        out = filter_binding_constraints(df)
+        assert out.empty
+
+    def test_empty_dataframe_returns_empty(self):
+        df = pd.DataFrame(columns=['constraintid', 'marginalvalue', 'violationdegree'])
+        out = filter_binding_constraints(df)
+        assert out.empty
+
+    def test_nan_in_both_columns_is_dropped(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': float('nan'), 'violationdegree': float('nan')},
+        ])
+        out = filter_binding_constraints(df)
+        assert out.empty
+
+    def test_nan_marginalvalue_with_nonzero_violationdegree_is_kept(self):
+        df = pd.DataFrame([
+            {'constraintid': 'A', 'marginalvalue': float('nan'), 'violationdegree': 5.0},
+            {'constraintid': 'B', 'marginalvalue': float('nan'), 'violationdegree': 0.0},
+        ])
+        out = filter_binding_constraints(df)
+        assert list(out['constraintid']) == ['A']
 
 
 class TestNEMDatabaseInit:
@@ -54,8 +101,10 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables (9: dispatch_data, price_data, generator_info, pdpasa_data, stpasa_data, daily_metrics, price_setter_data, bid_day_offer, bid_per_offer)
-        assert count == 9
+        # Should still have same number of application tables (13: dispatch_data, price_data, generator_info,
+        # pdpasa_data, stpasa_data, predispatch_price, predispatch_interconnector, predispatch_constraint,
+        # forecast_history, daily_metrics, price_setter_data, bid_day_offer, bid_per_offer)
+        assert count == 13
 
 
 class TestDispatchDataInsert:
@@ -692,6 +741,121 @@ class TestPDPASADataInsert:
         assert len(result) == 1
         assert result[0]['demand50'] == 8000.0
         assert result[0]['lorcondition'] == 1
+
+
+class TestPredispatchInterconnectorInsert:
+    """Tests for insert_predispatch_interconnector method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_interconnector(self, test_db):
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 6, 22, 0, 30),
+            'interval_datetime': datetime(2025, 6, 22, 1, 0),
+            'interconnectorid': 'NSW1-QLD1',
+            'mwflow': -100.0,
+            'exportlimit': 300.0,
+            'importlimit': -500.0,
+            'marginalvalue': 12.5,
+        }])
+        count = await test_db.insert_predispatch_interconnector(df)
+        assert count == 1
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_interconnector_empty_df(self, test_db):
+        count = await test_db.insert_predispatch_interconnector(pd.DataFrame())
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_interconnector_upsert(self, test_db):
+        df1 = pd.DataFrame([{
+            'run_datetime': datetime(2025, 6, 22, 0, 30),
+            'interval_datetime': datetime(2025, 6, 22, 1, 0),
+            'interconnectorid': 'NSW1-QLD1',
+            'mwflow': -100.0,
+            'exportlimit': 300.0,
+            'importlimit': -500.0,
+            'marginalvalue': 12.5,
+        }])
+        await test_db.insert_predispatch_interconnector(df1)
+
+        df2 = df1.copy()
+        df2['mwflow'] = -150.0
+        await test_db.insert_predispatch_interconnector(df2)
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM predispatch_interconnector")
+        assert len(rows) == 1
+        assert rows[0]['mwflow'] == pytest.approx(-150.0)
+
+
+class TestPredispatchConstraintInsert:
+    """Tests for insert_predispatch_constraint method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_constraint_keeps_binding_only(self, test_db):
+        df = pd.DataFrame([
+            {
+                'run_datetime': datetime(2025, 6, 22, 0, 30),
+                'interval_datetime': datetime(2025, 6, 22, 1, 0),
+                'constraintid': 'BINDING_CON',
+                'rhs': 100.0,
+                'marginalvalue': 25.0,
+                'violationdegree': 0.0,
+            },
+            {
+                'run_datetime': datetime(2025, 6, 22, 0, 30),
+                'interval_datetime': datetime(2025, 6, 22, 1, 0),
+                'constraintid': 'SLACK_CON',
+                'rhs': 100.0,
+                'marginalvalue': 0.0,
+                'violationdegree': 0.0,
+            },
+        ])
+        count = await test_db.insert_predispatch_constraint(df)
+        assert count == 1
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT constraintid FROM predispatch_constraint")
+        assert [r['constraintid'] for r in rows] == ['BINDING_CON']
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_constraint_empty_df(self, test_db):
+        count = await test_db.insert_predispatch_constraint(pd.DataFrame())
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_constraint_all_slack_returns_zero(self, test_db):
+        df = pd.DataFrame([{
+            'run_datetime': datetime(2025, 6, 22, 0, 30),
+            'interval_datetime': datetime(2025, 6, 22, 1, 0),
+            'constraintid': 'SLACK_CON',
+            'rhs': 100.0,
+            'marginalvalue': 0.0,
+            'violationdegree': 0.0,
+        }])
+        count = await test_db.insert_predispatch_constraint(df)
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_predispatch_constraint_upsert(self, test_db):
+        df1 = pd.DataFrame([{
+            'run_datetime': datetime(2025, 6, 22, 0, 30),
+            'interval_datetime': datetime(2025, 6, 22, 1, 0),
+            'constraintid': 'BINDING_CON',
+            'rhs': 100.0,
+            'marginalvalue': 25.0,
+            'violationdegree': 0.0,
+        }])
+        await test_db.insert_predispatch_constraint(df1)
+
+        df2 = df1.copy()
+        df2['marginalvalue'] = 40.0
+        await test_db.insert_predispatch_constraint(df2)
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM predispatch_constraint")
+        assert len(rows) == 1
+        assert rows[0]['marginalvalue'] == pytest.approx(40.0)
 
 
 class TestSTPASADataInsert:
