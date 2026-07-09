@@ -10,6 +10,7 @@ import pytest
 
 from app.forecaster import (
     HORIZON_INTERVALS,
+    PD_FEATURES,
     combine_forward_pasa,
     PASA_FEATURES,
     REGIONS,
@@ -20,6 +21,7 @@ from app.forecaster import (
     build_calendar_features,
     dedup_pasa_runs,
     merge_price_pasa,
+    predispatch_window_features,
     select_runs_at_lead,
     to_30min_price,
     walk_forward_validate,
@@ -333,3 +335,56 @@ def test_combine_forward_pasa_caps_horizon_and_sets_region():
 def test_combine_forward_pasa_empty_inputs():
     now = pd.Timestamp("2025-01-15 12:00")
     assert combine_forward_pasa(pd.DataFrame(), pd.DataFrame(), now).empty
+
+
+def _pd_frame(rrps, region="VIC1", run="2026-07-07 12:00:00", start="2026-07-08 00:30:00"):
+    """One PD run: consecutive 30-min intervals with the given rrps."""
+    intervals = pd.date_range(start, periods=len(rrps), freq="30min")
+    return pd.DataFrame({
+        "run_datetime": pd.Timestamp(run),
+        "interval_datetime": intervals,
+        "regionid": region,
+        "rrp": rrps,
+    })
+
+
+def test_pd_window_sustained_block_outscores_isolated_spike():
+    # Same max price: one lone $17,000 interval vs a 6-hour block at $17,000.
+    lone = _pd_frame([100.0] * 20 + [17000.0] + [100.0] * 20)
+    block = _pd_frame([100.0] * 20 + [17000.0] * 12 + [100.0] * 9)
+    f_lone = predispatch_window_features(lone)
+    f_block = predispatch_window_features(block)
+    assert f_block["pd_hours_above_5000"].iloc[0] == 6.0
+    assert f_lone["pd_hours_above_5000"].iloc[0] == 0.5
+    assert f_block["pd_longest_run_above_300"].iloc[0] == 6.0
+    assert f_lone["pd_longest_run_above_300"].iloc[0] == 0.5
+    assert f_block["pd_exceedance_sum"].iloc[0] > f_lone["pd_exceedance_sum"].iloc[0]
+
+
+def test_pd_window_thresholds_and_pointwise():
+    f = predispatch_window_features(_pd_frame([100.0, 400.0, 1500.0, 6000.0]))
+    row = f.iloc[0]
+    assert row["pd_rrp"] == 100.0
+    assert row["pd_hours_above_300"] == 1.5   # 400, 1500, 6000
+    assert row["pd_hours_above_1000"] == 1.0  # 1500, 6000
+    assert row["pd_hours_above_5000"] == 0.5  # 6000
+    # window features are shared across the day; pointwise differs per row
+    assert f["pd_hours_above_300"].nunique() == 1
+    assert f["pd_rrp"].tolist() == [100.0, 400.0, 1500.0, 6000.0]
+
+
+def test_pd_window_groups_by_run_region_and_day():
+    # Two runs for the same day must not bleed into each other.
+    a = _pd_frame([17000.0] * 4, run="2026-07-07 12:00:00")
+    b = _pd_frame([100.0] * 4, run="2026-07-08 06:00:00")
+    f = predispatch_window_features(pd.concat([a, b], ignore_index=True))
+    by_run = f.groupby("run_datetime")["pd_hours_above_5000"].max()
+    assert by_run[pd.Timestamp("2026-07-07 12:00:00")] == 2.0
+    assert by_run[pd.Timestamp("2026-07-08 06:00:00")] == 0.0
+
+
+def test_pd_window_longest_run_broken_by_dip():
+    # 3 above, 1 below, 2 above -> longest contiguous run is 3 intervals = 1.5h.
+    f = predispatch_window_features(_pd_frame([500.0, 500.0, 500.0, 100.0, 500.0, 500.0]))
+    assert f["pd_longest_run_above_300"].iloc[0] == 1.5
+    assert set(PD_FEATURES) <= set(f.columns)

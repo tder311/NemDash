@@ -63,6 +63,20 @@ PASA_FEATURES: List[str] = [
     "surplusreserve",
 ]
 
+# Predispatch (PD7Day) price features. Pointwise PD is unreliable; sustained
+# high-price windows are the real spike signal, so most features are day-window aggregates.
+SPIKE_THRESHOLD_LOW: float = 300.0
+PD_FEATURES: List[str] = [
+    "pd_rrp",
+    "pd_hours_above_300",
+    "pd_hours_above_1000",
+    "pd_hours_above_5000",
+    "pd_longest_run_above_300",
+    "pd_exceedance_sum",
+]
+
+HOURS_PER_INTERVAL: float = SETTLEMENT_MINUTES / 60.0
+
 # NEM market time is AEST (UTC+10, no DST) year-round; Brisbane matches exactly.
 NEM_TZ = ZoneInfo("Australia/Brisbane")
 
@@ -151,6 +165,41 @@ def _pasa_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     out["capacity_margin"] = df["aggregatecapacityavailable"] - df["demand50"]
     out["utilisation"] = df["demand50"] / df["aggregatecapacityavailable"].replace(0, np.nan)
     return out
+
+
+def _longest_true_run(above: pd.Series) -> float:
+    """Length (in intervals) of the longest contiguous True run."""
+    if not above.any():
+        return 0.0
+    blocks = (~above).cumsum()[above]
+    return float(blocks.value_counts().max())
+
+
+def predispatch_window_features(pd_frame: pd.DataFrame) -> pd.DataFrame:
+    """Add PD scarcity features, aggregated within (run, region, calendar day).
+
+    Grouping by run keeps different forecast runs from bleeding into each other;
+    the calendar-day window captures "how much of that day does this run think is tight".
+    """
+    df = pd_frame.copy()
+    df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
+    df["run_datetime"] = pd.to_datetime(df["run_datetime"])
+    df = df.sort_values(["run_datetime", "regionid", "interval_datetime"]).reset_index(drop=True)
+    df["pd_rrp"] = df["rrp"].astype("float32")
+
+    keys = [df["run_datetime"], df["regionid"], df["interval_datetime"].dt.date]
+    grouped = df.groupby(keys)["rrp"]
+    for threshold in (300, 1000, 5000):
+        counts = grouped.transform(lambda s, t=threshold: (s > t).sum())
+        df[f"pd_hours_above_{threshold}"] = counts * HOURS_PER_INTERVAL
+    df["pd_longest_run_above_300"] = (
+        grouped.transform(lambda s: _longest_true_run(s > SPIKE_THRESHOLD_LOW)) * HOURS_PER_INTERVAL
+    )
+    df["pd_exceedance_sum"] = grouped.transform(
+        lambda s: (s - SPIKE_THRESHOLD_LOW).clip(lower=0).sum()
+    )
+    df[PD_FEATURES] = df[PD_FEATURES].astype("float32")
+    return df
 
 
 def assemble_features(
