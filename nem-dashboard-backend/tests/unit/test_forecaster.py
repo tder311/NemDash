@@ -507,18 +507,18 @@ def test_combine_forward_pasa_empty_inputs():
 
 
 def test_extend_forward_frame_adds_lead_and_pd():
-    now = pd.Timestamp("2026-07-08 12:00:00")
     forward = pd.DataFrame({
         "interval_datetime": pd.date_range("2026-07-08 12:30:00", periods=4, freq="30min"),
         "region": "VIC1",
+        "run_datetime": pd.Timestamp("2026-07-08 06:00:00"),  # stale run: age != now-based lead
         **{c: 1000.0 for c in PASA_FEATURES},
     })
     pd_latest = _pd_frame([100.0, 5500.0, 5500.0, 5500.0], start="2026-07-08 12:30:00",
                           run="2026-07-08 11:00:00")
-    out = _extend_forward_frame(forward, pd_latest, now)
-    assert out["lead_hours"].iloc[0] == 0.5
+    out = _extend_forward_frame(forward, pd_latest)
+    assert out["lead_hours"].iloc[0] == 6.5  # interval 12:30 - run_datetime 06:00, not now
     assert out["pd_hours_above_5000"].iloc[0] == 1.5
-    empty = _extend_forward_frame(forward.copy(), pd.DataFrame(), now)
+    empty = _extend_forward_frame(forward.copy(), pd.DataFrame())
     assert empty["pd_rrp"].isna().all()
 
 
@@ -566,6 +566,16 @@ def test_pd_window_groups_by_run_region_and_day():
     by_run = f.groupby("run_datetime")["pd_hours_above_5000"].max()
     assert by_run[pd.Timestamp("2026-07-07 12:00:00")] == 2.0
     assert by_run[pd.Timestamp("2026-07-08 06:00:00")] == 0.0
+
+
+def test_pd_window_groups_by_regionid_independently():
+    # Same run, same day, two regions: one tight, one calm; must not bleed across regions.
+    tight = _pd_frame([17000.0] * 4, region="VIC1")
+    calm = _pd_frame([100.0] * 4, region="SA1")
+    f = predispatch_window_features(pd.concat([tight, calm], ignore_index=True))
+    by_region = f.groupby("regionid")["pd_hours_above_5000"].max()
+    assert by_region["VIC1"] == 2.0
+    assert by_region["SA1"] == 0.0
 
 
 def test_pd_window_longest_run_broken_by_dip():

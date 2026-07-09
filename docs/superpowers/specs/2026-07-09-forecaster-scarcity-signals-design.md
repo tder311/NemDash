@@ -20,7 +20,8 @@ probability that at least one interval in that window binds. Features are theref
 window aggregates, not pointwise prices.
 
 New pure function `predispatch_window_features(pd_frame)` producing, per
-(interval, region), computed over the interval's **trading day** within a single run:
+(interval, region), computed over the interval's **calendar day** within a single run
+(period-ending 00:00 edge case accepted; evening spikes, the motivating case, are unaffected):
 
 | Feature | Definition |
 |---|---|
@@ -111,4 +112,5 @@ over it are a later follow-up.
 - Retrain via existing `scripts/train_forecaster.py`; PR description includes
   before/after walk-forward metrics (MAE, Spearman, spike recall, pinball).
 - Existing tests must keep passing; the saved-model format change is
-  backwards-incompatible → retrain and commit a fresh `price_forecaster.joblib`.
+  backwards-incompatible → retrain to pick up the new format locally. `models/*.joblib`
+  is gitignored and never committed; old blobs degrade gracefully (p10/p90 None, band hidden).

@@ -402,8 +402,8 @@ def to_30min_price(price: pd.DataFrame) -> pd.DataFrame:
 def merge_price_pasa(price: pd.DataFrame, pasa: pd.DataFrame) -> pd.DataFrame:
     """Inner-join realised 30-min prices to their PASA forecast features.
 
-    Carries ``lead_hours``/``lead_bucket`` through when present on ``pasa`` so
-    ``load_training_frame`` can join PD features onto the same lead bucket.
+    Requires ``lead_hours``/``lead_bucket`` on ``pasa`` (raises ``KeyError`` otherwise)
+    so ``load_training_frame`` can join PD features onto the same lead bucket.
     """
     p = price.rename(columns={"settlementdate": "interval_datetime"}).copy()
     p["interval_datetime"] = pd.to_datetime(p["interval_datetime"])
@@ -717,16 +717,16 @@ def combine_forward_pasa(
     return pasa.head(HORIZON_INTERVALS)
 
 
-def _extend_forward_frame(forward: pd.DataFrame, pd_latest: pd.DataFrame, now: datetime) -> pd.DataFrame:
-    """Add ``lead_hours`` and PD window features to a forward PASA frame.
+def _extend_forward_frame(forward: pd.DataFrame, pd_latest: pd.DataFrame) -> pd.DataFrame:
+    """Add ``lead_hours`` (data age: interval_datetime - run_datetime) and PD window features.
 
-    Pure post-processing step for ``combine_forward_pasa`` output; kept
-    separate so it can be unit-tested without a database.
+    ``pd_latest`` must be a single run for a single region (guaranteed by
+    ``get_latest_predispatch_price``).
     """
     forward = forward.copy()
     forward["interval_datetime"] = pd.to_datetime(forward["interval_datetime"])
     forward["lead_hours"] = (
-        (forward["interval_datetime"] - now).dt.total_seconds() / 3600.0
+        (forward["interval_datetime"] - pd.to_datetime(forward["run_datetime"])).dt.total_seconds() / 3600.0
     ).astype("float32")
     if pd_latest.empty:
         for col in PD_FEATURES:
@@ -756,7 +756,7 @@ async def load_forecast_inputs(db, region: str) -> pd.DataFrame:
         return forward
     pd_rows_latest = await db.get_latest_predispatch_price(region)
     pd_latest = pd.DataFrame(pd_rows_latest)
-    return _extend_forward_frame(forward, pd_latest, now)
+    return _extend_forward_frame(forward, pd_latest)
 
 
 def default_model_path() -> str:
