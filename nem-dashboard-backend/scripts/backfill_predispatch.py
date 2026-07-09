@@ -1,38 +1,34 @@
-"""Backfill ``predispatch_price`` from AEMO's MMS monthly archives.
+"""Backfill ``predispatch_price`` from NEMWEB PredispatchIS weekly archives.
 
 Run from the backend directory (``nem-dashboard-backend/``):
 
-    python -m scripts.backfill_predispatch --months 12
+    python -m scripts.backfill_predispatch            # all available weeks
+    python -m scripts.backfill_predispatch --weeks 4
     python -m scripts.backfill_predispatch --dry-run
 
-Downloads the ``PREDISPATCHPRICE`` (PREDISPATCH,REGION_PRICES) table from AEMO's
-MMSDM historical archive at
-``https://www.nemweb.com.au/Data_Archive/Wholesale_Electricity/MMSDM/{YYYY}/MMSDM_{YYYY}_{MM}/
-MMSDM_Historical_Data_SQLLoader/DATA/PUBLIC_ARCHIVE#PREDISPATCHPRICE#FILE01#{YYYYMM}010000.zip``
-(verified via directory listing; filenames use a literal ``#`` which must be
-percent-encoded as ``%23`` in the request URL).
+Index: ``https://www.nemweb.com.au/Reports/Archive/PredispatchIS_Reports/``
+holds one ~277MB zip per Sunday-Saturday week
+(``PUBLIC_PREDISPATCHIS_YYYYMMDD_YYYYMMDD.zip``). Each contains one inner zip
+per predispatch run (~336/week), ``PUBLIC_PREDISPATCHIS_YYYYMMDDHHMM_*.zip``,
+whose CSV carries the run's full multi-hour half-hourly RRP forecast in the
+``PREDISPATCH,REGION_PRICES`` table (verified against the 2025-06-22 week:
+336 members, one run = 56 intervals x 5 regions, INTERVENTION column present).
 
-IMPORTANT: this archived table only retains PERIODID=01 per run (the run's
-immediate next 30-min interval) -- not the full multi-hour PD lookahead curve.
-Verified empirically: ~240 rows/day (48 runs x 5 regions), RRP1..RRP8 always
-blank. So each row already is exactly one (run_datetime, interval_datetime)
-pair with a ~30min lead time; "thinning" below selects which runs to keep,
-not which lead times.
-
-PREDISPATCHSEQNO = YYYYMMDDPP where YYYYMMDD is the trading day (starts 04:00)
-and PP (01-48) is the run number within it. Verified against a downloaded
-sample (2026-05): run_datetime = trading_day 04:00 + (PP-1)*30min lines up
-with LASTCHANGED (within ~2min), and interval_datetime (DATETIME column) is
-always exactly run_datetime + 30min, consecutive seqnos stepping by 30min.
+run_datetime is the inner filename's YYYYMMDDHHMM token (the run's first
+forecast interval; verified ~30min after the run's actual publication time).
+Thinning selects ~4 runs/day BY FILENAME before extraction, so ~92% of members
+are never parsed. Each weekly zip is streamed to a temp file and deleted
+before the next week is fetched -- only one week is ever on disk.
 """
 
 import argparse
 import asyncio
 import io
 import os
+import re
+import tempfile
 import zipfile
 from csv import reader as csv_reader
-from datetime import date, timedelta
 from typing import List, Optional, Tuple
 
 import httpx
@@ -42,57 +38,49 @@ from dotenv import load_dotenv
 from app.database import NEMDatabase
 
 BASE_URL = "https://www.nemweb.com.au"
-ARCHIVE_DIR = "Data_Archive/Wholesale_Electricity/MMSDM"
+ARCHIVE_PATH = "Reports/Archive/PredispatchIS_Reports"
+WEEK_FILE_RE = r"PUBLIC_PREDISPATCHIS_\d{8}_\d{8}\.zip"
+MEMBER_TOKEN_RE = r"PUBLIC_PREDISPATCHIS_(\d{12})_"
 NEM_REGIONS = ("NSW1", "QLD1", "SA1", "TAS1", "VIC1")
-DEFAULT_TARGET_RUN_HOURS = (4, 10, 16, 22)
+DEFAULT_TARGET_TIMES = ("04:30", "10:30", "16:30", "22:30")
+APPROX_WEEK_MB = 277
 
 
-def archive_url(year: int, month: int) -> str:
-    """Build the MMSDM monthly PREDISPATCHPRICE archive URL."""
-    ym_dir = f"{year:04d}_{month:02d}"
-    ym_file = f"{year:04d}{month:02d}"
-    return (
-        f"{BASE_URL}/{ARCHIVE_DIR}/{year:04d}/MMSDM_{ym_dir}/MMSDM_Historical_Data_SQLLoader/DATA/"
-        f"PUBLIC_ARCHIVE%23PREDISPATCHPRICE%23FILE01%23{ym_file}010000.zip"
-    )
+def list_week_files(index_html: str) -> List[str]:
+    """Weekly archive filenames from the index page HTML, sorted (oldest first)."""
+    return sorted(set(re.findall(WEEK_FILE_RE, index_html)))
 
 
-def last_n_complete_months(n: int, today: Optional[date] = None) -> List[Tuple[int, int]]:
-    """The n calendar months before the current (incomplete) one, oldest first."""
-    today = today or date.today()
-    cur = today.replace(day=1)
-    months = []
-    for _ in range(n):
-        cur = (cur - timedelta(days=1)).replace(day=1)
-        months.append((cur.year, cur.month))
-    months.reverse()
-    return months
+def week_url(filename: str) -> str:
+    """Full download URL for one weekly archive file."""
+    return f"{BASE_URL}/{ARCHIVE_PATH}/{filename}"
 
 
-def seqno_to_run_datetime(seqno: pd.Series) -> pd.Series:
-    """PREDISPATCHSEQNO YYYYMMDDPP -> trading-day(04:00) + (PP-1)*30min = run_datetime."""
-    trading_day = pd.to_datetime(seqno.str[:8], format="%Y%m%d")
-    run_no = seqno.str[8:10].astype(int)
-    return trading_day + pd.Timedelta(hours=4) + pd.to_timedelta((run_no - 1) * 30, unit="m")
+def member_run_datetime(name: str) -> pd.Timestamp:
+    """Inner member name -> run_datetime from its YYYYMMDDHHMM token."""
+    token = re.search(MEMBER_TOKEN_RE, name).group(1)
+    return pd.Timestamp(f"{token[:8]} {token[8:10]}:{token[10:12]}")
 
 
-def select_thinned_runs(
-    run_datetime: pd.Series, target_hours: Tuple[int, ...] = DEFAULT_TARGET_RUN_HOURS
-) -> pd.Series:
-    """Mask keeping, per calendar day, the run nearest each target hour."""
-    unique_runs = pd.Series(pd.unique(run_datetime)).sort_values().reset_index(drop=True)
-    calendar_day = unique_runs.dt.normalize()
+def select_members(
+    members: List[str], target_times: Tuple[str, ...] = DEFAULT_TARGET_TIMES
+) -> List[str]:
+    """Per calendar day, the member nearest each target run time (by filename only)."""
+    df = pd.DataFrame({"name": members})
+    df["run_datetime"] = df["name"].map(member_run_datetime)
+    df = df.sort_values("run_datetime")
+    day = df["run_datetime"].dt.normalize()
     keep = set()
-    for day, group in unique_runs.groupby(calendar_day):
-        for hour in target_hours:
-            target = day + pd.Timedelta(hours=hour)
-            nearest = group.iloc[(group - target).abs().to_numpy().argmin()]
-            keep.add(nearest)
-    return run_datetime.isin(keep)
+    for time_str in target_times:
+        target = day + pd.Timedelta(f"{time_str}:00")
+        dist = (df["run_datetime"] - target).abs()
+        nearest = df.loc[dist.groupby(day.values).idxmin(), "name"]
+        keep.update(nearest)
+    return df.loc[df["name"].isin(keep), "name"].tolist()
 
 
 def parse_predispatch_csv(text: str) -> pd.DataFrame:
-    """Extract PREDISPATCH,REGION_PRICES D rows -> seqno, interval_datetime, regionid, rrp."""
+    """Extract PREDISPATCH,REGION_PRICES D rows -> interval_datetime, regionid, rrp."""
     headers: Optional[List[str]] = None
     rows: List[List[str]] = []
     for line in text.splitlines():
@@ -101,7 +89,7 @@ def parse_predispatch_csv(text: str) -> pd.DataFrame:
         elif line.startswith("D,PREDISPATCH,REGION_PRICES") and headers is not None:
             rows.append(next(csv_reader([line]))[4:])
 
-    empty = pd.DataFrame(columns=["seqno", "interval_datetime", "regionid", "rrp"])
+    empty = pd.DataFrame(columns=["interval_datetime", "regionid", "rrp"])
     if not headers or not rows:
         return empty
 
@@ -114,7 +102,6 @@ def parse_predispatch_csv(text: str) -> pd.DataFrame:
 
     out = pd.DataFrame(
         {
-            "seqno": df["PREDISPATCHSEQNO"],
             "interval_datetime": pd.to_datetime(df["DATETIME"], errors="coerce"),
             "regionid": df["REGIONID"],
             "rrp": pd.to_numeric(df["RRP"], errors="coerce"),
@@ -123,38 +110,44 @@ def parse_predispatch_csv(text: str) -> pd.DataFrame:
     return out.dropna(subset=["interval_datetime", "rrp"]).reset_index(drop=True)
 
 
-def build_month_dataframe(
-    text: str, target_hours: Tuple[int, ...] = DEFAULT_TARGET_RUN_HOURS
-) -> pd.DataFrame:
-    """Parse a month's CSV, derive run_datetime, and thin to ~4 runs/day."""
+def build_run_dataframe(text: str, run_datetime: pd.Timestamp) -> pd.DataFrame:
+    """Parse one run's CSV and attach its run_datetime."""
     columns = ["run_datetime", "interval_datetime", "regionid", "rrp"]
     parsed = parse_predispatch_csv(text)
     if parsed.empty:
         return pd.DataFrame(columns=columns)
-    parsed["run_datetime"] = seqno_to_run_datetime(parsed["seqno"])
-    mask = select_thinned_runs(parsed["run_datetime"], target_hours)
-    return parsed.loc[mask, columns].reset_index(drop=True)
+    parsed.insert(0, "run_datetime", run_datetime)
+    return parsed[columns]
 
 
-async def fetch_month_zip(client: httpx.AsyncClient, year: int, month: int) -> bytes:
-    """Download one month's PREDISPATCHPRICE archive zip."""
-    resp = await client.get(archive_url(year, month))
-    resp.raise_for_status()
-    return resp.content
+async def fetch_week_to_file(client: httpx.AsyncClient, url: str, path: str) -> None:
+    """Stream one weekly zip to a file on disk (never buffered whole in memory)."""
+    async with client.stream("GET", url) as resp:
+        resp.raise_for_status()
+        with open(path, "wb") as f:
+            async for chunk in resp.aiter_bytes():
+                f.write(chunk)
 
 
-def extract_csv_text(zip_bytes: bytes) -> str:
-    """Read the single CSV inside a monthly archive zip."""
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        name = z.namelist()[0]
-        return z.read(name).decode("utf-8", "ignore")
+def parse_week_zip(path: str, verbose: bool = False) -> pd.DataFrame:
+    """Thin a weekly zip's members by filename, then extract+parse only those."""
+    frames = []
+    with zipfile.ZipFile(path) as outer:
+        members = [n for n in outer.namelist() if n.lower().endswith(".zip")]
+        for name in select_members(members):
+            with zipfile.ZipFile(io.BytesIO(outer.read(name))) as inner:
+                text = inner.read(inner.namelist()[0]).decode("utf-8", "ignore")
+            df = build_run_dataframe(text, member_run_datetime(name))
+            if verbose:
+                print(f"  {name}: {len(df):,} rows")
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=["run_datetime", "interval_datetime", "regionid", "rrp"])
+    return pd.concat(frames, ignore_index=True)
 
 
-async def backfill(months: int, dry_run: bool) -> None:
+async def backfill(weeks: Optional[int], dry_run: bool) -> None:
     load_dotenv()
-    month_list = last_n_complete_months(months)
-    if dry_run:
-        month_list = month_list[:1]
 
     db = None
     if not dry_run:
@@ -166,40 +159,62 @@ async def backfill(months: int, dry_run: bool) -> None:
 
     failed: List[str] = []
     try:
-        async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-            for year, month in month_list:
-                label = f"{year:04d}-{month:02d}"
+        async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
+            resp = await client.get(f"{BASE_URL}/{ARCHIVE_PATH}/")
+            resp.raise_for_status()
+            week_files = list_week_files(resp.text)
+            if not week_files:
+                raise SystemExit("No weekly archives found on the index page.")
+            if weeks is not None:
+                week_files = week_files[-weeks:]
+            if dry_run:
+                week_files = week_files[:1]
+            print(
+                f"{len(week_files)} weekly archive(s) to process "
+                f"(~{len(week_files) * APPROX_WEEK_MB / 1024:.1f} GB total transfer)"
+            )
+
+            for filename in week_files:
+                tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+                tmp.close()
                 try:
-                    blob = await fetch_month_zip(client, year, month)
-                    text = extract_csv_text(blob)
-                    df = build_month_dataframe(text)
+                    await fetch_week_to_file(client, week_url(filename), tmp.name)
+                    df = parse_week_zip(tmp.name, verbose=dry_run)
                 except Exception as e:
-                    print(f"{label}: FAILED ({e})")
-                    failed.append(label)
+                    print(f"{filename}: FAILED ({e})")
+                    failed.append(filename)
                     continue
+                finally:
+                    os.remove(tmp.name)
 
                 if dry_run:
-                    print(f"{label}: parsed+thinned {len(df):,} rows (dry-run, no insert)")
+                    n_days = df["run_datetime"].dt.normalize().nunique()
+                    print(
+                        f"{filename}: {df['run_datetime'].nunique()} runs, "
+                        f"{len(df):,} rows total (~{len(df) / n_days:,.0f}/day; dry-run, no insert)"
+                    )
                     print(df.head(10).to_string(index=False))
                     return
 
                 inserted = await db.insert_predispatch_price(df)
-                print(f"{label}: parsed+thinned {len(df):,} rows -> inserted {inserted:,}")
+                print(f"{filename}: thinned to {len(df):,} rows -> inserted {inserted:,}")
     finally:
         if db is not None:
             await db.close()
 
     if failed:
-        print(f"\n{len(failed)} month(s) failed: {', '.join(failed)}")
+        print(f"\n{len(failed)} week(s) failed: {', '.join(failed)}")
         raise SystemExit(1)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Backfill predispatch_price from MMS monthly archives.")
-    ap.add_argument("--months", type=int, default=12, help="number of complete months to backfill")
-    ap.add_argument("--dry-run", action="store_true", help="download+parse+thin one month, insert nothing")
+    ap = argparse.ArgumentParser(
+        description="Backfill predispatch_price from PredispatchIS weekly archives."
+    )
+    ap.add_argument("--weeks", type=int, default=None, help="last N weeks only (default: all)")
+    ap.add_argument("--dry-run", action="store_true", help="download+thin+parse one week, insert nothing")
     args = ap.parse_args()
-    asyncio.run(backfill(args.months, args.dry_run))
+    asyncio.run(backfill(args.weeks, args.dry_run))
 
 
 if __name__ == "__main__":
