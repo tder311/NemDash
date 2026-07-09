@@ -265,6 +265,49 @@ def test_predict_realigns_missing_columns():
     assert len(pred) == len(X)
 
 
+def test_quantile_heads_train_predict_and_roundtrip(tmp_path):
+    merged = _synthetic_merged(n_days=20, seed=1)
+    X, y, _ = assemble_features(merged)
+    model = PriceForecaster({"n_estimators": 80}).train(X, y)
+    q = model.predict_quantiles(X)
+    assert list(q.columns) == ["p10", "p90"]
+    # a valid P90 sits above P10 for the overwhelming majority of rows
+    assert (q["p90"] >= q["p10"]).mean() > 0.95
+    assert model.card.quantile == [0.1, 0.9]
+    path = str(tmp_path / "m.joblib")
+    model.save(path)
+    loaded = PriceForecaster.load(path)
+    q2 = loaded.predict_quantiles(X)
+    assert np.allclose(q["p90"].values, q2["p90"].values)
+
+
+def test_predict_quantiles_raises_without_quantile_models():
+    model = PriceForecaster()
+    model.model = "sentinel"  # point model present, quantile heads absent
+    with pytest.raises(RuntimeError):
+        model.predict_quantiles(pd.DataFrame({"a": [1.0]}))
+
+
+def test_p90_reacts_more_to_scarcity_than_p50():
+    # Heavy-tailed target: on tight days price sometimes spikes 10x. P90 must
+    # separate tight from calm days by more than the P50 does.
+    merged = _synthetic_merged(n_days=40, regions=("NSW1",), seed=5)
+    rng = np.random.default_rng(5)
+    days = pd.to_datetime(merged["interval_datetime"]).dt.date
+    tight_days = set(rng.choice(sorted(set(days)), size=10, replace=False))
+    tight = days.isin(tight_days).to_numpy()
+    merged.loc[tight, "pd_hours_above_1000"] = 6.0
+    spike = tight & (rng.random(len(merged)) < 0.15)
+    merged.loc[spike, "price"] = merged.loc[spike, "price"] * 10
+    X, y, _ = assemble_features(merged)
+    model = PriceForecaster({"n_estimators": 150}).train(X, y)
+    q = model.predict_quantiles(X)
+    p50 = model.predict(X)
+    p90_gap = q["p90"][tight].mean() - q["p90"][~tight].mean()
+    p50_gap = p50[tight].mean() - p50[~tight].mean()
+    assert p90_gap > p50_gap > 0
+
+
 def test_walk_forward_validate_runs():
     df = _synthetic_merged(n_days=30, regions=("NSW1",), seed=2)
     X, y, _ = assemble_features(df)

@@ -13,8 +13,8 @@ Design notes
   ``load_*`` helpers at the bottom are the only DB-aware code.
 * Region is one-hot encoded (5 NEM regions) rather than training a model per
   region, so one model shares signal across regions while still specialising.
-* v1 forecasts the P50 (point) price. Quantile heads (P10/P90) are a planned
-  fast-follow; the model card records ``quantile=None`` to leave room for them.
+* The model predicts the P50 (point) price via ``predict()``, plus P10/P90
+  quantile heads via ``predict_quantiles()`` for uncertainty bands.
 * NEM prices can be negative (to -$1000) and spike to the market cap
   ($16,600+), so the target is modelled raw — XGBoost handles the range, with
   the documented caveat that extreme spikes are under-called.
@@ -84,6 +84,9 @@ TARGET: str = "price"
 # PUBLIC is the 5-min RRP series with full history; aggregated to 30-min below.
 # (TRADING is the same RRP but only retained for ~weeks; PUBLIC@:30 == TRADING.)
 PRICE_TYPE: str = "PUBLIC"
+
+# Pinball-loss alphas for the P10/P90 quantile heads trained alongside the P50.
+QUANTILES: List[float] = [0.1, 0.9]
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +433,7 @@ class ModelCard:
     target: str = TARGET
     price_type: str = PRICE_TYPE
     horizon_intervals: int = HORIZON_INTERVALS
-    quantile: Optional[float] = None  # None = P50 point forecast
+    quantile: Optional[Any] = None  # [0.1, 0.9] once quantile heads exist
     metrics: Dict[str, Any] = field(default_factory=dict)
     params: Dict[str, Any] = field(default_factory=dict)
 
@@ -454,6 +457,7 @@ class PriceForecaster:
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         self.params = {**DEFAULT_PARAMS, **(params or {})}
         self.model = None
+        self.quantile_models: Dict[float, Any] = {}
         self.card = ModelCard(params=self.params)
 
     def train(self, X: pd.DataFrame, y: pd.Series) -> "PriceForecaster":
@@ -461,6 +465,13 @@ class PriceForecaster:
 
         self.model = XGBRegressor(**self.params)
         self.model.fit(X, y)
+        for q in QUANTILES:
+            qm = XGBRegressor(
+                **{**self.params, "objective": "reg:quantileerror", "quantile_alpha": q}
+            )
+            qm.fit(X, y)
+            self.quantile_models[q] = qm
+        self.card.quantile = list(QUANTILES)
         self.card.trained_at = datetime.utcnow().isoformat()
         self.card.n_train_rows = int(len(X))
         self.card.feature_names = list(X.columns)
@@ -474,10 +485,28 @@ class PriceForecaster:
             X = X.reindex(columns=self.card.feature_names, fill_value=0)
         return self.model.predict(X)
 
+    def predict_quantiles(self, X: pd.DataFrame) -> pd.DataFrame:
+        """P10/P90 predictions from the independently-trained pinball-loss heads.
+
+        Crossings (p10 > p90) are possible since the two objectives are fit
+        separately and are not corrected here.
+        """
+        if not self.quantile_models:
+            raise RuntimeError("no quantile heads; retrain with the current code")
+        if self.card.feature_names:
+            X = X.reindex(columns=self.card.feature_names, fill_value=0)
+        return pd.DataFrame(
+            {f"p{int(q * 100)}": self.quantile_models[q].predict(X) for q in QUANTILES},
+            index=X.index,
+        )
+
     def save(self, path: str) -> None:
         import joblib
 
-        joblib.dump({"model": self.model, "card": asdict(self.card)}, path)
+        joblib.dump(
+            {"model": self.model, "quantile_models": self.quantile_models, "card": asdict(self.card)},
+            path,
+        )
 
     @classmethod
     def load(cls, path: str) -> "PriceForecaster":
@@ -486,6 +515,7 @@ class PriceForecaster:
         blob = joblib.load(path)
         obj = cls(params=blob["card"].get("params"))
         obj.model = blob["model"]
+        obj.quantile_models = blob.get("quantile_models", {})
         obj.card = ModelCard(**blob["card"])
         return obj
 
