@@ -607,6 +607,8 @@ def walk_forward_validate(
 
     if not folds:
         return {"folds": [], "mae": float("nan"), "rmse": float("nan")}
+    # Mean over folds that had spikes to test for; NaN (not a RuntimeWarning) when none did.
+    spike_vals = [f["spike_recall"] for f in folds if not np.isnan(f["spike_recall"])]
     return {
         "folds": folds,
         "mae": float(np.mean([f["mae"] for f in folds])),
@@ -614,7 +616,7 @@ def walk_forward_validate(
         "spearman": float(np.nanmean([f["spearman"] for f in folds])),
         "pinball_p10": float(np.mean([f["pinball_p10"] for f in folds])),
         "pinball_p90": float(np.mean([f["pinball_p90"] for f in folds])),
-        "spike_recall": float(np.nanmean([f["spike_recall"] for f in folds])),
+        "spike_recall": float(np.mean(spike_vals)) if spike_vals else float("nan"),
     }
 
 
