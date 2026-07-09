@@ -624,6 +624,87 @@ def walk_forward_validate(
 
 
 # --------------------------------------------------------------------------- #
+# Live accuracy (forecast_history vs realised prices)
+# --------------------------------------------------------------------------- #
+
+
+def _nearest_lead_bucket(lead_hours: pd.Series) -> pd.Series:
+    """Map each lead (hours) to its nearest ``LEAD_BUCKETS`` target, ignoring the tolerance band.
+
+    Every settled forecast lands in a bucket (no 'other') — the tolerance bands
+    only gate which PASA run training selects, not accuracy reporting.
+    """
+    targets = np.array([target for target, _ in LEAD_BUCKETS])
+    diffs = np.abs(lead_hours.to_numpy()[:, None] - targets[None, :])
+    return pd.Series(targets[diffs.argmin(axis=1)], index=lead_hours.index)
+
+
+def _accuracy_metrics(sub: pd.DataFrame) -> Dict[str, Any]:
+    """MAE, P10-P90 coverage, and live spike recall for one slice of settled forecast rows.
+
+    Null-quantile rows count toward MAE (p50 is always populated) but are
+    excluded from coverage; spike recall only needs p90, not p10.
+    """
+    n = int(len(sub))
+    if n == 0:
+        return {
+            "n": 0, "mae": float("nan"), "coverage_n": 0,
+            "p10_p90_coverage": float("nan"), "spike_n": 0, "spike_recall": float("nan"),
+        }
+
+    mae = float(np.mean(np.abs(sub["p50"] - sub["price"])))
+
+    quantiled = sub[sub["p10"].notna() & sub["p90"].notna()]
+    coverage_n = int(len(quantiled))
+    coverage = (
+        float(((quantiled["price"] >= quantiled["p10"]) & (quantiled["price"] <= quantiled["p90"])).mean())
+        if coverage_n else float("nan")
+    )
+
+    p90_known = sub[sub["p90"].notna()]
+    spike_n = int((p90_known["price"] > SPIKE_SETTLED_ABOVE).sum())
+    recall = (
+        spike_recall(p90_known["price"].to_numpy(), p90_known["p90"].to_numpy())
+        if spike_n else float("nan")
+    )
+
+    return {
+        "n": n, "mae": mae, "coverage_n": coverage_n,
+        "p10_p90_coverage": coverage, "spike_n": spike_n, "spike_recall": recall,
+    }
+
+
+def compute_forecast_accuracy(forecast: pd.DataFrame, realised: pd.DataFrame) -> Dict[str, Any]:
+    """Join settled forecast_history rows to realised 30-min prices, scored per lead bucket.
+
+    ``forecast``: run_at, interval_datetime, region, p50, p10, p90 — already
+    filtered to one region by the caller. ``realised``: ``to_30min_price``
+    output (settlementdate, region, price). The inner join naturally restricts
+    to settled intervals (unsettled ones have no realised row yet).
+
+    Returns ``{"buckets": [...], "overall": {...}}``; every ``LEAD_BUCKETS``
+    target always appears in ``buckets`` (n=0 when there is no data yet), so
+    the response shape is stable before any history has accumulated.
+    """
+    if forecast.empty:
+        joined = pd.DataFrame(columns=["p50", "p10", "p90", "price", "lead_bucket"])
+    else:
+        joined = forecast.merge(
+            realised.rename(columns={"settlementdate": "interval_datetime"}),
+            on=["interval_datetime", "region"],
+            how="inner",
+        )
+        lead_hours = (joined["interval_datetime"] - joined["run_at"]).dt.total_seconds() / 3600.0
+        joined["lead_bucket"] = _nearest_lead_bucket(lead_hours)
+
+    buckets = [
+        {"lead_bucket_hours": target, **_accuracy_metrics(joined[joined["lead_bucket"] == target])}
+        for target, _ in LEAD_BUCKETS
+    ]
+    return {"buckets": buckets, "overall": _accuracy_metrics(joined)}
+
+
+# --------------------------------------------------------------------------- #
 # Async DB I/O (the only database-aware code)
 # --------------------------------------------------------------------------- #
 
@@ -687,6 +768,36 @@ async def load_training_frame(db, start: datetime, end: datetime) -> pd.DataFram
             how="left",
         )
     return merged.drop(columns=["lead_bucket"])
+
+
+async def _fetch_forecast_history(db, region: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """Pull served forecast_history rows for a region's settled window directly from the pool."""
+    sql = (
+        "SELECT run_at, interval_datetime, region, p50, p10, p90 FROM forecast_history "
+        "WHERE region = $1 AND interval_datetime >= $2 AND interval_datetime < $3"
+    )
+    async with db._pool.acquire() as conn:
+        rows = await conn.fetch(sql, region, start, end)
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+async def load_forecast_accuracy(db, region: str, days: int = 30) -> Dict[str, Any]:
+    """Assemble settled forecast_history + realised prices for ``region`` and score accuracy.
+
+    ``region`` must already be regionid form ('NSW1'). Settled means
+    interval_datetime < now, windowed to the last ``days`` days.
+    """
+    now = nem_now()
+    start = now - timedelta(days=days)
+    forecast = await _fetch_forecast_history(db, region, start, now)
+    if not forecast.empty:
+        forecast["interval_datetime"] = pd.to_datetime(forecast["interval_datetime"])
+        forecast["run_at"] = pd.to_datetime(forecast["run_at"])
+
+    price = await db.get_price_history(start, now, region=None, price_type=PRICE_TYPE)
+    realised = to_30min_price(price) if not price.empty else pd.DataFrame(columns=["settlementdate", "region", "price"])
+
+    return compute_forecast_accuracy(forecast, realised)
 
 
 def nem_now() -> datetime:

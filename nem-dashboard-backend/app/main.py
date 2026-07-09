@@ -5,6 +5,7 @@ import io
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
+import math
 import os
 import logging
 import asyncio
@@ -31,6 +32,7 @@ from .models import (
     BidBandResponse,
     DUIDSearchResponse,
     PriceForecastResponse,
+    ForecastAccuracyResponse,
 )
 from .forecaster import (
     REGIONS,
@@ -39,6 +41,7 @@ from .forecaster import (
     generate_forecast,
     default_model_path,
     forecast_price_series,
+    load_forecast_accuracy,
     train_and_save,
 )
 from .optimiser import DispatchInputs, optimise_dispatch
@@ -1137,6 +1140,42 @@ async def get_price_forecast(region: str):
         )
     except Exception as e:
         logger.error(f"Error generating price forecast for {region}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _sanitize_stats(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """NaN (the pure function's "no data yet" sentinel) -> None so the response is valid JSON."""
+    return {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in stats.items()}
+
+
+@app.get("/api/forecast/accuracy", response_model=ForecastAccuracyResponse)
+async def get_forecast_accuracy(
+    region: str,
+    days: int = Query(default=30, ge=1, le=365, description="Lookback window in days"),
+):
+    """Live accuracy of served forecasts vs realised prices, per lead-time bucket.
+
+    Reads ``forecast_history`` joined to realised prices; n=0 buckets (not an
+    error) before any forecasts have settled.
+    """
+    region = region.upper()
+    if region not in REGIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown region '{region}'. Expected one of {REGIONS}.",
+        )
+
+    try:
+        result = await load_forecast_accuracy(db, region, days=days)
+        return ForecastAccuracyResponse(
+            region=region,
+            days=days,
+            buckets=[_sanitize_stats(b) for b in result["buckets"]],
+            overall=_sanitize_stats(result["overall"]),
+            message=f"{result['overall']['n']}-row live accuracy for {region} over {days}d",
+        )
+    except Exception as e:
+        logger.error(f"Error computing forecast accuracy for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

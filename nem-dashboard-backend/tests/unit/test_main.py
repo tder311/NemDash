@@ -1605,3 +1605,118 @@ class TestBidBandEndpoints:
         finally:
             main_module.db = original_db
             main_module.data_ingester = original_ingester
+
+
+class TestForecastAccuracyEndpoint:
+    """Tests for GET /api/forecast/accuracy."""
+
+    def _empty_result(self):
+        empty_bucket = {"n": 0, "mae": float("nan"), "coverage_n": 0,
+                         "p10_p90_coverage": float("nan"), "spike_n": 0, "spike_recall": float("nan")}
+        from app.forecaster import LEAD_BUCKETS
+        return {
+            "buckets": [{"lead_bucket_hours": target, **empty_bucket} for target, _ in LEAD_BUCKETS],
+            "overall": empty_bucket,
+        }
+
+    @pytest.mark.asyncio
+    async def test_invalid_region_returns_400(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/forecast/accuracy?region=INVALID")
+                assert response.status_code == 400
+                assert "Unknown region" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_no_settled_history_returns_200_with_zero_buckets(self):
+        """Launch state (no forecast_history yet) is a valid empty response, not 404/503."""
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            with patch("app.main.load_forecast_accuracy", new_callable=AsyncMock,
+                       return_value=self._empty_result()) as mock_load:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://test"
+                ) as client:
+                    response = await client.get("/api/forecast/accuracy?region=NSW1&days=30")
+                    assert response.status_code == 200
+                    data = response.json()
+                    assert data["region"] == "NSW1"
+                    assert data["days"] == 30
+                    assert len(data["buckets"]) == 5
+                    assert all(b["n"] == 0 for b in data["buckets"])
+                    assert data["overall"]["n"] == 0
+                    assert data["overall"]["mae"] is None  # NaN serialises to null
+                    mock_load.assert_awaited_once_with(mock_db, "NSW1", days=30)
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_populated_history_passes_through_bucket_metrics(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        result = self._empty_result()
+        result["buckets"][1] = {"lead_bucket_hours": 24.0, "n": 10, "mae": 42.5,
+                                 "coverage_n": 8, "p10_p90_coverage": 0.75,
+                                 "spike_n": 2, "spike_recall": 0.5}
+        result["overall"] = {"n": 10, "mae": 42.5, "coverage_n": 8,
+                              "p10_p90_coverage": 0.75, "spike_n": 2, "spike_recall": 0.5}
+
+        try:
+            with patch("app.main.load_forecast_accuracy", new_callable=AsyncMock, return_value=result):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://test"
+                ) as client:
+                    response = await client.get("/api/forecast/accuracy?region=vic1")
+                    assert response.status_code == 200
+                    data = response.json()
+                    assert data["region"] == "VIC1"
+                    bucket24 = next(b for b in data["buckets"] if b["lead_bucket_hours"] == 24.0)
+                    assert bucket24["n"] == 10
+                    assert bucket24["mae"] == pytest.approx(42.5)
+                    assert bucket24["spike_recall"] == pytest.approx(0.5)
+                    assert data["overall"]["n"] == 10
+                    assert "10-row live accuracy" in data["message"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_load_failure_returns_500(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            with patch("app.main.load_forecast_accuracy", new_callable=AsyncMock,
+                       side_effect=Exception("db down")):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://test"
+                ) as client:
+                    response = await client.get("/api/forecast/accuracy?region=NSW1")
+                    assert response.status_code == 500
+        finally:
+            main_module.db = original_db
