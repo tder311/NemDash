@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 
 from app.forecaster import (
+    HORIZON_INTERVALS,
+    combine_forward_pasa,
     PASA_FEATURES,
     REGIONS,
     PriceForecaster,
@@ -267,3 +269,67 @@ def test_to_30min_price_is_period_ending_block_mean():
     assert len(row) == 1
     assert abs(row["price"].iloc[0] - 35.0) < 1e-9  # mean(10..60)
     assert set(out["region"]) == {"NSW1"}  # region normalised to regionid
+
+
+# --------------------------------------------------------------------------- #
+# combine_forward_pasa
+# --------------------------------------------------------------------------- #
+
+
+def _forward_rows(intervals, demand50=1.0, region="NSW1"):
+    base = {c: 1.0 for c in PASA_FEATURES}
+    base["demand50"] = demand50
+    return pd.DataFrame(
+        [
+            {
+                "run_datetime": pd.Timestamp("2025-01-15 00:00"),
+                "interval_datetime": pd.Timestamp(t),
+                "regionid": region,
+                **base,
+            }
+            for t in intervals
+        ]
+    )
+
+
+def test_combine_forward_pasa_drops_past_intervals():
+    now = pd.Timestamp("2025-01-15 12:00")
+    pd_pasa = _forward_rows(pd.date_range("2025-01-15 06:00", periods=24, freq="30min"))
+    out = combine_forward_pasa(pd_pasa, pd.DataFrame(), now)
+    assert out["interval_datetime"].min() >= now
+    assert len(out) == 12  # 12:00..17:30 of the 06:00..17:30 run
+
+
+def test_combine_forward_pasa_prefers_pd_on_overlap():
+    now = pd.Timestamp("2025-01-15 12:00")
+    ivals = pd.date_range("2025-01-15 12:00", periods=8, freq="30min")
+    pd_pasa = _forward_rows(ivals, demand50=111.0)
+    st_pasa = _forward_rows(ivals, demand50=999.0)
+    out = combine_forward_pasa(pd_pasa, st_pasa, now)
+    assert len(out) == 8
+    assert (out["demand50"] == 111.0).all()
+
+
+def test_combine_forward_pasa_stale_pd_still_covers_near_term_via_st():
+    # Regression: a PD run that is entirely in the past must not blank out the
+    # next 24h when ST rows cover it.
+    now = pd.Timestamp("2025-01-15 12:00")
+    pd_pasa = _forward_rows(pd.date_range("2025-01-13 00:00", periods=48, freq="30min"))
+    st_pasa = _forward_rows(pd.date_range("2025-01-15 12:00", periods=96, freq="30min"), demand50=999.0)
+    out = combine_forward_pasa(pd_pasa, st_pasa, now)
+    assert out["interval_datetime"].iloc[0] == now
+    assert len(out) == 96
+    assert (out["demand50"] == 999.0).all()
+
+
+def test_combine_forward_pasa_caps_horizon_and_sets_region():
+    now = pd.Timestamp("2025-01-15 12:00")
+    st_pasa = _forward_rows(pd.date_range("2025-01-15 12:00", periods=400, freq="30min"))
+    out = combine_forward_pasa(pd.DataFrame(), st_pasa, now)
+    assert len(out) == HORIZON_INTERVALS
+    assert (out["region"] == "NSW1").all()
+
+
+def test_combine_forward_pasa_empty_inputs():
+    now = pd.Timestamp("2025-01-15 12:00")
+    assert combine_forward_pasa(pd.DataFrame(), pd.DataFrame(), now).empty

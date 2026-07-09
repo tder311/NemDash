@@ -1501,6 +1501,25 @@ class NEMDatabase:
 
         return [dict(row) for row in rows]
 
+    async def get_pasa_forward(
+        self, table: str, region: str, since: datetime
+    ) -> List[Dict[str, Any]]:
+        """Freshest available PASA forecast per interval >= ``since``.
+
+        Unlike ``get_latest_*`` (single newest run), this spans all stored
+        runs, so near-term intervals stay covered even when the newest run is
+        stale (e.g. the ingester was down).
+        """
+        if table not in ("pdpasa_data", "stpasa_data"):
+            raise ValueError(f"unknown PASA table: {table}")
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(f"""
+                SELECT DISTINCT ON (interval_datetime) * FROM {table}
+                WHERE regionid = $1 AND interval_datetime >= $2
+                ORDER BY interval_datetime ASC, run_datetime DESC
+            """, region, since)
+        return [dict(row) for row in rows]
+
     async def get_latest_pdpasa_run_datetime(self) -> Optional[datetime]:
         """Get the latest PDPASA run datetime."""
         async with self._pool.acquire() as conn:

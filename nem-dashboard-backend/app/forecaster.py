@@ -27,6 +27,7 @@ import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -61,6 +62,9 @@ PASA_FEATURES: List[str] = [
     "aggregatepasaavailability",
     "surplusreserve",
 ]
+
+# NEM market time is AEST (UTC+10, no DST) year-round; Brisbane matches exactly.
+NEM_TZ = ZoneInfo("Australia/Brisbane")
 
 TARGET: str = "price"
 # PUBLIC is the 5-min RRP series with full history; aggregated to 30-min below.
@@ -473,28 +477,46 @@ async def load_training_frame(db, start: datetime, end: datetime) -> pd.DataFram
     return merge_price_pasa(price, pasa)
 
 
-async def load_forecast_inputs(db, region: str) -> pd.DataFrame:
-    """Build the forward feature frame (next 7 days) from the latest PASA runs.
+def nem_now() -> datetime:
+    """Current wall-clock time on the NEM market clock (naive, like the data)."""
+    return datetime.now(NEM_TZ).replace(tzinfo=None)
 
-    PD PASA (~2 days) for the near term, ST PASA for the tail; one row per
-    future interval. No price column — this is what we predict.
+
+def combine_forward_pasa(
+    pd_pasa: pd.DataFrame, st_pasa: pd.DataFrame, now: datetime
+) -> pd.DataFrame:
+    """Merge PD + ST PASA rows into the forward feature frame.
+
+    Keeps future intervals only (``interval_datetime >= now``), prefers PD over
+    ST where both cover an interval, and caps at ``HORIZON_INTERVALS``. Past
+    rows are dropped so a stale run can neither eat into the 7-day window nor
+    produce "forecasts" for intervals that have already settled.
     """
-    pd_rows = await db.get_latest_pdpasa(region)
-    st_rows = await db.get_latest_stpasa(region)
-    pd_ = pd.DataFrame(pd_rows)
-    st = pd.DataFrame(st_rows)
-    if st.empty and pd_.empty:
+    frames = [f for f in (pd_pasa, st_pasa) if not f.empty]
+    if not frames:
         return pd.DataFrame()
-
-    frames = [f for f in (pd_, st) if not f.empty]
     pasa = pd.concat(frames, ignore_index=True)
     pasa["interval_datetime"] = pd.to_datetime(pasa["interval_datetime"])
-    # Prefer PD over ST where both cover an interval (pd rows come first).
-    pasa["_priority"] = np.arange(len(pasa))
-    pasa = pasa.sort_values("_priority").drop_duplicates("interval_datetime", keep="first")
+    pasa = pasa[pasa["interval_datetime"] >= now]
+    # PD rows come first in the concat, so keep="first" prefers PD on overlap.
+    pasa = pasa.drop_duplicates("interval_datetime", keep="first")
     pasa = pasa.sort_values("interval_datetime").reset_index(drop=True)
-    pasa["region"] = region
+    pasa["region"] = to_regionid(pasa["regionid"])
     return pasa.head(HORIZON_INTERVALS)
+
+
+async def load_forecast_inputs(db, region: str) -> pd.DataFrame:
+    """Build the forward feature frame (now -> +7 days) for ``region``.
+
+    Uses the freshest stored PASA forecast per future interval across *all*
+    runs (PD preferred over ST on overlap), so a stale latest run — e.g. after
+    the ingester has been down — cannot blank out the next 24h. No price
+    column — this is what we predict.
+    """
+    now = nem_now()
+    pd_rows = await db.get_pasa_forward("pdpasa_data", region, now)
+    st_rows = await db.get_pasa_forward("stpasa_data", region, now)
+    return combine_forward_pasa(pd.DataFrame(pd_rows), pd.DataFrame(st_rows), now)
 
 
 def default_model_path() -> str:
