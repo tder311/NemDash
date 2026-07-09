@@ -532,6 +532,30 @@ class PriceForecaster:
 # --------------------------------------------------------------------------- #
 
 
+SPIKE_SETTLED_ABOVE: float = 1000.0
+SPIKE_ALERT_ABOVE: float = 500.0
+
+
+def pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, q: float) -> float:
+    """Quantile (pinball) loss — the metric quantile heads are trained on."""
+    err = y_true - y_pred
+    return float(np.mean(np.maximum(q * err, (q - 1) * err)))
+
+
+def spike_recall(
+    y_true: np.ndarray,
+    p90: np.ndarray,
+    settled_above: float = SPIKE_SETTLED_ABOVE,
+    alert_above: float = SPIKE_ALERT_ABOVE,
+) -> float:
+    """Of blocks that settled above ``settled_above``, the fraction where P90 raised
+    the alarm (> ``alert_above``). NaN when the window contains no spikes."""
+    spikes = y_true > settled_above
+    if not spikes.any():
+        return float("nan")
+    return float((p90[spikes] > alert_above).mean())
+
+
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     err = y_pred - y_true
     mae = float(np.mean(np.abs(err)))
@@ -573,7 +597,13 @@ def walk_forward_validate(
             continue
         m = PriceForecaster(params).train(Xo.iloc[:train_end], yo.iloc[:train_end])
         pred = m.predict(Xo.iloc[train_end:test_end])
-        folds.append(_metrics(yo.iloc[train_end:test_end].values, pred))
+        q = m.predict_quantiles(Xo.iloc[train_end:test_end])
+        y_test = yo.iloc[train_end:test_end].values
+        fold_metrics = _metrics(y_test, pred)
+        fold_metrics["pinball_p10"] = pinball_loss(y_test, q["p10"].values, 0.1)
+        fold_metrics["pinball_p90"] = pinball_loss(y_test, q["p90"].values, 0.9)
+        fold_metrics["spike_recall"] = spike_recall(y_test, q["p90"].values)
+        folds.append(fold_metrics)
 
     if not folds:
         return {"folds": [], "mae": float("nan"), "rmse": float("nan")}
@@ -582,6 +612,9 @@ def walk_forward_validate(
         "mae": float(np.mean([f["mae"] for f in folds])),
         "rmse": float(np.mean([f["rmse"] for f in folds])),
         "spearman": float(np.nanmean([f["spearman"] for f in folds])),
+        "pinball_p10": float(np.mean([f["pinball_p10"] for f in folds])),
+        "pinball_p90": float(np.mean([f["pinball_p90"] for f in folds])),
+        "spike_recall": float(np.nanmean([f["spike_recall"] for f in folds])),
     }
 
 

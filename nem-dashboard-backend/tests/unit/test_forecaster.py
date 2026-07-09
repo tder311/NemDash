@@ -23,9 +23,11 @@ from app.forecaster import (
     build_calendar_features,
     dedup_pasa_runs,
     merge_price_pasa,
+    pinball_loss,
     predispatch_window_features,
     select_runs_at_lead,
     select_runs_at_leads,
+    spike_recall,
     to_30min_price,
     walk_forward_validate,
 )
@@ -314,6 +316,32 @@ def test_walk_forward_validate_runs():
     res = walk_forward_validate(X, y, df["interval_datetime"], n_splits=3, params=FAST)
     assert len(res["folds"]) >= 1
     assert np.isfinite(res["mae"])
+
+
+def test_pinball_loss_asymmetry():
+    y = np.array([100.0])
+    lo = np.array([50.0])
+    hi = np.array([150.0])
+    # under-prediction hurts the P90 head 9x more than over-prediction
+    assert pinball_loss(y, lo, 0.9) == pytest.approx(45.0)
+    assert pinball_loss(y, hi, 0.9) == pytest.approx(5.0)
+
+
+def test_spike_recall():
+    y = np.array([50.0, 2000.0, 3000.0, 80.0])
+    p90 = np.array([40.0, 600.0, 100.0, 90.0])
+    assert spike_recall(y, p90) == pytest.approx(0.5)  # caught 1 of 2 spikes
+    assert np.isnan(spike_recall(np.array([50.0, 60.0]), np.array([1.0, 2.0])))
+
+
+def test_walk_forward_reports_spike_metrics():
+    merged = _synthetic_merged(n_days=30, seed=2)
+    X, y, _ = assemble_features(merged)
+    order = merged["interval_datetime"]
+    result = walk_forward_validate(X, y, order, n_splits=2, params={"n_estimators": 60})
+    for key in ("pinball_p10", "pinball_p90", "spike_recall"):
+        assert key in result
+        assert key in result["folds"][0]
 
 
 def _runs_for_interval(interval, runs, region="NSW1"):
