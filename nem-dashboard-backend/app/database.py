@@ -194,6 +194,22 @@ class NEMDatabase:
                 )
             """)
 
+            # Served price-forecaster output, one row per serve x interval x region
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS forecast_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_at TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    region TEXT NOT NULL,
+                    p50 REAL NOT NULL,
+                    p10 REAL,
+                    p90 REAL,
+                    model_trained_at TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (run_at, interval_datetime, region)
+                )
+            """)
+
 
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_metrics (
@@ -294,6 +310,7 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region_run ON stpasa_data(regionid, run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_region ON predispatch_price(regionid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_region_run ON predispatch_price(regionid, run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_forecast_history_region_interval ON forecast_history(region, interval_datetime)")
 
             # Daily metrics indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
@@ -1555,6 +1572,23 @@ class NEMDatabase:
                     rrp = EXCLUDED.rrp
             """, records)
         return len(records)
+
+    async def insert_forecast_history(self, rows: List[Dict[str, Any]]) -> int:
+        """Persist a served forecast so misses are diagnosable and models scorecardable."""
+        if not rows:
+            return 0
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO forecast_history
+                    (run_at, interval_datetime, region, p50, p10, p90, model_trained_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (run_at, interval_datetime, region) DO NOTHING
+            """, [
+                (r["run_at"], r["interval_datetime"], r["region"], r["p50"],
+                 r["p10"], r["p90"], r["model_trained_at"])
+                for r in rows
+            ])
+        return len(rows)
 
     async def get_latest_predispatch_price(self, region: str) -> List[Dict[str, Any]]:
         """Get the latest pre-dispatch run's RRP forecast for a region."""

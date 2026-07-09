@@ -23,6 +23,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
@@ -31,6 +32,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -764,23 +767,52 @@ def default_model_path() -> str:
     )
 
 
-async def generate_forecast(db, region: str, model: "PriceForecaster") -> List[Dict[str, Any]]:
-    """Predict the next horizon of 30-min prices for ``region``.
+def predict_intervals(inputs: pd.DataFrame, model: "PriceForecaster") -> List[Dict[str, Any]]:
+    """Pure prediction: PASA/PD input frame -> list of forecast dicts.
 
-    Returns a list of ``{interval_datetime, predicted_price}`` dicts, empty if
-    no forward PASA data is available yet. Row order matches the PASA inputs
-    (``assemble_features`` does not reorder when ``include_target=False``).
+    ``p10``/``p90`` are ``None`` when ``model.quantile_models`` is empty (a
+    blob saved before quantile heads existed), rather than raising.
+    """
+    X, _, _ = assemble_features(inputs, include_target=False)
+    preds = model.predict(X)
+    if model.quantile_models:
+        q = model.predict_quantiles(X)
+        p10 = [round(float(v), 2) for v in q["p10"]]
+        p90 = [round(float(v), 2) for v in q["p90"]]
+    else:
+        p10 = [None] * len(preds)
+        p90 = [None] * len(preds)
+    intervals = pd.to_datetime(inputs["interval_datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return [
+        {"interval_datetime": t, "predicted_price": round(float(p), 2), "p10": lo, "p90": hi}
+        for t, p, lo, hi in zip(intervals, preds, p10, p90)
+    ]
+
+
+async def generate_forecast(db, region: str, model: "PriceForecaster") -> List[Dict[str, Any]]:
+    """Predict the next horizon of 30-min prices for ``region`` and log it to history.
+
+    Returns a list of ``{interval_datetime, predicted_price, p10, p90}`` dicts,
+    empty if no forward PASA data is available yet. Row order matches the PASA
+    inputs (``assemble_features`` does not reorder when ``include_target=False``).
+    The history write is telemetry only: it must never fail the serve.
     """
     inputs = await load_forecast_inputs(db, region)
     if inputs.empty:
         return []
-    X, _, _ = assemble_features(inputs, include_target=False)
-    preds = model.predict(X)
-    intervals = pd.to_datetime(inputs["interval_datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
-    return [
-        {"interval_datetime": t, "predicted_price": round(float(p), 2)}
-        for t, p in zip(intervals, preds)
+    data = predict_intervals(inputs, model)
+    run_at = nem_now()
+    rows = [
+        {"run_at": run_at, "interval_datetime": datetime.fromisoformat(d["interval_datetime"]),
+         "region": region, "p50": d["predicted_price"], "p10": d["p10"], "p90": d["p90"],
+         "model_trained_at": model.card.trained_at or None}
+        for d in data
     ]
+    try:
+        await db.insert_forecast_history(rows)
+    except Exception:
+        logger.warning("forecast_history write failed; serving forecast anyway", exc_info=True)
+    return data
 
 
 async def forecast_price_series(db, region: str, model: "PriceForecaster") -> pd.Series:

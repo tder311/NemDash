@@ -24,6 +24,7 @@ from app.forecaster import (
     dedup_pasa_runs,
     merge_price_pasa,
     pinball_loss,
+    predict_intervals,
     predispatch_window_features,
     select_runs_at_lead,
     select_runs_at_leads,
@@ -308,6 +309,23 @@ def test_p90_reacts_more_to_scarcity_than_p50():
     p90_gap = q["p90"][tight].mean() - q["p90"][~tight].mean()
     p50_gap = p50[tight].mean() - p50[~tight].mean()
     assert p90_gap > p50_gap > 0
+
+
+def test_predict_intervals_includes_quantiles():
+    merged = _synthetic_merged(n_days=10, regions=("NSW1",))
+    X_cols = merged.drop(columns=["price"])
+    model = PriceForecaster(FAST).train(*assemble_features(merged)[:2])
+    out = predict_intervals(X_cols, model)
+    assert {"interval_datetime", "predicted_price", "p10", "p90"} <= set(out[0])
+    assert out[0]["p10"] is not None
+
+
+def test_predict_intervals_none_quantiles_for_old_blob():
+    merged = _synthetic_merged(n_days=10, regions=("NSW1",))
+    model = PriceForecaster(FAST).train(*assemble_features(merged)[:2])
+    model.quantile_models = {}  # simulate a blob saved before quantile heads
+    out = predict_intervals(merged.drop(columns=["price"]), model)
+    assert out[0]["p10"] is None and out[0]["p90"] is None
 
 
 def test_walk_forward_validate_runs():
