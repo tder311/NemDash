@@ -670,12 +670,9 @@ async def _fetch_pasa_history(db, table: str, start: datetime, end: datetime) ->
 async def _fetch_predispatch_history(db, start: datetime, end: datetime) -> pd.DataFrame:
     """Pull stored PD7Day price rows for runs that can win a LEAD_BUCKETS band.
 
-    Only rows whose lead (interval_datetime - run_datetime) can ever be selected
-    by ``select_runs_at_leads`` are worth transferring. Filtering is done at
-    *run* granularity (keep every row of any run with >=1 in-envelope row),
-    not row granularity, so ``predispatch_window_features``'s day-window
-    aggregates for surviving runs are computed on the full day, not truncated
-    at the envelope edge.
+    Two-stage: first qualify run_datetimes whose lead envelope overlaps
+    [start, end], then fetch those runs' full row sets (unbounded by
+    [start, end]) so a boundary-day run's window isn't truncated.
     """
     low, high = lead_envelope_hours(LEAD_BUCKETS)
     async with db._pool.acquire() as conn:
@@ -687,12 +684,11 @@ async def _fetch_predispatch_history(db, start: datetime, end: datetime) -> pd.D
         )
         run_datetimes = [r["run_datetime"] for r in run_rows]
         if not run_datetimes:
-            return pd.DataFrame()
+            return pd.DataFrame()  # skip the second query; no runs qualified
         rows = await conn.fetch(
             "SELECT run_datetime, interval_datetime, regionid, rrp FROM predispatch_price "
-            "WHERE interval_datetime >= $1 AND interval_datetime <= $2 "
-            "AND run_datetime = ANY($3::timestamp[])",
-            start, end, run_datetimes,
+            "WHERE run_datetime = ANY($1::timestamp[])",
+            run_datetimes,
         )
     return pd.DataFrame([dict(r) for r in rows])
 
