@@ -14,9 +14,21 @@ from .nem_predispatch_client import NEMPredispatchClient
 from .nem_price_setter_client import NEMPriceSetterClient
 from .nem_bid_client import NEMBidClient
 from .database import NEMDatabase
+from .forecaster import select_runs_at_leads
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def thin_pasa_for_multilead_backfill(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep one run per (interval, region, lead bucket), ready for table insert.
+
+    ``select_runs_at_leads`` adds ``lead_hours``/``lead_bucket`` columns used only
+    for picking the nearest run per bucket; they aren't in the PASA table schema.
+    """
+    selected = select_runs_at_leads(df)
+    return selected.drop(columns=["lead_hours", "lead_bucket"])
+
 
 class DataIngester:
     def __init__(self, db_url: str, nem_base_url: str = "https://www.nemweb.com.au"):
@@ -218,12 +230,11 @@ class DataIngester:
         """Backfill historical PD/ST PASA from the NEMWEB archive over a window.
 
         Downloads the nested archive files overlapping the window, parses every
-        run, thins to the day-ahead lead via ``select_runs_at_lead`` (one run
-        per interval at ~24h lead), and upserts into pdpasa_data / stpasa_data.
-        ``report_types`` limits which PASA reports to pull (e.g. ("PDPASA",)).
+        run, thins to one run per (interval, region, lead bucket) across
+        ``LEAD_BUCKETS`` (~5 leads spanning 12h-168h), and upserts into
+        pdpasa_data / stpasa_data. ``report_types`` limits which PASA reports to
+        pull (e.g. ("PDPASA",)).
         """
-        from .forecaster import select_runs_at_lead
-
         if end_date is None:
             end_date = datetime.now()
         start = start_date.date() if hasattr(start_date, 'date') else start_date
@@ -255,7 +266,7 @@ class DataIngester:
                     df = df[(df['interval_datetime'] >= win_lo) & (df['interval_datetime'] < win_hi)]
                     if df.empty:
                         continue
-                    df = select_runs_at_lead(df)  # ~1 run per (interval, region) at day-ahead lead
+                    df = thin_pasa_for_multilead_backfill(df)  # ~1 run per (interval, region, lead bucket)
                     if not df.empty:
                         total += await insert(df)
                         logger.info(f"{pasa_type} {name}: +{len(df)} rows (running total {total})")

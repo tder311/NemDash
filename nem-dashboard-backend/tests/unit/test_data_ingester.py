@@ -11,7 +11,14 @@ import pandas as pd
 import tempfile
 from pathlib import Path
 
-from app.data_ingester import DataIngester, update_sample_generator_info, import_generator_info_from_csv, SAMPLE_GENERATOR_INFO
+from app.data_ingester import (
+    DataIngester,
+    update_sample_generator_info,
+    import_generator_info_from_csv,
+    thin_pasa_for_multilead_backfill,
+    SAMPLE_GENERATOR_INFO,
+)
+from app.forecaster import LEAD_BUCKETS
 
 
 def get_test_db_url():
@@ -225,6 +232,51 @@ class TestBackfillMissingData:
         total = await ingester.backfill_missing_data(start_date=start_date)
         assert isinstance(total, int)
         await ingester.db.close()
+
+
+class TestThinPasaForMultileadBackfill:
+    """Tests for thin_pasa_for_multilead_backfill (pure PASA backfill thinning)."""
+
+    def _runs_frame(self):
+        """One interval, one region, an hourly run every hour from 1h to 175h lead."""
+        interval = pd.Timestamp("2026-07-08 19:00:00")
+        leads = range(1, 176)
+        return pd.DataFrame({
+            "run_datetime": [interval - timedelta(hours=h) for h in leads],
+            "interval_datetime": interval,
+            "regionid": "NSW1",
+            "demand50": [float(h) for h in leads],
+        })
+
+    def test_keeps_one_run_per_lead_bucket(self):
+        """Many runs at many leads should thin to ~one row per LEAD_BUCKETS target, dropping the rest."""
+        runs = self._runs_frame()
+        out = thin_pasa_for_multilead_backfill(runs)
+
+        assert len(out) == len(LEAD_BUCKETS)
+        assert len(out) < len(runs)
+
+    def test_drops_selection_metadata_columns(self):
+        """lead_hours/lead_bucket are selection metadata, not table columns."""
+        out = thin_pasa_for_multilead_backfill(self._runs_frame())
+
+        assert "lead_hours" not in out.columns
+        assert "lead_bucket" not in out.columns
+        assert "demand50" in out.columns
+
+    def test_single_run_keeps_only_one_row(self):
+        """A single run can only serve one bucket after dedup."""
+        interval = pd.Timestamp("2026-07-08 19:00:00")
+        one_run = pd.DataFrame({
+            "run_datetime": [interval - timedelta(hours=20)],
+            "interval_datetime": interval,
+            "regionid": "NSW1",
+            "demand50": [1.0],
+        })
+
+        out = thin_pasa_for_multilead_backfill(one_run)
+
+        assert len(out) == 1
 
 
 class TestGetDataSummary:
