@@ -693,6 +693,15 @@ def test_accuracy_assigns_nearest_lead_bucket():
     assert result["overall"]["n"] == 4
 
 
+def test_accuracy_extreme_lead_lands_in_furthest_bucket():
+    # 300h is outside every tolerance band but nearest to the 168h target.
+    forecast = pd.DataFrame([_fc_row(300.0, p50=100.0, p10=50.0, p90=150.0)])
+    realised = pd.DataFrame([_realised_row(100.0)])
+    result = compute_forecast_accuracy(forecast, realised)
+    assert _bucket(result, 168.0)["n"] == 1
+    assert result["overall"]["n"] == 1
+
+
 def test_accuracy_unsettled_forecast_dropped_by_join():
     # No realised price yet for this interval -> row has nothing to score against.
     forecast = pd.DataFrame([_fc_row(24, p50=90.0, p10=50.0, p90=150.0)])

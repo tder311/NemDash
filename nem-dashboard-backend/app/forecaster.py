@@ -781,7 +781,7 @@ async def _fetch_forecast_history(db, region: str, start: datetime, end: datetim
     return pd.DataFrame([dict(r) for r in rows])
 
 
-async def load_forecast_accuracy(db, region: str, days: int = 30) -> Dict[str, Any]:
+async def load_forecast_accuracy(db, region: str, days: int) -> Dict[str, Any]:
     """Assemble settled forecast_history + realised prices for ``region`` and score accuracy.
 
     ``region`` must already be regionid form ('NSW1'). Settled means
@@ -794,7 +794,9 @@ async def load_forecast_accuracy(db, region: str, days: int = 30) -> Dict[str, A
         forecast["interval_datetime"] = pd.to_datetime(forecast["interval_datetime"])
         forecast["run_at"] = pd.to_datetime(forecast["run_at"])
 
-    price = await db.get_price_history(start, now, region=None, price_type=PRICE_TYPE)
+    # price_data stores the short region form ('NSW'), the inverse of to_regionid.
+    region_short = region[:-1] if region.endswith("1") else region
+    price = await db.get_price_history(start, now, region=region_short, price_type=PRICE_TYPE)
     realised = to_30min_price(price) if not price.empty else pd.DataFrame(columns=["settlementdate", "region", "price"])
 
     return compute_forecast_accuracy(forecast, realised)
