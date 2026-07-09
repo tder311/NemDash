@@ -10,17 +10,25 @@ import pytest
 
 from app.forecaster import (
     HORIZON_INTERVALS,
+    LEAD_BUCKETS,
+    PD_FEATURES,
     combine_forward_pasa,
     PASA_FEATURES,
     REGIONS,
     PriceForecaster,
+    _extend_forward_frame,
     _pasa_derived_features,
     _region_one_hot,
     assemble_features,
     build_calendar_features,
     dedup_pasa_runs,
     merge_price_pasa,
+    pinball_loss,
+    predict_intervals,
+    predispatch_window_features,
     select_runs_at_lead,
+    select_runs_at_leads,
+    spike_recall,
     to_30min_price,
     walk_forward_validate,
 )
@@ -71,7 +79,11 @@ def _synthetic_merged(n_days: int = 30, regions=("NSW1", "SA1"), seed: int = 0) 
                     "surplusreserve": surplus,
                 }
             )
-    return pd.DataFrame(rows)
+    merged = pd.DataFrame(rows)
+    merged["lead_hours"] = 24.0
+    for col in PD_FEATURES:
+        merged[col] = np.nan
+    return merged
 
 
 # --------------------------------------------------------------------------- #
@@ -123,6 +135,21 @@ def test_assemble_features_drops_null_target_and_excludes_price():
     assert {"demand_spread", "utilisation"} <= set(names)
 
 
+def test_assemble_features_includes_pd_and_lead():
+    merged = _synthetic_merged(n_days=3)
+    X, y, names = assemble_features(merged)
+    for col in PD_FEATURES + ["lead_hours"]:
+        assert col in names
+    assert X["lead_hours"].eq(24.0).all()
+    assert X["pd_rrp"].isna().all()  # NaN preserved, not zero-filled
+
+
+def test_assemble_features_raises_without_lead_or_pd():
+    merged = _synthetic_merged(n_days=2).drop(columns=["pd_rrp"])
+    with pytest.raises(KeyError):
+        assemble_features(merged)
+
+
 # --------------------------------------------------------------------------- #
 # Joins / leakage guards
 # --------------------------------------------------------------------------- #
@@ -151,6 +178,8 @@ def test_merge_price_pasa_inner_joins_on_interval_region():
     pasa = df[["interval_datetime", "region"] + PASA_FEATURES].rename(
         columns={"region": "regionid"}
     )
+    pasa["lead_hours"] = 24.0
+    pasa["lead_bucket"] = 24.0
     merged = merge_price_pasa(price, pasa)
     assert len(merged) == len(df)
     assert {"price", "region", "interval_datetime"} <= set(merged.columns)
@@ -170,6 +199,8 @@ def test_merge_price_pasa_normalises_region_suffix():
             "interval_datetime": pd.to_datetime(["2025-01-15 18:00", "2025-01-15 18:30"]),
             "regionid": ["NSW1", "NSW1"],
             **{c: [1.0, 1.0] for c in PASA_FEATURES},
+            "lead_hours": [24.0, 24.0],
+            "lead_bucket": [24.0, 24.0],
         }
     )
     merged = merge_price_pasa(price, pasa)
@@ -198,6 +229,23 @@ def test_model_learns_signal_beats_mean_baseline():
     assert model_mae < 0.5 * baseline_mae  # must clearly beat predicting the mean
 
 
+def test_model_learns_pd_scarcity_signal():
+    # Price spikes exactly when the PD window features say the day is tight;
+    # a trained model must rank tight-day intervals above calm-day intervals.
+    merged = _synthetic_merged(n_days=40, regions=("NSW1",), seed=3)
+    rng = np.random.default_rng(3)
+    days = pd.to_datetime(merged["interval_datetime"]).dt.date
+    tight_days = set(rng.choice(sorted(set(days)), size=8, replace=False))
+    tight = days.isin(tight_days).to_numpy()
+    merged.loc[tight, "pd_hours_above_1000"] = 6.0
+    merged.loc[tight, "pd_exceedance_sum"] = 40000.0
+    merged.loc[tight, "price"] = merged.loc[tight, "price"] + 2000.0
+    X, y, _ = assemble_features(merged)
+    model = PriceForecaster({"n_estimators": 120}).train(X, y)
+    preds = model.predict(X)
+    assert preds[tight].mean() > preds[~tight].mean() + 500
+
+
 def test_save_load_roundtrip(tmp_path):
     df = _synthetic_merged(n_days=10, regions=("NSW1",))
     X, y, _ = assemble_features(df)
@@ -220,12 +268,98 @@ def test_predict_realigns_missing_columns():
     assert len(pred) == len(X)
 
 
+def test_quantile_heads_train_predict_and_roundtrip(tmp_path):
+    merged = _synthetic_merged(n_days=20, seed=1)
+    X, y, _ = assemble_features(merged)
+    model = PriceForecaster({"n_estimators": 80}).train(X, y)
+    q = model.predict_quantiles(X)
+    assert list(q.columns) == ["p10", "p90"]
+    # a valid P90 sits above P10 for the overwhelming majority of rows
+    assert (q["p90"] >= q["p10"]).mean() > 0.95
+    assert model.card.quantile == [0.1, 0.9]
+    path = str(tmp_path / "m.joblib")
+    model.save(path)
+    loaded = PriceForecaster.load(path)
+    q2 = loaded.predict_quantiles(X)
+    assert np.allclose(q["p90"].values, q2["p90"].values)
+
+
+def test_predict_quantiles_raises_without_quantile_models():
+    model = PriceForecaster()
+    model.model = "sentinel"  # point model present, quantile heads absent
+    with pytest.raises(RuntimeError):
+        model.predict_quantiles(pd.DataFrame({"a": [1.0]}))
+
+
+def test_p90_reacts_more_to_scarcity_than_p50():
+    # Heavy-tailed target: on tight days price sometimes spikes 10x. P90 must
+    # separate tight from calm days by more than the P50 does.
+    merged = _synthetic_merged(n_days=40, regions=("NSW1",), seed=5)
+    rng = np.random.default_rng(5)
+    days = pd.to_datetime(merged["interval_datetime"]).dt.date
+    tight_days = set(rng.choice(sorted(set(days)), size=10, replace=False))
+    tight = days.isin(tight_days).to_numpy()
+    merged.loc[tight, "pd_hours_above_1000"] = 6.0
+    spike = tight & (rng.random(len(merged)) < 0.15)
+    merged.loc[spike, "price"] = merged.loc[spike, "price"] * 10
+    X, y, _ = assemble_features(merged)
+    model = PriceForecaster({"n_estimators": 150}).train(X, y)
+    q = model.predict_quantiles(X)
+    p50 = model.predict(X)
+    p90_gap = q["p90"][tight].mean() - q["p90"][~tight].mean()
+    p50_gap = p50[tight].mean() - p50[~tight].mean()
+    assert p90_gap > p50_gap > 0
+
+
+def test_predict_intervals_includes_quantiles():
+    merged = _synthetic_merged(n_days=10, regions=("NSW1",))
+    X_cols = merged.drop(columns=["price"])
+    model = PriceForecaster(FAST).train(*assemble_features(merged)[:2])
+    out = predict_intervals(X_cols, model)
+    assert {"interval_datetime", "predicted_price", "p10", "p90"} <= set(out[0])
+    assert out[0]["p10"] is not None
+
+
+def test_predict_intervals_none_quantiles_for_old_blob():
+    merged = _synthetic_merged(n_days=10, regions=("NSW1",))
+    model = PriceForecaster(FAST).train(*assemble_features(merged)[:2])
+    model.quantile_models = {}  # simulate a blob saved before quantile heads
+    out = predict_intervals(merged.drop(columns=["price"]), model)
+    assert out[0]["p10"] is None and out[0]["p90"] is None
+
+
 def test_walk_forward_validate_runs():
     df = _synthetic_merged(n_days=30, regions=("NSW1",), seed=2)
     X, y, _ = assemble_features(df)
     res = walk_forward_validate(X, y, df["interval_datetime"], n_splits=3, params=FAST)
     assert len(res["folds"]) >= 1
     assert np.isfinite(res["mae"])
+
+
+def test_pinball_loss_asymmetry():
+    y = np.array([100.0])
+    lo = np.array([50.0])
+    hi = np.array([150.0])
+    # under-prediction hurts the P90 head 9x more than over-prediction
+    assert pinball_loss(y, lo, 0.9) == pytest.approx(45.0)
+    assert pinball_loss(y, hi, 0.9) == pytest.approx(5.0)
+
+
+def test_spike_recall():
+    y = np.array([50.0, 2000.0, 3000.0, 80.0])
+    p90 = np.array([40.0, 600.0, 100.0, 90.0])
+    assert spike_recall(y, p90) == pytest.approx(0.5)  # caught 1 of 2 spikes
+    assert np.isnan(spike_recall(np.array([50.0, 60.0]), np.array([1.0, 2.0])))
+
+
+def test_walk_forward_reports_spike_metrics():
+    merged = _synthetic_merged(n_days=30, seed=2)
+    X, y, _ = assemble_features(merged)
+    order = merged["interval_datetime"]
+    result = walk_forward_validate(X, y, order, n_splits=2, params={"n_estimators": 60})
+    for key in ("pinball_p10", "pinball_p90", "spike_recall"):
+        assert key in result
+        assert key in result["folds"][0]
 
 
 def _runs_for_interval(interval, runs, region="NSW1"):
@@ -257,6 +391,43 @@ def test_select_runs_at_lead_tiebreak_prefers_longer_lead():
     pasa = _runs_for_interval(interval, ["2025-01-14 15:00", "2025-01-14 21:00"])
     out = select_runs_at_lead(pasa, target_lead_hours=24, tolerance_hours=12)
     assert out["run_datetime"].iloc[0] == pd.Timestamp("2025-01-14 15:00")
+
+
+def _runs_frame(region="NSW1"):
+    """One target interval, runs at leads 6h..7d (uses rrp as the payload col)."""
+    interval = pd.Timestamp("2026-07-08 19:00:00")
+    leads = [6, 18, 30, 90, 170]
+    return pd.DataFrame({
+        "run_datetime": [interval - pd.Timedelta(hours=h) for h in leads],
+        "interval_datetime": interval,
+        "regionid": region,
+        "rrp": [float(h) for h in leads],
+    })
+
+
+def test_select_runs_at_leads_one_row_per_bucket():
+    out = select_runs_at_leads(_runs_frame())
+    assert set(out["lead_bucket"]) == {b for b, _ in LEAD_BUCKETS}
+    # each bucket picked the causal run nearest its target lead
+    picked = out.set_index("lead_bucket")["lead_hours"].to_dict()
+    assert picked[12.0] == 6.0 and picked[24.0] == 18.0 and picked[168.0] == 170.0
+
+
+def test_select_runs_at_leads_dedups_shared_runs():
+    # Only one run exists; it can serve at most one bucket after dedup.
+    interval = pd.Timestamp("2026-07-08 19:00:00")
+    one = pd.DataFrame({
+        "run_datetime": [interval - pd.Timedelta(hours=20)],
+        "interval_datetime": interval, "regionid": "NSW1", "rrp": [1.0],
+    })
+    out = select_runs_at_leads(one)
+    assert len(out) == 1 and out["lead_bucket"].iloc[0] == 24.0
+
+
+def test_select_runs_at_leads_causal():
+    out = select_runs_at_leads(_runs_frame())
+    assert (out["lead_hours"] >= 0).all()
+    assert "lead_dist" not in out.columns
 
 
 def test_to_30min_price_is_period_ending_block_mean():
@@ -333,3 +504,82 @@ def test_combine_forward_pasa_caps_horizon_and_sets_region():
 def test_combine_forward_pasa_empty_inputs():
     now = pd.Timestamp("2025-01-15 12:00")
     assert combine_forward_pasa(pd.DataFrame(), pd.DataFrame(), now).empty
+
+
+def test_extend_forward_frame_adds_lead_and_pd():
+    forward = pd.DataFrame({
+        "interval_datetime": pd.date_range("2026-07-08 12:30:00", periods=4, freq="30min"),
+        "region": "VIC1",
+        "run_datetime": pd.Timestamp("2026-07-08 06:00:00"),  # stale run: age != now-based lead
+        **{c: 1000.0 for c in PASA_FEATURES},
+    })
+    pd_latest = _pd_frame([100.0, 5500.0, 5500.0, 5500.0], start="2026-07-08 12:30:00",
+                          run="2026-07-08 11:00:00")
+    out = _extend_forward_frame(forward, pd_latest)
+    assert out["lead_hours"].iloc[0] == 6.5  # interval 12:30 - run_datetime 06:00, not now
+    assert out["pd_hours_above_5000"].iloc[0] == 1.5
+    empty = _extend_forward_frame(forward.copy(), pd.DataFrame())
+    assert empty["pd_rrp"].isna().all()
+
+
+def _pd_frame(rrps, region="VIC1", run="2026-07-07 12:00:00", start="2026-07-08 00:30:00"):
+    """One PD run: consecutive 30-min intervals with the given rrps."""
+    intervals = pd.date_range(start, periods=len(rrps), freq="30min")
+    return pd.DataFrame({
+        "run_datetime": pd.Timestamp(run),
+        "interval_datetime": intervals,
+        "regionid": region,
+        "rrp": rrps,
+    })
+
+
+def test_pd_window_sustained_block_outscores_isolated_spike():
+    # Same max price: one lone $17,000 interval vs a 6-hour block at $17,000.
+    lone = _pd_frame([100.0] * 20 + [17000.0] + [100.0] * 20)
+    block = _pd_frame([100.0] * 20 + [17000.0] * 12 + [100.0] * 9)
+    f_lone = predispatch_window_features(lone)
+    f_block = predispatch_window_features(block)
+    assert f_block["pd_hours_above_5000"].iloc[0] == 6.0
+    assert f_lone["pd_hours_above_5000"].iloc[0] == 0.5
+    assert f_block["pd_longest_run_above_300"].iloc[0] == 6.0
+    assert f_lone["pd_longest_run_above_300"].iloc[0] == 0.5
+    assert f_block["pd_exceedance_sum"].iloc[0] > f_lone["pd_exceedance_sum"].iloc[0]
+
+
+def test_pd_window_thresholds_and_pointwise():
+    f = predispatch_window_features(_pd_frame([100.0, 400.0, 1500.0, 6000.0]))
+    row = f.iloc[0]
+    assert row["pd_rrp"] == 100.0
+    assert row["pd_hours_above_300"] == 1.5   # 400, 1500, 6000
+    assert row["pd_hours_above_1000"] == 1.0  # 1500, 6000
+    assert row["pd_hours_above_5000"] == 0.5  # 6000
+    # window features are shared across the day; pointwise differs per row
+    assert f["pd_hours_above_300"].nunique() == 1
+    assert f["pd_rrp"].tolist() == [100.0, 400.0, 1500.0, 6000.0]
+
+
+def test_pd_window_groups_by_run_region_and_day():
+    # Two runs for the same day must not bleed into each other.
+    a = _pd_frame([17000.0] * 4, run="2026-07-07 12:00:00")
+    b = _pd_frame([100.0] * 4, run="2026-07-08 06:00:00")
+    f = predispatch_window_features(pd.concat([a, b], ignore_index=True))
+    by_run = f.groupby("run_datetime")["pd_hours_above_5000"].max()
+    assert by_run[pd.Timestamp("2026-07-07 12:00:00")] == 2.0
+    assert by_run[pd.Timestamp("2026-07-08 06:00:00")] == 0.0
+
+
+def test_pd_window_groups_by_regionid_independently():
+    # Same run, same day, two regions: one tight, one calm; must not bleed across regions.
+    tight = _pd_frame([17000.0] * 4, region="VIC1")
+    calm = _pd_frame([100.0] * 4, region="SA1")
+    f = predispatch_window_features(pd.concat([tight, calm], ignore_index=True))
+    by_region = f.groupby("regionid")["pd_hours_above_5000"].max()
+    assert by_region["VIC1"] == 2.0
+    assert by_region["SA1"] == 0.0
+
+
+def test_pd_window_longest_run_broken_by_dip():
+    # 3 above, 1 below, 2 above -> longest contiguous run is 3 intervals = 1.5h.
+    f = predispatch_window_features(_pd_frame([500.0, 500.0, 500.0, 100.0, 500.0, 500.0]))
+    assert f["pd_longest_run_above_300"].iloc[0] == 1.5
+    assert set(PD_FEATURES) <= set(f.columns)

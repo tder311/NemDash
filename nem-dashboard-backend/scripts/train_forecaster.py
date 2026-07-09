@@ -64,6 +64,11 @@ async def train(days: int, out: str) -> None:
             f"  MAE={val['mae']:.2f}  RMSE={val['rmse']:.2f}  "
             f"Spearman={val.get('spearman', float('nan')):.3f}  ({len(val['folds'])} folds)"
         )
+        print(
+            f"  SpikeRecall={val.get('spike_recall', float('nan')):.3f}  "
+            f"PinballP10={val.get('pinball_p10', float('nan')):.2f}  "
+            f"PinballP90={val.get('pinball_p90', float('nan')):.2f}"
+        )
 
         print("Training final model on the full window ...")
         model = PriceForecaster().train(X, y)

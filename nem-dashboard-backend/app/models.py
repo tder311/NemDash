@@ -233,7 +233,7 @@ class DUIDSearchResponse(BaseModel):
 
 class PriceForecastResponse(BaseModel):
     region: str
-    data: List[Dict[str, Any]]  # [{interval_datetime, predicted_price}, ...]
+    data: List[Dict[str, Any]]  # [{interval_datetime, predicted_price, p10, p90}, ...]
     count: int
     horizon_intervals: int
     model_trained_at: Optional[str] = None

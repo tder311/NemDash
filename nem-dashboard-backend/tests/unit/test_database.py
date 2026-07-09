@@ -6,6 +6,7 @@ Requires DATABASE_URL environment variable set to a PostgreSQL database.
 import pytest
 import pandas as pd
 from datetime import datetime, date, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 from app.database import NEMDatabase
 
@@ -1429,3 +1430,49 @@ class TestSearchDuids:
 
         results = await test_db.search_duids('TEST', limit=2)
         assert len(results) == 2
+
+
+class TestForecastHistoryInsert:
+    """Tests for insert_forecast_history method.
+
+    Mocked at the pool level (rather than the live ``test_db`` fixture used
+    elsewhere in this file) since the assertions here are about *how* the
+    pool is called, not what ends up in a real database.
+    """
+
+    @pytest.mark.asyncio
+    async def test_insert_forecast_history_empty_rows(self):
+        """Empty input returns 0 without acquiring a connection."""
+        db = NEMDatabase("postgresql://unused")
+        db._pool = MagicMock()
+
+        count = await db.insert_forecast_history([])
+
+        assert count == 0
+        db._pool.acquire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_insert_forecast_history(self):
+        """Non-empty input calls executemany once with one 7-tuple per row."""
+        mock_conn = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+        mock_pool.acquire.return_value.__aexit__.return_value = None
+
+        db = NEMDatabase("postgresql://unused")
+        db._pool = mock_pool
+
+        run_at = datetime(2026, 7, 9, 10, 0)
+        interval_dt = datetime(2026, 7, 9, 10, 30)
+        rows = [{
+            "run_at": run_at, "interval_datetime": interval_dt, "region": "NSW1",
+            "p50": 85.5, "p10": 70.1, "p90": 110.9, "model_trained_at": "2026-07-01T00:00:00",
+        }]
+
+        count = await db.insert_forecast_history(rows)
+
+        assert count == 1
+        mock_conn.executemany.assert_called_once()
+        _, records = mock_conn.executemany.call_args.args
+        assert records == [(run_at, interval_dt, "NSW1", 85.5, 70.1, 110.9, "2026-07-01T00:00:00")]
+        assert all(len(r) == 7 for r in records)
