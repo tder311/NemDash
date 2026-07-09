@@ -221,6 +221,10 @@ def assemble_features(
     -------
     (X, y, feature_names)
         ``y`` is None when ``include_target`` is False.
+
+    Loaders guarantee ``lead_hours`` and all ``PD_FEATURES`` columns are
+    present (NaN = data unavailable); a missing column is a loader bug, so
+    this raises ``KeyError`` rather than silently dropping the feature.
     """
     if "interval_datetime" not in merged or "region" not in merged:
         raise ValueError("merged frame must have 'interval_datetime' and 'region'")
@@ -233,6 +237,7 @@ def assemble_features(
         _region_one_hot(region),
         merged[PASA_FEATURES].astype("float32"),
         _pasa_derived_features(merged).astype("float32"),
+        merged[PD_FEATURES + ["lead_hours"]].astype("float32"),
     ]
     X = pd.concat(parts, axis=1).reset_index(drop=True)
     feature_names = list(X.columns)
@@ -389,15 +394,20 @@ def to_30min_price(price: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge_price_pasa(price: pd.DataFrame, pasa: pd.DataFrame) -> pd.DataFrame:
-    """Inner-join realised 30-min prices to their PASA forecast features."""
+    """Inner-join realised 30-min prices to their PASA forecast features.
+
+    Carries ``lead_hours``/``lead_bucket`` through when present on ``pasa`` so
+    ``load_training_frame`` can join PD features onto the same lead bucket.
+    """
     p = price.rename(columns={"settlementdate": "interval_datetime"}).copy()
     p["interval_datetime"] = pd.to_datetime(p["interval_datetime"])
     p["region"] = to_regionid(p["region"])
     q = pasa.rename(columns={"regionid": "region"}).copy()
     q["interval_datetime"] = pd.to_datetime(q["interval_datetime"])
     q["region"] = to_regionid(q["region"])
+    q_cols = ["interval_datetime", "region"] + PASA_FEATURES + ["lead_hours", "lead_bucket"]
     merged = p.merge(
-        q[["interval_datetime", "region"] + PASA_FEATURES],
+        q[q_cols],
         on=["interval_datetime", "region"],
         how="inner",
     )
@@ -562,11 +572,25 @@ async def _fetch_pasa_history(db, table: str, start: datetime, end: datetime) ->
     return pd.DataFrame([dict(r) for r in rows])
 
 
-async def load_training_frame(db, start: datetime, end: datetime) -> pd.DataFrame:
-    """Assemble the merged price+PASA training frame for [start, end].
+async def _fetch_predispatch_history(db, start: datetime, end: datetime) -> pd.DataFrame:
+    """Pull stored PD7Day price rows (all runs) for a date window."""
+    sql = (
+        "SELECT run_datetime, interval_datetime, regionid, rrp FROM predispatch_price "
+        "WHERE interval_datetime >= $1 AND interval_datetime <= $2"
+    )
+    async with db._pool.acquire() as conn:
+        rows = await conn.fetch(sql, start, end)
+    return pd.DataFrame([dict(r) for r in rows])
 
-    Combines ST PASA (7-day) and PD PASA (2-day) history; PD takes precedence
-    where both cover an interval (it is the more accurate near-term run).
+
+async def load_training_frame(db, start: datetime, end: datetime) -> pd.DataFrame:
+    """Assemble the merged price+PASA+PD training frame for [start, end].
+
+    Combines ST PASA (7-day) and PD PASA (2-day) history; selects one PASA run
+    per (interval, region, lead bucket) across ``LEAD_BUCKETS`` so the model
+    trains on the full spread of forecast leads it will see at inference. PD
+    window features (computed on the full PD history first) are then joined
+    onto the matching lead bucket; early history with no PD coverage gets NaN.
     """
     price = await db.get_price_history(start, end, region=None, price_type=PRICE_TYPE)
     if price is None or price.empty:
@@ -578,11 +602,23 @@ async def load_training_frame(db, start: datetime, end: datetime) -> pd.DataFram
     pasa = pd.concat([st, pd_], ignore_index=True) if not pd_.empty else st
     if pasa.empty:
         return pd.DataFrame()
-    # Day-ahead lead selection: one run per interval at ~24h lead, so training
-    # features match the lead time the model has when used day-ahead.
-    pasa = select_runs_at_lead(pasa)
+    pasa = select_runs_at_leads(pasa)
+    merged = merge_price_pasa(price, pasa)
 
-    return merge_price_pasa(price, pasa)
+    pd_hist = await _fetch_predispatch_history(db, start, end)
+    if pd_hist.empty:
+        for col in PD_FEATURES:
+            merged[col] = np.nan
+    else:
+        pd_feat = predispatch_window_features(pd_hist)
+        pd_sel = select_runs_at_leads(pd_feat).rename(columns={"regionid": "region"})
+        pd_sel["region"] = to_regionid(pd_sel["region"])
+        merged = merged.merge(
+            pd_sel[["interval_datetime", "region", "lead_bucket"] + PD_FEATURES],
+            on=["interval_datetime", "region", "lead_bucket"],
+            how="left",
+        )
+    return merged.drop(columns=["lead_bucket"])
 
 
 def nem_now() -> datetime:
@@ -613,18 +649,46 @@ def combine_forward_pasa(
     return pasa.head(HORIZON_INTERVALS)
 
 
+def _extend_forward_frame(forward: pd.DataFrame, pd_latest: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    """Add ``lead_hours`` and PD window features to a forward PASA frame.
+
+    Pure post-processing step for ``combine_forward_pasa`` output; kept
+    separate so it can be unit-tested without a database.
+    """
+    forward = forward.copy()
+    forward["interval_datetime"] = pd.to_datetime(forward["interval_datetime"])
+    forward["lead_hours"] = (
+        (forward["interval_datetime"] - now).dt.total_seconds() / 3600.0
+    ).astype("float32")
+    if pd_latest.empty:
+        for col in PD_FEATURES:
+            forward[col] = np.nan
+    else:
+        pd_feat = predispatch_window_features(pd_latest)
+        forward = forward.merge(
+            pd_feat[["interval_datetime"] + PD_FEATURES], on="interval_datetime", how="left"
+        )
+    return forward
+
+
 async def load_forecast_inputs(db, region: str) -> pd.DataFrame:
     """Build the forward feature frame (now -> +7 days) for ``region``.
 
     Uses the freshest stored PASA forecast per future interval across *all*
     runs (PD preferred over ST on overlap), so a stale latest run — e.g. after
-    the ingester has been down — cannot blank out the next 24h. No price
+    the ingester has been down — cannot blank out the next 24h. Adds
+    ``lead_hours`` and the latest stored PD run's window features. No price
     column — this is what we predict.
     """
     now = nem_now()
     pd_rows = await db.get_pasa_forward("pdpasa_data", region, now)
     st_rows = await db.get_pasa_forward("stpasa_data", region, now)
-    return combine_forward_pasa(pd.DataFrame(pd_rows), pd.DataFrame(st_rows), now)
+    forward = combine_forward_pasa(pd.DataFrame(pd_rows), pd.DataFrame(st_rows), now)
+    if forward.empty:
+        return forward
+    pd_rows_latest = await db.get_latest_predispatch_price(region)
+    pd_latest = pd.DataFrame(pd_rows_latest)
+    return _extend_forward_frame(forward, pd_latest, now)
 
 
 def default_model_path() -> str:

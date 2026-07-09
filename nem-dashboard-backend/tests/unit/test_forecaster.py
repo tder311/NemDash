@@ -16,6 +16,7 @@ from app.forecaster import (
     PASA_FEATURES,
     REGIONS,
     PriceForecaster,
+    _extend_forward_frame,
     _pasa_derived_features,
     _region_one_hot,
     assemble_features,
@@ -75,7 +76,11 @@ def _synthetic_merged(n_days: int = 30, regions=("NSW1", "SA1"), seed: int = 0) 
                     "surplusreserve": surplus,
                 }
             )
-    return pd.DataFrame(rows)
+    merged = pd.DataFrame(rows)
+    merged["lead_hours"] = 24.0
+    for col in PD_FEATURES:
+        merged[col] = np.nan
+    return merged
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +132,21 @@ def test_assemble_features_drops_null_target_and_excludes_price():
     assert {"demand_spread", "utilisation"} <= set(names)
 
 
+def test_assemble_features_includes_pd_and_lead():
+    merged = _synthetic_merged(n_days=3)
+    X, y, names = assemble_features(merged)
+    for col in PD_FEATURES + ["lead_hours"]:
+        assert col in names
+    assert X["lead_hours"].eq(24.0).all()
+    assert X["pd_rrp"].isna().all()  # NaN preserved, not zero-filled
+
+
+def test_assemble_features_raises_without_lead_or_pd():
+    merged = _synthetic_merged(n_days=2).drop(columns=["pd_rrp"])
+    with pytest.raises(KeyError):
+        assemble_features(merged)
+
+
 # --------------------------------------------------------------------------- #
 # Joins / leakage guards
 # --------------------------------------------------------------------------- #
@@ -155,6 +175,8 @@ def test_merge_price_pasa_inner_joins_on_interval_region():
     pasa = df[["interval_datetime", "region"] + PASA_FEATURES].rename(
         columns={"region": "regionid"}
     )
+    pasa["lead_hours"] = 24.0
+    pasa["lead_bucket"] = 24.0
     merged = merge_price_pasa(price, pasa)
     assert len(merged) == len(df)
     assert {"price", "region", "interval_datetime"} <= set(merged.columns)
@@ -174,6 +196,8 @@ def test_merge_price_pasa_normalises_region_suffix():
             "interval_datetime": pd.to_datetime(["2025-01-15 18:00", "2025-01-15 18:30"]),
             "regionid": ["NSW1", "NSW1"],
             **{c: [1.0, 1.0] for c in PASA_FEATURES},
+            "lead_hours": [24.0, 24.0],
+            "lead_bucket": [24.0, 24.0],
         }
     )
     merged = merge_price_pasa(price, pasa)
@@ -200,6 +224,23 @@ def test_model_learns_signal_beats_mean_baseline():
     model_mae = np.mean(np.abs(pred - truth))
     baseline_mae = np.mean(np.abs(y.iloc[:split].mean() - truth))
     assert model_mae < 0.5 * baseline_mae  # must clearly beat predicting the mean
+
+
+def test_model_learns_pd_scarcity_signal():
+    # Price spikes exactly when the PD window features say the day is tight;
+    # a trained model must rank tight-day intervals above calm-day intervals.
+    merged = _synthetic_merged(n_days=40, regions=("NSW1",), seed=3)
+    rng = np.random.default_rng(3)
+    days = pd.to_datetime(merged["interval_datetime"]).dt.date
+    tight_days = set(rng.choice(sorted(set(days)), size=8, replace=False))
+    tight = days.isin(tight_days).to_numpy()
+    merged.loc[tight, "pd_hours_above_1000"] = 6.0
+    merged.loc[tight, "pd_exceedance_sum"] = 40000.0
+    merged.loc[tight, "price"] = merged.loc[tight, "price"] + 2000.0
+    X, y, _ = assemble_features(merged)
+    model = PriceForecaster({"n_estimators": 120}).train(X, y)
+    preds = model.predict(X)
+    assert preds[tight].mean() > preds[~tight].mean() + 500
 
 
 def test_save_load_roundtrip(tmp_path):
@@ -374,6 +415,22 @@ def test_combine_forward_pasa_caps_horizon_and_sets_region():
 def test_combine_forward_pasa_empty_inputs():
     now = pd.Timestamp("2025-01-15 12:00")
     assert combine_forward_pasa(pd.DataFrame(), pd.DataFrame(), now).empty
+
+
+def test_extend_forward_frame_adds_lead_and_pd():
+    now = pd.Timestamp("2026-07-08 12:00:00")
+    forward = pd.DataFrame({
+        "interval_datetime": pd.date_range("2026-07-08 12:30:00", periods=4, freq="30min"),
+        "region": "VIC1",
+        **{c: 1000.0 for c in PASA_FEATURES},
+    })
+    pd_latest = _pd_frame([100.0, 5500.0, 5500.0, 5500.0], start="2026-07-08 12:30:00",
+                          run="2026-07-08 11:00:00")
+    out = _extend_forward_frame(forward, pd_latest, now)
+    assert out["lead_hours"].iloc[0] == 0.5
+    assert out["pd_hours_above_5000"].iloc[0] == 1.5
+    empty = _extend_forward_frame(forward.copy(), pd.DataFrame(), now)
+    assert empty["pd_rrp"].isna().all()
 
 
 def _pd_frame(rrps, region="VIC1", run="2026-07-07 12:00:00", start="2026-07-08 00:30:00"):
