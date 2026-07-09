@@ -307,6 +307,54 @@ def select_runs_at_lead(
     return df.reset_index(drop=True)
 
 
+# (target_lead_hours, tolerance_hours) buckets spanning intraday to 7-day leads.
+# Tolerances roughly half the gap to the neighbouring bucket so bands don't overlap much.
+LEAD_BUCKETS: List[Tuple[float, float]] = [
+    (12.0, 6.0),
+    (24.0, 12.0),
+    (48.0, 24.0),
+    (96.0, 36.0),
+    (168.0, 36.0),
+]
+
+
+def select_runs_at_leads(
+    pasa: pd.DataFrame,
+    buckets: List[Tuple[float, float]] = LEAD_BUCKETS,
+) -> pd.DataFrame:
+    """One row per (interval, region, lead bucket): the run nearest each target lead.
+
+    Training across leads (with lead_hours as a feature) teaches the model how much to
+    trust far-lead inputs, e.g. phantom VOLL a week out vs. real tightness at 12h.
+
+    Ties within a bucket favour the shorter lead (unlike ``select_runs_at_lead``'s
+    longer-lead tie-break) so that overlapping bucket bands don't both starve for the
+    same run; a run selected by more than one bucket is then kept only by its nearest.
+    """
+    frames = []
+    for target, tolerance in buckets:
+        df = pasa.copy()
+        df["run_datetime"] = pd.to_datetime(df["run_datetime"])
+        df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
+        df["lead_hours"] = (df["interval_datetime"] - df["run_datetime"]).dt.total_seconds() / 3600
+        df = df[(df["lead_hours"] >= 0) & ((df["lead_hours"] - target).abs() <= tolerance)]
+        df["lead_dist"] = (df["lead_hours"] - target).abs()
+        df = df.sort_values(["lead_dist", "lead_hours"]).drop_duplicates(
+            subset=["interval_datetime", "regionid"], keep="first"
+        )
+        df["lead_bucket"] = target
+        frames.append(df)
+
+    out = pd.concat(frames, ignore_index=True)
+    # A run selected by several buckets keeps only its nearest bucket.
+    out = out.sort_values("lead_dist").drop_duplicates(
+        subset=["interval_datetime", "regionid", "run_datetime"], keep="first"
+    )
+    return out.drop(columns=["lead_dist"]).sort_values(
+        ["regionid", "interval_datetime", "lead_bucket"]
+    ).reset_index(drop=True)
+
+
 def to_30min_price(price: pd.DataFrame) -> pd.DataFrame:
     """Aggregate 5-min RRP to the 30-min period-ending block mean, per region.
 

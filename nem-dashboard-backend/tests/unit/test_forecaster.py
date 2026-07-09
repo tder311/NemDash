@@ -10,6 +10,7 @@ import pytest
 
 from app.forecaster import (
     HORIZON_INTERVALS,
+    LEAD_BUCKETS,
     PD_FEATURES,
     combine_forward_pasa,
     PASA_FEATURES,
@@ -23,6 +24,7 @@ from app.forecaster import (
     merge_price_pasa,
     predispatch_window_features,
     select_runs_at_lead,
+    select_runs_at_leads,
     to_30min_price,
     walk_forward_validate,
 )
@@ -259,6 +261,43 @@ def test_select_runs_at_lead_tiebreak_prefers_longer_lead():
     pasa = _runs_for_interval(interval, ["2025-01-14 15:00", "2025-01-14 21:00"])
     out = select_runs_at_lead(pasa, target_lead_hours=24, tolerance_hours=12)
     assert out["run_datetime"].iloc[0] == pd.Timestamp("2025-01-14 15:00")
+
+
+def _runs_frame(region="NSW1"):
+    """One target interval, runs at leads 6h..7d (uses rrp as the payload col)."""
+    interval = pd.Timestamp("2026-07-08 19:00:00")
+    leads = [6, 18, 30, 90, 170]
+    return pd.DataFrame({
+        "run_datetime": [interval - pd.Timedelta(hours=h) for h in leads],
+        "interval_datetime": interval,
+        "regionid": region,
+        "rrp": [float(h) for h in leads],
+    })
+
+
+def test_select_runs_at_leads_one_row_per_bucket():
+    out = select_runs_at_leads(_runs_frame())
+    assert set(out["lead_bucket"]) == {b for b, _ in LEAD_BUCKETS}
+    # each bucket picked the causal run nearest its target lead
+    picked = out.set_index("lead_bucket")["lead_hours"].to_dict()
+    assert picked[12.0] == 6.0 and picked[24.0] == 18.0 and picked[168.0] == 170.0
+
+
+def test_select_runs_at_leads_dedups_shared_runs():
+    # Only one run exists; it can serve at most one bucket after dedup.
+    interval = pd.Timestamp("2026-07-08 19:00:00")
+    one = pd.DataFrame({
+        "run_datetime": [interval - pd.Timedelta(hours=20)],
+        "interval_datetime": interval, "regionid": "NSW1", "rrp": [1.0],
+    })
+    out = select_runs_at_leads(one)
+    assert len(out) == 1 and out["lead_bucket"].iloc[0] == 24.0
+
+
+def test_select_runs_at_leads_causal():
+    out = select_runs_at_leads(_runs_frame())
+    assert (out["lead_hours"] >= 0).all()
+    assert "lead_dist" not in out.columns
 
 
 def test_to_30min_price_is_period_ending_block_mean():
