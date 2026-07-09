@@ -63,6 +63,16 @@ def calculate_aggregation_minutes(hours: int) -> int:
         return 10080
 
 
+def filter_binding_constraints(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only binding-or-violated constraint rows (marginalvalue != 0 or violationdegree != 0).
+
+    Non-binding rows carry no signal and would be ~50x the volume of the binding-only set.
+    """
+    if df.empty:
+        return df
+    return df[(df["marginalvalue"] != 0) | (df["violationdegree"] != 0)]
+
+
 @dataclass
 class DatabaseConfig:
     """Database configuration settings."""
@@ -194,6 +204,37 @@ class NEMDatabase:
                 )
             """)
 
+            # PD interconnector solution (flows vs limits), one row per run x interval x interconnector
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS predispatch_interconnector (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_datetime TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    interconnectorid TEXT NOT NULL,
+                    mwflow REAL,
+                    exportlimit REAL,
+                    importlimit REAL,
+                    marginalvalue REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_datetime, interval_datetime, interconnectorid)
+                )
+            """)
+
+            # PD constraint solution, binding-or-violated rows only (see insert_predispatch_constraint)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS predispatch_constraint (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_datetime TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    constraintid TEXT NOT NULL,
+                    rhs REAL,
+                    marginalvalue REAL,
+                    violationdegree REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_datetime, interval_datetime, constraintid)
+                )
+            """)
+
             # Served price-forecaster output, one row per serve x interval x region
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS forecast_history (
@@ -310,6 +351,10 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_stpasa_region_run ON stpasa_data(regionid, run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_region ON predispatch_price(regionid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_region_run ON predispatch_price(regionid, run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_ic_id ON predispatch_interconnector(interconnectorid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_ic_id_run ON predispatch_interconnector(interconnectorid, run_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id ON predispatch_constraint(constraintid)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id_run ON predispatch_constraint(constraintid, run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_forecast_history_region_interval ON forecast_history(region, interval_datetime)")
 
             # Daily metrics indexes
@@ -1570,6 +1615,72 @@ class NEMDatabase:
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (run_datetime, interval_datetime, regionid) DO UPDATE SET
                     rrp = EXCLUDED.rrp
+            """, records)
+        return len(records)
+
+    async def insert_predispatch_interconnector(self, df: pd.DataFrame) -> int:
+        """Insert PD interconnector solution rows (flows vs limits); all rows are kept."""
+        if df.empty:
+            return 0
+        records = []
+        for _, row in df.iterrows():
+            run = row['run_datetime']
+            interval = row['interval_datetime']
+            records.append((
+                run.to_pydatetime() if hasattr(run, 'to_pydatetime') else run,
+                interval.to_pydatetime() if hasattr(interval, 'to_pydatetime') else interval,
+                row['interconnectorid'],
+                row.get('mwflow'),
+                row.get('exportlimit'),
+                row.get('importlimit'),
+                row.get('marginalvalue'),
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO predispatch_interconnector
+                (run_datetime, interval_datetime, interconnectorid, mwflow, exportlimit, importlimit, marginalvalue)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (run_datetime, interval_datetime, interconnectorid) DO UPDATE SET
+                    mwflow = EXCLUDED.mwflow,
+                    exportlimit = EXCLUDED.exportlimit,
+                    importlimit = EXCLUDED.importlimit,
+                    marginalvalue = EXCLUDED.marginalvalue
+            """, records)
+        return len(records)
+
+    async def insert_predispatch_constraint(self, df: pd.DataFrame) -> int:
+        """Insert PD constraint solution rows, keeping only binding-or-violated ones.
+
+        Filtering is delegated to filter_binding_constraints (see its docstring for the rationale).
+        """
+        if df.empty:
+            return 0
+        df = filter_binding_constraints(df)
+        if df.empty:
+            return 0
+        records = []
+        for _, row in df.iterrows():
+            run = row['run_datetime']
+            interval = row['interval_datetime']
+            records.append((
+                run.to_pydatetime() if hasattr(run, 'to_pydatetime') else run,
+                interval.to_pydatetime() if hasattr(interval, 'to_pydatetime') else interval,
+                row['constraintid'],
+                row.get('rhs'),
+                row.get('marginalvalue'),
+                row.get('violationdegree'),
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO predispatch_constraint
+                (run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (run_datetime, interval_datetime, constraintid) DO UPDATE SET
+                    rhs = EXCLUDED.rhs,
+                    marginalvalue = EXCLUDED.marginalvalue,
+                    violationdegree = EXCLUDED.violationdegree
             """, records)
         return len(records)
 

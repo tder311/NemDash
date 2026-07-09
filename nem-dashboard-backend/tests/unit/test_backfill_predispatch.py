@@ -4,10 +4,15 @@ import pandas as pd
 import pytest
 
 from scripts.backfill_predispatch import (
+    build_run_constraint_dataframe,
     build_run_dataframe,
+    build_run_interconnector_dataframe,
     list_week_files,
     member_run_datetime,
+    parse_predispatch_constraint_csv,
     parse_predispatch_csv,
+    parse_predispatch_interconnector_csv,
+    resolve_table_keys,
     select_members,
     week_url,
 )
@@ -158,3 +163,135 @@ class TestBuildRunDataframe:
         df = build_run_dataframe("C,header only\n", pd.Timestamp("2025-06-22 00:30:00"))
         assert df.empty
         assert list(df.columns) == ["run_datetime", "interval_datetime", "regionid", "rrp"]
+
+
+# Real table/column names verified against a downloaded PUBLIC_PREDISPATCHIS_*.zip inner file
+# (run 202607092200, 2026-07-09).
+SAMPLE_INTERCONNECTOR_CSV = (
+    'C,NEMP.WORLD,PREDISPATCHIS,AEMO,PUBLIC,2026/07/09,21:31:37,1,1,1\n'
+    'I,PREDISPATCH,INTERCONNECTOR_SOLN,3,PREDISPATCHSEQNO,RUNNO,INTERCONNECTORID,PERIODID,'
+    'INTERVENTION,METEREDMWFLOW,MWFLOW,MWLOSSES,MARGINALVALUE,VIOLATIONDEGREE,LASTCHANGED,'
+    'DATETIME,EXPORTLIMIT,IMPORTLIMIT,MARGINALLOSS,EXPORTGENCONID,IMPORTGENCONID,'
+    'FCASEXPORTLIMIT,FCASIMPORTLIMIT,LOCAL_PRICE_ADJUSTMENT_EXPORT,LOCALLY_CONSTRAINED_EXPORT,'
+    'LOCAL_PRICE_ADJUSTMENT_IMPORT,LOCALLY_CONSTRAINED_IMPORT\n'
+    'D,PREDISPATCH,INTERCONNECTOR_SOLN,3,2026070936,1,NSW1-QLD1,01,0,-918.09375,-757.02649,'
+    '33.7397,0,0,"2026/07/09 21:31:37","2026/07/09 22:00:00",335.40733,-915.48736,0.89248,'
+    'N>>NIL_33_34,N>>LDTM_964_81_OPEN,2204,-2478,0,0,0,0\n'
+    'D,PREDISPATCH,INTERCONNECTOR_SOLN,3,2026070936,1,NSW1-QLD1,02,0,-900.0,-700.0,30.0,12.5,0,'
+    '"2026/07/09 21:31:37","2026/07/09 22:30:00",335.40733,-915.48736,0.89248,'
+    'N>>NIL_33_34,N>>LDTM_964_81_OPEN,2204,-2478,0,0,0,0\n'
+    # Intervention row for the same run/interconnector should be dropped.
+    'D,PREDISPATCH,INTERCONNECTOR_SOLN,3,2026070936,1,NSW1-QLD1,01,1,999,999,999,999,0,'
+    '"2026/07/09 21:31:37","2026/07/09 22:00:00",999,999,0.89248,'
+    'N>>NIL_33_34,N>>LDTM_964_81_OPEN,2204,-2478,0,0,0,0\n'
+    'C,"END OF REPORT",9\n'
+)
+
+SAMPLE_CONSTRAINT_CSV = (
+    'C,NEMP.WORLD,PREDISPATCHIS,AEMO,PUBLIC,2026/07/09,21:31:37,1,1,1\n'
+    'I,PREDISPATCH,CONSTRAINT_SOLUTION,5,PREDISPATCHSEQNO,RUNNO,CONSTRAINTID,PERIODID,'
+    'INTERVENTION,RHS,MARGINALVALUE,VIOLATIONDEGREE,LASTCHANGED,DATETIME,DUID,'
+    'GENCONID_EFFECTIVEDATE,GENCONID_VERSIONNO,LHS\n'
+    'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_BINDING,2026070936,0,150,25.5,0,'
+    '"2026/07/09 21:31:37","2026/07/09 22:00:00",,"2026/06/02 00:00:00",1,55.33532\n'
+    'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_SLACK,2026070936,0,80,0,0,'
+    '"2026/07/09 21:31:37","2026/07/09 22:00:00",,"2026/06/02 00:00:00",1,10.0\n'
+    'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_VIOLATED,2026070936,0,10,0,5,'
+    '"2026/07/09 21:31:37","2026/07/09 22:00:00",,"2026/06/02 00:00:00",1,15.0\n'
+    # Intervention row should be dropped.
+    'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_BINDING,2026070936,1,150,999,0,'
+    '"2026/07/09 21:31:37","2026/07/09 22:00:00",,"2026/06/02 00:00:00",1,55.33532\n'
+    'C,"END OF REPORT",9\n'
+)
+
+
+class TestParsePredispatchInterconnectorCsv:
+    def test_parses_expected_rows(self):
+        df = parse_predispatch_interconnector_csv(SAMPLE_INTERCONNECTOR_CSV)
+        assert len(df) == 2
+        assert list(df.columns) == [
+            "interval_datetime", "interconnectorid", "mwflow", "exportlimit",
+            "importlimit", "marginalvalue",
+        ]
+
+    def test_drops_intervention_rows(self):
+        df = parse_predispatch_interconnector_csv(SAMPLE_INTERCONNECTOR_CSV)
+        assert 999 not in df["mwflow"].tolist()
+
+    def test_parses_values(self):
+        df = parse_predispatch_interconnector_csv(SAMPLE_INTERCONNECTOR_CSV)
+        row = df[df["interval_datetime"] == pd.Timestamp("2026-07-09 22:30:00")].iloc[0]
+        assert row["mwflow"] == pytest.approx(-700.0)
+        assert row["marginalvalue"] == pytest.approx(12.5)
+
+    def test_no_table_returns_empty(self):
+        df = parse_predispatch_interconnector_csv("C,header only\n")
+        assert df.empty
+        assert list(df.columns) == [
+            "interval_datetime", "interconnectorid", "mwflow", "exportlimit",
+            "importlimit", "marginalvalue",
+        ]
+
+
+class TestParsePredispatchConstraintCsv:
+    def test_parses_all_rows_unfiltered_by_binding(self):
+        """Binding-only filtering happens downstream (build_run_constraint_dataframe)."""
+        df = parse_predispatch_constraint_csv(SAMPLE_CONSTRAINT_CSV)
+        assert len(df) == 3
+        assert set(df["constraintid"]) == {"C_BINDING", "C_SLACK", "C_VIOLATED"}
+
+    def test_drops_intervention_rows(self):
+        df = parse_predispatch_constraint_csv(SAMPLE_CONSTRAINT_CSV)
+        assert 999 not in df["marginalvalue"].tolist()
+
+    def test_no_table_returns_empty(self):
+        df = parse_predispatch_constraint_csv("C,header only\n")
+        assert df.empty
+        assert list(df.columns) == [
+            "interval_datetime", "constraintid", "rhs", "marginalvalue", "violationdegree",
+        ]
+
+
+class TestBuildRunInterconnectorDataframe:
+    def test_attaches_run_datetime(self):
+        run_dt = pd.Timestamp("2026-07-09 22:00:00")
+        df = build_run_interconnector_dataframe(SAMPLE_INTERCONNECTOR_CSV, run_dt)
+        assert (df["run_datetime"] == run_dt).all()
+        assert len(df) == 2
+
+    def test_empty_csv_returns_empty_frame(self):
+        df = build_run_interconnector_dataframe("C,header only\n", pd.Timestamp("2026-07-09 22:00:00"))
+        assert df.empty
+
+
+class TestBuildRunConstraintDataframe:
+    def test_keeps_binding_or_violated_rows_only(self):
+        run_dt = pd.Timestamp("2026-07-09 22:00:00")
+        df = build_run_constraint_dataframe(SAMPLE_CONSTRAINT_CSV, run_dt)
+        assert set(df["constraintid"]) == {"C_BINDING", "C_VIOLATED"}
+        assert (df["run_datetime"] == run_dt).all()
+
+    def test_all_slack_returns_empty_frame(self):
+        slack_only = SAMPLE_CONSTRAINT_CSV.replace(
+            'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_BINDING,2026070936,0,150,25.5,0,',
+            'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_BINDING,2026070936,0,150,0,0,',
+        ).replace(
+            'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_VIOLATED,2026070936,0,10,0,5,',
+            'D,PREDISPATCH,CONSTRAINT_SOLUTION,5,2026070936,1,C_VIOLATED,2026070936,0,10,0,0,',
+        )
+        df = build_run_constraint_dataframe(slack_only, pd.Timestamp("2026-07-09 22:00:00"))
+        assert df.empty
+
+
+class TestResolveTableKeys:
+    def test_prices_only(self):
+        assert resolve_table_keys("prices") == ["prices"]
+
+    def test_network_expands_to_interconnector_and_constraint(self):
+        assert resolve_table_keys("network") == ["interconnector", "constraint"]
+
+    def test_default_combines_both_groups(self):
+        assert resolve_table_keys("prices,network") == ["prices", "interconnector", "constraint"]
+
+    def test_strips_whitespace(self):
+        assert resolve_table_keys(" prices , network ") == ["prices", "interconnector", "constraint"]
