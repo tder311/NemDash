@@ -13,6 +13,7 @@ from app.forecaster import (
     LEAD_BUCKETS,
     PD_FEATURES,
     combine_forward_pasa,
+    compute_forecast_accuracy,
     PASA_FEATURES,
     REGIONS,
     PriceForecaster,
@@ -590,3 +591,126 @@ def test_pd_window_longest_run_broken_by_dip():
     f = predispatch_window_features(_pd_frame([500.0, 500.0, 500.0, 100.0, 500.0, 500.0]))
     assert f["pd_longest_run_above_300"].iloc[0] == 1.5
     assert set(PD_FEATURES) <= set(f.columns)
+
+
+# --------------------------------------------------------------------------- #
+# compute_forecast_accuracy
+# --------------------------------------------------------------------------- #
+
+BASE = pd.Timestamp("2026-07-01 12:00:00")
+
+
+def _fc_row(lead_hours, p50, p10=None, p90=None, interval=BASE, region="NSW1"):
+    return {
+        "run_at": interval - pd.Timedelta(hours=lead_hours),
+        "interval_datetime": interval,
+        "region": region,
+        "p50": p50,
+        "p10": p10,
+        "p90": p90,
+    }
+
+
+def _realised_row(price, interval=BASE, region="NSW1"):
+    return {"settlementdate": interval, "region": region, "price": price}
+
+
+def _bucket(result, hours):
+    return next(b for b in result["buckets"] if b["lead_bucket_hours"] == hours)
+
+
+def test_accuracy_all_buckets_present_even_when_empty():
+    result = compute_forecast_accuracy(pd.DataFrame(), pd.DataFrame())
+    assert {b["lead_bucket_hours"] for b in result["buckets"]} == {b for b, _ in LEAD_BUCKETS}
+    assert all(b["n"] == 0 for b in result["buckets"])
+    assert result["overall"]["n"] == 0
+    assert np.isnan(result["overall"]["mae"])
+
+
+def test_accuracy_known_mae():
+    forecast = pd.DataFrame([_fc_row(24, p50=90.0, p10=50.0, p90=150.0)])
+    realised = pd.DataFrame([_realised_row(100.0)])
+    result = compute_forecast_accuracy(forecast, realised)
+    bucket = _bucket(result, 24.0)
+    assert bucket["n"] == 1
+    assert bucket["mae"] == pytest.approx(10.0)
+    assert result["overall"]["mae"] == pytest.approx(10.0)
+
+
+def test_accuracy_coverage_hit_and_miss():
+    forecast = pd.DataFrame([
+        _fc_row(24, p50=90.0, p10=50.0, p90=150.0, interval=BASE),
+        _fc_row(24, p50=20.0, p10=10.0, p90=30.0, interval=BASE + pd.Timedelta(minutes=30)),
+    ])
+    realised = pd.DataFrame([
+        _realised_row(100.0, interval=BASE),  # inside [50, 150] -> covered
+        _realised_row(50.0, interval=BASE + pd.Timedelta(minutes=30)),  # outside [10, 30] -> miss
+    ])
+    bucket = _bucket(compute_forecast_accuracy(forecast, realised), 24.0)
+    assert bucket["coverage_n"] == 2
+    assert bucket["p10_p90_coverage"] == pytest.approx(0.5)
+
+
+def test_accuracy_spike_recall_one_caught_one_missed():
+    forecast = pd.DataFrame([
+        _fc_row(24, p50=500.0, p10=100.0, p90=600.0, interval=BASE),
+        _fc_row(24, p50=200.0, p10=50.0, p90=300.0, interval=BASE + pd.Timedelta(minutes=30)),
+    ])
+    realised = pd.DataFrame([
+        _realised_row(2000.0, interval=BASE),  # settled spike, p90=600 > 500 -> caught
+        _realised_row(1500.0, interval=BASE + pd.Timedelta(minutes=30)),  # p90=300 < 500 -> missed
+    ])
+    bucket = _bucket(compute_forecast_accuracy(forecast, realised), 24.0)
+    assert bucket["spike_n"] == 2
+    assert bucket["spike_recall"] == pytest.approx(0.5)
+
+
+def test_accuracy_null_quantile_row_counted_in_mae_excluded_from_coverage():
+    forecast = pd.DataFrame([
+        _fc_row(24, p50=80.0, p10=np.nan, p90=np.nan, interval=BASE),
+        _fc_row(24, p50=90.0, p10=50.0, p90=150.0, interval=BASE + pd.Timedelta(minutes=30)),
+    ])
+    realised = pd.DataFrame([
+        _realised_row(100.0, interval=BASE),  # |80 - 100| = 20, no quantiles
+        _realised_row(100.0, interval=BASE + pd.Timedelta(minutes=30)),  # |90 - 100| = 10, covered
+    ])
+    bucket = _bucket(compute_forecast_accuracy(forecast, realised), 24.0)
+    assert bucket["n"] == 2
+    assert bucket["mae"] == pytest.approx(15.0)  # mean(20, 10)
+    assert bucket["coverage_n"] == 1
+    assert bucket["p10_p90_coverage"] == pytest.approx(1.0)
+
+
+def test_accuracy_assigns_nearest_lead_bucket():
+    intervals = {12.0: BASE, 24.0: BASE + pd.Timedelta(hours=1), 48.0: BASE + pd.Timedelta(hours=2),
+                 168.0: BASE + pd.Timedelta(hours=3)}
+    # Leads chosen closer to one bucket target than any neighbour.
+    leads = {12.0: 8.0, 24.0: 20.0, 48.0: 60.0, 168.0: 150.0}
+    forecast = pd.DataFrame([
+        _fc_row(leads[target], p50=1.0, p10=0.0, p90=2.0, interval=interval)
+        for target, interval in intervals.items()
+    ])
+    realised = pd.DataFrame([_realised_row(1.0, interval=interval) for interval in intervals.values()])
+    result = compute_forecast_accuracy(forecast, realised)
+    for target in intervals:
+        assert _bucket(result, target)["n"] == 1
+    for target, _tol in LEAD_BUCKETS:
+        if target not in intervals:
+            assert _bucket(result, target)["n"] == 0
+    assert result["overall"]["n"] == 4
+
+
+def test_accuracy_extreme_lead_lands_in_furthest_bucket():
+    # 300h is outside every tolerance band but nearest to the 168h target.
+    forecast = pd.DataFrame([_fc_row(300.0, p50=100.0, p10=50.0, p90=150.0)])
+    realised = pd.DataFrame([_realised_row(100.0)])
+    result = compute_forecast_accuracy(forecast, realised)
+    assert _bucket(result, 168.0)["n"] == 1
+    assert result["overall"]["n"] == 1
+
+
+def test_accuracy_unsettled_forecast_dropped_by_join():
+    # No realised price yet for this interval -> row has nothing to score against.
+    forecast = pd.DataFrame([_fc_row(24, p50=90.0, p10=50.0, p90=150.0)])
+    result = compute_forecast_accuracy(forecast, pd.DataFrame(columns=["settlementdate", "region", "price"]))
+    assert result["overall"]["n"] == 0

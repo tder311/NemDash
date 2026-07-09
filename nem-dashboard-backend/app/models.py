@@ -238,3 +238,24 @@ class PriceForecastResponse(BaseModel):
     horizon_intervals: int
     model_trained_at: Optional[str] = None
     message: str
+
+
+class ForecastAccuracyStats(BaseModel):
+    n: int
+    mae: Optional[float] = None
+    coverage_n: int
+    p10_p90_coverage: Optional[float] = None
+    spike_n: int
+    spike_recall: Optional[float] = None
+
+
+class ForecastAccuracyBucket(ForecastAccuracyStats):
+    lead_bucket_hours: float
+
+
+class ForecastAccuracyResponse(BaseModel):
+    region: str
+    days: int
+    buckets: List[ForecastAccuracyBucket]
+    overall: ForecastAccuracyStats
+    message: str
