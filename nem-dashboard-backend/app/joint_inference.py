@@ -54,7 +54,8 @@ def solve_unit_generation(
     ic_flows: run_datetime, interval_datetime, interconnectorid, mwflow.
     region_demand: run_datetime, interval_datetime, regionid, demand (empty => region terms
         are unresolvable, so every region-term constraint is dropped from its system).
-    bounds: optional duid, maxavail (per-unit upper bound); missing units get default_max_mw.
+    bounds: optional duid, maxavail upper bounds -- per (interval_datetime, duid) when an
+        interval_datetime column is present, else per duid; missing units get default_max_mw.
 
     A constraint whose known (interconnector/region) terms cannot all be resolved is dropped
     from its system rather than zero-filled -- a wrong substitution would poison every unit.
@@ -85,11 +86,14 @@ def solve_unit_generation(
     return pd.concat(results, ignore_index=True)[OUTPUT_COLUMNS]
 
 
-def _build_bounds_lookup(bounds: pd.DataFrame) -> dict:
-    """Map duid -> MAXAVAIL upper bound; empty when no bounds supplied."""
+def _build_bounds_lookup(bounds: pd.DataFrame) -> tuple:
+    """(cap lookup dict, keyed_by_interval flag); keys are (interval, duid) or plain duid."""
     if bounds is None or bounds.empty:
-        return {}
-    return dict(zip(bounds["duid"], pd.to_numeric(bounds["maxavail"], errors="coerce")))
+        return {}, False
+    caps = pd.to_numeric(bounds["maxavail"], errors="coerce")
+    if "interval_datetime" in bounds.columns:
+        return dict(zip(zip(bounds["interval_datetime"], bounds["duid"]), caps)), True
+    return dict(zip(bounds["duid"], caps)), False
 
 
 def _build_duid_system_rows(
@@ -178,7 +182,9 @@ def _solve_interval(run, interval, grp, bounds_lookup, default_max_mw) -> pd.Dat
     b_by_constraint = grp.drop_duplicates("constraintid").set_index("constraintid")["b"]
     b_vector = b_by_constraint.reindex(pivot.index).to_numpy(dtype=float)
 
-    upper = np.array([_unit_upper_bound(d, bounds_lookup, default_max_mw) for d in duids])
+    caps, by_interval = bounds_lookup
+    keys = [(interval, d) if by_interval else d for d in duids]
+    upper = np.array([_unit_upper_bound(k, caps, default_max_mw) for k in keys])
     solution = lsq_linear(a_matrix, b_vector, bounds=(np.zeros(len(duids)), upper))
     residual = float(np.linalg.norm(a_matrix @ solution.x - b_vector))
 
@@ -196,9 +202,9 @@ def _solve_interval(run, interval, grp, bounds_lookup, default_max_mw) -> pd.Dat
     })
 
 
-def _unit_upper_bound(duid, bounds_lookup, default_max_mw) -> float:
-    """MAXAVAIL upper bound for a unit, falling back to the large default cap."""
-    cap = bounds_lookup.get(duid, default_max_mw)
+def _unit_upper_bound(key, caps, default_max_mw) -> float:
+    """MAXAVAIL upper bound for one unit (or interval-unit) key, else the large default cap."""
+    cap = caps.get(key, default_max_mw)
     if pd.isna(cap) or cap <= 0:
         return default_max_mw
     return float(cap)

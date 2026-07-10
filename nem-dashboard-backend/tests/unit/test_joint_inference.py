@@ -72,6 +72,25 @@ class TestBoundsRespected:
         assert out.iloc[0]["mw_inferred"] <= 40.0 + 1e-9
         assert out.iloc[0]["mw_inferred"] == pytest.approx(40.0, abs=1e-6)
 
+    def test_per_interval_bounds_apply_to_matching_interval_only(self):
+        ivl2 = pd.Timestamp("2026-07-09 11:00:00")
+        lhs = _lhs([
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C1", "lhs": 100.0},
+            {"run_datetime": RUN, "interval_datetime": ivl2, "constraintid": "C1", "lhs": 100.0},
+        ])
+        terms = _terms([_duid_term("C1", "A", 1.0)])
+        bounds = pd.DataFrame(
+            [{"interval_datetime": IVL, "duid": "A", "maxavail": 40.0}],
+            columns=["interval_datetime", "duid", "maxavail"],
+        )
+
+        out = solve_unit_generation(lhs, terms, _ic([]), _region([]), bounds=bounds)
+
+        by_interval = out.set_index("interval_datetime")["mw_inferred"]
+        # IVL is capped at its MAXAVAIL; ivl2 has no bound row so it gets the large default cap.
+        assert by_interval[IVL] == pytest.approx(40.0, abs=1e-6)
+        assert by_interval[ivl2] == pytest.approx(100.0, abs=1e-6)
+
     def test_solution_is_non_negative(self):
         lhs = _lhs([
             {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C1", "lhs": -50.0},
