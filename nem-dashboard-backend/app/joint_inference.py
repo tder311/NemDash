@@ -319,3 +319,33 @@ def build_paired_series(inferred: pd.DataFrame, realised: pd.DataFrame) -> pd.Da
         return pd.DataFrame(columns=SERIES_COLUMNS)
     merged = selected.merge(realised, on=["interval_datetime", "duid"], how="outer")
     return merged.sort_values("interval_datetime")[SERIES_COLUMNS].reset_index(drop=True)
+
+
+def aggregate_bounds_to_30min(bids: pd.DataFrame) -> pd.DataFrame:
+    """Max MAXAVAIL per (30-min interval, duid) from 5-min bid rows (period-ending, via ceil)."""
+    out = bids.copy()
+    out["interval_datetime"] = out["settlementdate"].dt.ceil("30min")
+    return out.groupby(["interval_datetime", "duid"], as_index=False)["maxavail"].max()
+
+
+# --- DB-aware input fetchers (async; everything above is pure and DataFrame-in/DataFrame-out) ---
+
+async def fetch_terms(db) -> pd.DataFrame:
+    """Full constraint equation terms table (latest snapshot)."""
+    async with db._pool.acquire() as conn:
+        rows = await conn.fetch("SELECT constraintid, term_type, term_id, factor FROM constraint_equation_terms")
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+async def fetch_bounds(db, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Per-(30-min interval, duid) MAXAVAIL bounds from stored bid_per_offer rows."""
+    async with db._pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT settlementdate, duid, maxavail FROM bid_per_offer
+            WHERE settlementdate > $1 AND settlementdate <= $2 AND maxavail IS NOT NULL
+        """, start.to_pydatetime(), (end + pd.Timedelta(days=1)).to_pydatetime())
+    bids = pd.DataFrame([dict(r) for r in rows])
+    if bids.empty:
+        return bids
+    bids["settlementdate"] = pd.to_datetime(bids["settlementdate"])
+    return aggregate_bounds_to_30min(bids)

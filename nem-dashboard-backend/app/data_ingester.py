@@ -15,8 +15,7 @@ from .nem_price_setter_client import NEMPriceSetterClient
 from .nem_bid_client import NEMBidClient
 from .database import NEMDatabase
 from .forecaster import select_runs_at_leads
-from .joint_inference import solve_unit_generation
-from scripts.validate_joint_inference import fetch_terms, fetch_bounds
+from .joint_inference import SHORT_LEAD_HOURS, fetch_bounds, fetch_terms, solve_unit_generation
 
 NO_IC_FLOWS = pd.DataFrame(columns=["run_datetime", "interval_datetime", "interconnectorid", "mwflow"])
 NO_REGION_DEMAND = pd.DataFrame(columns=["run_datetime", "interval_datetime", "regionid", "demand"])
@@ -441,9 +440,12 @@ class DataIngester:
                 logger.info("Joint unit inference: no solvable (run, interval) systems in this run")
                 return
             persisted = await self.db.insert_inferred_unit_generation(solved)
+            lead = solved["interval_datetime"] - solved["run_datetime"]
+            n_short_lead = int((lead <= pd.Timedelta(hours=SHORT_LEAD_HOURS)).sum())
             logger.info(
                 f"Joint unit inference: solved {len(solved)} rows across "
-                f"{solved['duid'].nunique()} DUIDs, persisted {persisted} good/weak rows"
+                f"{solved['duid'].nunique()} DUIDs ({n_short_lead} within {SHORT_LEAD_HOURS:.0f}h lead), "
+                f"persisted {persisted} good/weak rows"
             )
         except Exception as e:
             logger.error(f"Error running joint unit inference: {e}")
