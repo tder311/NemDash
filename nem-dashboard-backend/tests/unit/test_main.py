@@ -2192,3 +2192,112 @@ class TestUnitInferenceSeriesEndpoint:
                 assert "boom" in response.json()["detail"]
         finally:
             main_module.db = original_db
+
+
+class TestGenerationForecastEndpoint:
+    """Tests for /api/network/generation-forecast."""
+
+    def _rows(self):
+        import pandas as pd
+
+        run = datetime(2026, 7, 10, 9, 0)
+        ivl1 = datetime(2026, 7, 10, 9, 30)
+        ivl2 = datetime(2026, 7, 10, 10, 0)
+        return pd.DataFrame([
+            {"run_datetime": run, "interval_datetime": ivl1, "duid": "COAL1", "mw_inferred": 500.0,
+             "quality": "good", "station_name": "Big Station", "region": "NSW1", "fuel_source": "Coal",
+             "technology_type": "Steam Turbine", "capacity_mw": 700.0},
+            {"run_datetime": run, "interval_datetime": ivl2, "duid": "COAL1", "mw_inferred": 510.0,
+             "quality": "good", "station_name": "Big Station", "region": "NSW1", "fuel_source": "Coal",
+             "technology_type": "Steam Turbine", "capacity_mw": 700.0},
+            {"run_datetime": run, "interval_datetime": ivl1, "duid": "WIND1", "mw_inferred": 40.0,
+             "quality": "good", "station_name": "Wind Farm", "region": "NSW1", "fuel_source": "Wind",
+             "technology_type": "Wind Turbine", "capacity_mw": 100.0},
+            {"run_datetime": run, "interval_datetime": ivl1, "duid": "VICCOAL", "mw_inferred": 300.0,
+             "quality": "good", "station_name": "Vic Station", "region": "VIC1", "fuel_source": "Coal",
+             "technology_type": "Steam Turbine", "capacity_mw": 400.0},
+        ])
+
+    @pytest.mark.asyncio
+    async def test_returns_units_and_fleets_for_region(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_generation_forecast_rows = AsyncMock(return_value=self._rows())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/generation-forecast?region=NSW1")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["run_datetime"] is not None
+                assert [u["duid"] for u in data["units"]] == ["COAL1"]
+                assert len(data["units"][0]["series"]) == 2
+                assert data["units"][0]["capacity_mw"] == 700.0
+                assert [f["fuel_source"] for f in data["fleets"]] == ["Wind"]
+                assert data["fleets"][0]["n_units_total"] == 1
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_invalid_region_returns_400(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/generation-forecast?region=BOGUS1")
+                assert response.status_code == 400
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_empty_rows_returns_empty_response(self):
+        import pandas as pd
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_generation_forecast_rows = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/generation-forecast?region=NSW1")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["run_datetime"] is None
+                assert data["units"] == []
+                assert data["fleets"] == []
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_generation_forecast_rows = AsyncMock(side_effect=Exception("boom"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/generation-forecast?region=NSW1")
+                assert response.status_code == 500
+                assert "boom" in response.json()["detail"]
+        finally:
+            main_module.db = original_db

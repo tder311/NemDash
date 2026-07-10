@@ -6,12 +6,15 @@ import pytest
 
 from app.database import SENTINEL_MMSDM_VERSION
 from app.joint_inference import (
+    FLEET_FUEL_SOURCES,
     OUTPUT_COLUMNS,
     SERIES_COLUMNS,
     TERMS_OUTPUT_COLUMNS,
     TRACKING_COLUMNS,
     TRACKING_CORR_THRESHOLD,
+    UNIT_FUEL_SOURCES,
     aggregate_realised_30min,
+    build_generation_forecast,
     build_paired_series,
     compute_unit_tracking,
     select_short_lead_latest_run,
@@ -497,3 +500,121 @@ class TestFcasTradetypeExclusion:
         ])
         out = select_terms_for_run_date(all_terms, self.RUN_DATE)
         assert len(out) == 1
+
+
+def _gen_row(run, ivl, duid, mw, quality="good", region="NSW1", fuel="Coal",
+             station="Station A", tech="Steam Turbine", capacity=500.0):
+    return {
+        "run_datetime": run, "interval_datetime": ivl, "duid": duid, "mw_inferred": mw, "quality": quality,
+        "station_name": station, "region": region, "fuel_source": fuel,
+        "technology_type": tech, "capacity_mw": capacity,
+    }
+
+
+class TestBuildGenerationForecast:
+    """Latest-run inferred generation shaped into per-unit series and fleet aggregates for one region."""
+
+    RUN = pd.Timestamp("2026-07-10 09:00:00")
+    IVL1 = pd.Timestamp("2026-07-10 09:30:00")
+    IVL2 = pd.Timestamp("2026-07-10 10:00:00")
+    IVL3 = pd.Timestamp("2026-07-10 10:30:00")
+
+    def test_empty_input_returns_empty_lists(self):
+        out = build_generation_forecast(pd.DataFrame(), "NSW1")
+        assert out == {"units": [], "fleets": []}
+
+    def test_gap_in_unit_series_is_simply_absent(self):
+        # DUID A is inferable at IVL1 and IVL3 only -- IVL2 must not appear, interpolated or zero-filled.
+        rows = pd.DataFrame([
+            _gen_row(self.RUN, self.IVL1, "A", 100.0),
+            _gen_row(self.RUN, self.IVL3, "A", 120.0),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert len(out["units"]) == 1
+        series = out["units"][0]["series"]
+        assert [p["interval_datetime"] for p in series] == [self.IVL1, self.IVL3]
+        assert [p["mw"] for p in series] == [100.0, 120.0]
+
+    def test_latest_run_selection_drops_older_run_rows(self):
+        older_run = self.RUN - pd.Timedelta(hours=1)
+        rows = pd.DataFrame([
+            _gen_row(older_run, self.IVL1, "A", 999.0),
+            _gen_row(self.RUN, self.IVL1, "A", 100.0),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert out["units"][0]["series"] == [{"interval_datetime": self.IVL1, "mw": 100.0, "quality": "good"}]
+
+    def test_region_filtering_excludes_other_regions(self):
+        rows = pd.DataFrame([
+            _gen_row(self.RUN, self.IVL1, "A", 100.0, region="NSW1"),
+            _gen_row(self.RUN, self.IVL1, "B", 200.0, region="VIC1"),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert [u["duid"] for u in out["units"]] == ["A"]
+
+    def test_units_include_only_coal_gas_battery(self):
+        rows = pd.DataFrame([
+            _gen_row(self.RUN, self.IVL1, "COAL1", 100.0, fuel="Coal"),
+            _gen_row(self.RUN, self.IVL1, "GAS1", 50.0, fuel="Gas"),
+            _gen_row(self.RUN, self.IVL1, "BESS1", 30.0, fuel="Battery"),
+            _gen_row(self.RUN, self.IVL1, "WIND1", 20.0, fuel="Wind"),
+            _gen_row(self.RUN, self.IVL1, "SOLAR1", 10.0, fuel="Solar"),
+            _gen_row(self.RUN, self.IVL1, "HYDRO1", 5.0, fuel="Hydro"),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert set(u["duid"] for u in out["units"]) == {"COAL1", "GAS1", "BESS1"}
+        assert set(f["fuel_source"] for f in out["fleets"]) == {"Wind", "Solar"}
+
+    def test_units_carry_generator_info_and_sort_by_capacity_desc(self):
+        rows = pd.DataFrame([
+            _gen_row(self.RUN, self.IVL1, "SMALL1", 10.0, station="Small Station", tech="OCGT", capacity=100.0),
+            _gen_row(self.RUN, self.IVL1, "BIG1", 90.0, station="Big Station", tech="Steam Turbine", capacity=700.0),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert [u["duid"] for u in out["units"]] == ["BIG1", "SMALL1"]
+        big = out["units"][0]
+        assert big["station_name"] == "Big Station"
+        assert big["fuel_source"] == "Coal"
+        assert big["technology_type"] == "Steam Turbine"
+        assert big["capacity_mw"] == 700.0
+
+    def test_battery_quality_passthrough_for_charging_caveat(self):
+        # BESS charging can violate the solver's g>=0 bound; the caller surfaces quality, never hides it.
+        rows = pd.DataFrame([_gen_row(self.RUN, self.IVL1, "BESS1", 0.0, quality="weak", fuel="Battery")])
+        out = build_generation_forecast(rows, "NSW1")
+        assert out["units"][0]["series"][0]["quality"] == "weak"
+
+    def test_fleet_aggregation_sums_only_inferable_units_with_coverage_counts(self):
+        # WIND2 is not inferable at IVL2 -- that interval must sum/count WIND1 only.
+        rows = pd.DataFrame([
+            _gen_row(self.RUN, self.IVL1, "WIND1", 40.0, fuel="Wind", capacity=100.0),
+            _gen_row(self.RUN, self.IVL1, "WIND2", 60.0, fuel="Wind", capacity=150.0),
+            _gen_row(self.RUN, self.IVL2, "WIND1", 45.0, fuel="Wind", capacity=100.0),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert len(out["fleets"]) == 1
+        fleet = out["fleets"][0]
+        assert fleet["fuel_source"] == "Wind"
+        assert fleet["n_units_total"] == 2
+        assert fleet["capacity_total"] == pytest.approx(250.0)
+
+        by_interval = {p["interval_datetime"]: p for p in fleet["series"]}
+        full = by_interval[self.IVL1]
+        assert full["mw_sum"] == pytest.approx(100.0)
+        assert full["n_units"] == 2
+        assert full["capacity_inferable"] == pytest.approx(250.0)
+
+        partial = by_interval[self.IVL2]
+        assert partial["mw_sum"] == pytest.approx(45.0)
+        assert partial["n_units"] == 1
+        assert partial["capacity_inferable"] == pytest.approx(100.0)
+
+    def test_fleets_and_units_are_independent_partitions(self):
+        rows = pd.DataFrame([
+            _gen_row(self.RUN, self.IVL1, "COAL1", 100.0, fuel="Coal"),
+            _gen_row(self.RUN, self.IVL1, "SOLAR1", 20.0, fuel="Solar", capacity=80.0),
+        ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert len(out["units"]) == 1
+        assert len(out["fleets"]) == 1
+        assert out["fleets"][0]["fuel_source"] == "Solar"
