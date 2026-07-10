@@ -12,15 +12,23 @@ fixed linear combination (e.g. two units whose sum is pinned but whose split is 
 is structurally unidentifiable and is flagged, never silently reported as a number.
 """
 
+import hashlib
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import lsq_linear
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 
 from .database import NEMDatabase, SENTINEL_MMSDM_TRADETYPE, SENTINEL_MMSDM_VERSION
 
 OUTPUT_COLUMNS = [
     "run_datetime", "interval_datetime", "duid",
     "mw_inferred", "quality", "n_equations", "system_residual",
+]
+GROUP_OUTPUT_COLUMNS = [
+    "run_datetime", "interval_datetime", "group_id", "duids_key", "duids", "weights",
+    "mw_combined", "n_units", "quality", "n_equations",
 ]
 GROUP_KEYS = ["run_datetime", "interval_datetime"]
 TERM_COLUMNS = ["constraintid", "term_type", "term_id", "factor"]
@@ -30,10 +38,20 @@ DEFAULT_MAX_MW = 100_000.0
 
 # Singular values below SINGULAR_RTOL * max span the null space of A.
 SINGULAR_RTOL = 1e-9
-# A unit whose unit vector projects more than NULL_TOL onto the null space is unidentifiable.
+# A unit projecting more than NULL_TOL onto the null space of A is unidentifiable; the
+# entanglement graph reuses this criterion for membership and for edge-coupling strength.
 NULL_TOL = 1e-6
 # Estimable units whose pseudoinverse row-norm (noise amplification) exceeds this are 'weak'.
 WEAK_SENSITIVITY = 10.0
+
+# Components larger than this are reported 'entangled-complex' with no value (extraction cost/risk).
+MAX_GROUP_UNITS = 12
+# A weight below this fraction of the combination's largest weight is treated as exactly zero.
+GROUP_WEIGHT_TOL = 1e-6
+# Relative gap two determined singular values must clear for their directions to be individually
+# reproducible across intervals; closer than this the row-space basis can rotate, so the whole
+# component is reported 'entangled-complex' rather than emitting unstable per-direction rows.
+GROUP_SEPARATION_RTOL = 1e-3
 
 # Inferred rows are only trusted up to this lead (interval - run) for user-facing series/stats.
 SHORT_LEAD_HOURS = 2.0
@@ -183,18 +201,27 @@ def _substitute_terms(term_rows, values, value_id_col, value_col, key_cols):
     return joined[out_cols]
 
 
-def _solve_interval(run, interval, grp, bounds_lookup, default_max_mw) -> pd.DataFrame:
-    """Assemble and solve one (run, interval) system; return per-DUID rows with quality flags."""
+def _assemble_matrix(grp) -> tuple:
+    """Pivot one (run, interval) group into (duids, A matrix, b vector) for its linear system."""
     pivot = grp.pivot_table(index="constraintid", columns="duid", values="factor", aggfunc="sum", fill_value=0.0)
     duids = list(pivot.columns)
     a_matrix = pivot.to_numpy(dtype=float)
-
     b_by_constraint = grp.drop_duplicates("constraintid").set_index("constraintid")["b"]
     b_vector = b_by_constraint.reindex(pivot.index).to_numpy(dtype=float)
+    return duids, a_matrix, b_vector
 
+
+def _upper_bounds(duids, interval, bounds_lookup, default_max_mw) -> np.ndarray:
+    """MAXAVAIL upper-bound vector aligned to duids for one interval's lsq_linear solve."""
     caps, by_interval = bounds_lookup
     keys = [(interval, d) if by_interval else d for d in duids]
-    upper = np.array([_unit_upper_bound(k, caps, default_max_mw) for k in keys])
+    return np.array([_unit_upper_bound(k, caps, default_max_mw) for k in keys])
+
+
+def _solve_interval(run, interval, grp, bounds_lookup, default_max_mw) -> pd.DataFrame:
+    """Assemble and solve one (run, interval) system; return per-DUID rows with quality flags."""
+    duids, a_matrix, b_vector = _assemble_matrix(grp)
+    upper = _upper_bounds(duids, interval, bounds_lookup, default_max_mw)
     solution = lsq_linear(a_matrix, b_vector, bounds=(np.zeros(len(duids)), upper))
     residual = float(np.linalg.norm(a_matrix @ solution.x - b_vector))
 
@@ -245,6 +272,189 @@ def _classify_units(a_matrix: np.ndarray) -> list:
     quality = np.where(null_projection > NULL_TOL, "unidentifiable",
                        np.where(sensitivity > WEAK_SENSITIVITY, "weak", "good"))
     return quality.tolist()
+
+
+def _empty_group_output() -> pd.DataFrame:
+    """Empty result frame with the canonical group-output schema."""
+    return pd.DataFrame(columns=GROUP_OUTPUT_COLUMNS)
+
+
+def solve_unit_groups(
+    lhs_frame: pd.DataFrame,
+    terms: pd.DataFrame,
+    ic_flows: pd.DataFrame,
+    region_demand: pd.DataFrame,
+) -> pd.DataFrame:
+    """Emit exactly-determined linear COMBINATIONS of individually-unidentifiable units.
+
+    Same inputs and per-(run, interval) system assembly as solve_unit_generation. For each system,
+    units that are not individually estimable are grouped by shared null-space support (connected
+    components of the entanglement graph). A component of m units with local null dimension k has
+    m-k determined combinations -- directions in the row space of A whose factor-weighted unit sum
+    is fixed regardless of how the null-space split is resolved. Each such combination is emitted as
+    one row with a deterministic group_id, so downstream can track the same group across intervals.
+    Individually 'good'/'weak' units never enter a group (they have no null-space support), and
+    every 'unidentifiable' unit appears in exactly one component's rows -- grouped, or as an
+    'entangled-complex' marker when no trustworthy combination exists for its component.
+
+    No bounds are applied: the combined value is the row-space projection of the unconstrained
+    least-squares solution, which is unique regardless of null split (unlike a MAXAVAIL-clamped
+    per-unit solve, whose active bounds would push the projection off the true determined value).
+    """
+    if lhs_frame.empty or terms.empty:
+        return _empty_group_output()
+    usable_lhs = lhs_frame.dropna(subset=["lhs"])
+    if usable_lhs.empty:
+        return _empty_group_output()
+    merged = usable_lhs.merge(terms[TERM_COLUMNS], on="constraintid", how="inner")
+    if merged.empty:
+        return _empty_group_output()
+    duid_rows = _build_duid_system_rows(merged, ic_flows, region_demand)
+    if duid_rows.empty:
+        return _empty_group_output()
+
+    frames = []
+    for (run, interval), grp in duid_rows.groupby(GROUP_KEYS, sort=False):
+        frames.append(_extract_interval_groups(run, interval, grp))
+    non_empty = [f for f in frames if not f.empty]
+    if not non_empty:
+        return _empty_group_output()
+    return pd.concat(non_empty, ignore_index=True)[GROUP_OUTPUT_COLUMNS]
+
+
+def _extract_interval_groups(run, interval, grp) -> pd.DataFrame:
+    """Solve one system, find entangled components, and emit their determined-combination rows."""
+    duids, a_matrix, b_vector = _assemble_matrix(grp)
+    g = np.linalg.lstsq(a_matrix, b_vector, rcond=None)[0]
+
+    null_basis = _null_space_basis(a_matrix)
+    rows = []
+    for component in _entanglement_components(null_basis):
+        rows.extend(_component_group_rows(run, interval, component, duids, a_matrix, null_basis, g))
+    if not rows:
+        return _empty_group_output()
+    return pd.DataFrame(rows)
+
+
+def _null_space_basis(a_matrix: np.ndarray) -> np.ndarray:
+    """Orthonormal rows spanning the null space of A (right-singular vectors with near-zero sv)."""
+    n_cols = a_matrix.shape[1]
+    _, singular, vt = np.linalg.svd(a_matrix, full_matrices=True)
+    smax = singular.max() if singular.size else 0.0
+    singular_full = np.zeros(n_cols)
+    singular_full[: singular.size] = singular
+    return vt[singular_full <= smax * SINGULAR_RTOL, :]
+
+
+def _entanglement_components(null_basis: np.ndarray) -> list:
+    """Connected components of unidentifiable units under null-space coupling (singletons kept).
+
+    Membership uses each column's aggregate null-projection norm > NULL_TOL -- the same criterion
+    _classify_units uses for 'unidentifiable', so every flagged unit lands in some component.
+    Edges use the basis-invariant null-projector coupling |(N^T N)[i, j]| > NULL_TOL; a member
+    coupled to no other (its projection spread thinly over the basis) stays a singleton component.
+    """
+    coupling = null_basis.T @ null_basis
+    members = np.diag(coupling) > NULL_TOL**2
+    adjacency = (np.abs(coupling) > NULL_TOL) & np.outer(members, members)
+    np.fill_diagonal(adjacency, False)
+
+    n_components, labels = connected_components(csr_matrix(adjacency), directed=False)
+    components = []
+    for label in range(n_components):
+        component = np.nonzero((labels == label) & members)[0].tolist()
+        if component:
+            components.append(component)
+    return components
+
+
+def _component_group_rows(run, interval, component, duids, a_matrix, null_basis, g) -> list:
+    """Rows for one component: one per determined direction, or a single entangled-complex marker.
+
+    Determined directions come from the sub-matrix with the component-restricted null space
+    projected out, so each direction is orthogonal to the global null space by construction and
+    its value is invariant to sub-tolerance coupling with units outside the component.
+    """
+    order = np.argsort([duids[i] for i in component])
+    sorted_cols = [component[i] for i in order]
+    sorted_duids = [duids[i] for i in sorted_cols]
+
+    sub = a_matrix[:, sorted_cols]
+    row_mask = np.any(sub != 0.0, axis=1)
+    n_equations = int(row_mask.sum())
+
+    if len(sorted_cols) == 1 or len(sorted_cols) > MAX_GROUP_UNITS:
+        return [_entangled_complex_row(run, interval, sorted_duids, n_equations)]
+
+    null_restricted = null_basis[:, sorted_cols]
+    _, local_sv, local_vt = np.linalg.svd(null_restricted, full_matrices=False)
+    local_null = local_vt[local_sv > NULL_TOL]
+    sub_clean = sub[row_mask] - (sub[row_mask] @ local_null.T) @ local_null
+
+    _, singular, vt = np.linalg.svd(sub_clean, full_matrices=True)
+    cutoff = np.linalg.norm(sub[row_mask]) * SINGULAR_RTOL
+    determined_sv = singular[singular > cutoff]
+    n_determined = determined_sv.size
+    if n_determined == 0:
+        return [_entangled_complex_row(run, interval, sorted_duids, n_equations)]
+
+    if n_determined > 1:
+        gaps = (determined_sv[:-1] - determined_sv[1:]) / determined_sv[:-1]
+        if np.any(gaps < GROUP_SEPARATION_RTOL):
+            return [_entangled_complex_row(run, interval, sorted_duids, n_equations)]
+
+    g_sub = g[sorted_cols]
+    return [
+        _build_group_row(run, interval, sorted_duids, vt[d], g_sub, n_equations)
+        for d in range(n_determined)
+    ]
+
+
+def _build_group_row(run, interval, sorted_duids, direction, g_sub, n_equations) -> dict:
+    """Normalise one determined direction to interpretable weights and its unique combined MW."""
+    weights = direction.copy()
+    weights[np.abs(weights) < GROUP_WEIGHT_TOL * np.abs(weights).max()] = 0.0
+    weights = weights / weights[np.argmax(np.abs(weights))]
+    mw_combined = float(np.dot(weights, g_sub))
+
+    keep = weights != 0.0
+    kept_duids = [d for d, k in zip(sorted_duids, keep) if k]
+    kept_weights = [round(float(w), 6) for w, k in zip(weights, keep) if k]
+    return {
+        "run_datetime": run, "interval_datetime": interval,
+        "group_id": _group_id(kept_duids, kept_weights),
+        "duids_key": _duids_key(kept_duids),
+        "duids": "|".join(kept_duids), "weights": tuple(kept_weights),
+        "mw_combined": mw_combined, "n_units": len(kept_duids),
+        "quality": "exact", "n_equations": n_equations,
+    }
+
+
+def _entangled_complex_row(run, interval, sorted_duids, n_equations) -> dict:
+    """Marker row for a component too large or too degenerate to emit a trustworthy combination."""
+    return {
+        "run_datetime": run, "interval_datetime": interval,
+        "group_id": _group_id(sorted_duids, None),
+        "duids_key": _duids_key(sorted_duids),
+        "duids": "|".join(sorted_duids), "weights": None,
+        "mw_combined": np.nan, "n_units": len(sorted_duids),
+        "quality": "entangled-complex", "n_equations": n_equations,
+    }
+
+
+def _group_id(duids, weights) -> str:
+    """Deterministic id from sorted duids and 6dp-rounded weights. A weight drifting across a
+    rounding boundary mints a new id -- track membership via duids_key where that matters."""
+    if weights is None:
+        payload = "entangled-complex:" + "|".join(duids)
+    else:
+        payload = "|".join(f"{d}:{w:.6f}" for d, w in zip(duids, weights))
+    return hashlib.sha1(payload.encode()).hexdigest()[:12]
+
+
+def _duids_key(duids) -> str:
+    """Membership-only key: stable for the same sorted unit set even when weights (and id) churn."""
+    return hashlib.sha1("|".join(duids).encode()).hexdigest()[:12]
 
 
 def select_short_lead_latest_run(
