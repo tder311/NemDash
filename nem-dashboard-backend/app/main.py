@@ -62,6 +62,7 @@ from .forecaster import (
     default_model_path,
     forecast_price_series,
     load_forecast_accuracy,
+    nem_now,
     train_and_save,
 )
 from .optimiser import DispatchInputs, optimise_dispatch
@@ -1435,7 +1436,7 @@ async def get_generation_forecast(
         )
 
     try:
-        rows = await db.get_latest_generation_forecast_rows(datetime.now())
+        rows = await db.get_latest_generation_forecast_rows(nem_now())
         if rows.empty:
             return GenerationForecastResponse(
                 run_datetime=None, units=[], fleets=[], message="No stored unit-inference rows yet.",

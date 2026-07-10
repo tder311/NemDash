@@ -365,4 +365,3 @@ class GenerationForecastResponse(BaseModel):
     units: List[GenerationForecastUnit]
     fleets: List[GenerationForecastFleet]
     message: str
-    message: str
