@@ -2203,18 +2203,19 @@ class TestGenerationForecastEndpoint:
         run = datetime(2026, 7, 10, 9, 0)
         ivl1 = datetime(2026, 7, 10, 9, 30)
         ivl2 = datetime(2026, 7, 10, 10, 0)
+        # generator_info stores SHORT-form regions ('NSW'), while the endpoint receives 'NSW1'.
         return pd.DataFrame([
             {"run_datetime": run, "interval_datetime": ivl1, "duid": "COAL1", "mw_inferred": 500.0,
-             "quality": "good", "station_name": "Big Station", "region": "NSW1", "fuel_source": "Coal",
+             "quality": "good", "station_name": "Big Station", "region": "NSW", "fuel_source": "Coal",
              "technology_type": "Steam Turbine", "capacity_mw": 700.0},
             {"run_datetime": run, "interval_datetime": ivl2, "duid": "COAL1", "mw_inferred": 510.0,
-             "quality": "good", "station_name": "Big Station", "region": "NSW1", "fuel_source": "Coal",
+             "quality": "good", "station_name": "Big Station", "region": "NSW", "fuel_source": "Coal",
              "technology_type": "Steam Turbine", "capacity_mw": 700.0},
             {"run_datetime": run, "interval_datetime": ivl1, "duid": "WIND1", "mw_inferred": 40.0,
-             "quality": "good", "station_name": "Wind Farm", "region": "NSW1", "fuel_source": "Wind",
+             "quality": "good", "station_name": "Wind Farm", "region": "NSW", "fuel_source": "Wind",
              "technology_type": "Wind Turbine", "capacity_mw": 100.0},
             {"run_datetime": run, "interval_datetime": ivl1, "duid": "VICCOAL", "mw_inferred": 300.0,
-             "quality": "good", "station_name": "Vic Station", "region": "VIC1", "fuel_source": "Coal",
+             "quality": "good", "station_name": "Vic Station", "region": "VIC", "fuel_source": "Coal",
              "technology_type": "Steam Turbine", "capacity_mw": 400.0},
         ])
 

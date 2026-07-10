@@ -502,7 +502,8 @@ class TestFcasTradetypeExclusion:
         assert len(out) == 1
 
 
-def _gen_row(run, ivl, duid, mw, quality="good", region="NSW1", fuel="Coal",
+# generator_info stores SHORT-form regions ('NSW'), while the endpoint receives 'NSW1'.
+def _gen_row(run, ivl, duid, mw, quality="good", region="NSW", fuel="Coal",
              station="Station A", tech="Steam Turbine", capacity=500.0):
     return {
         "run_datetime": run, "interval_datetime": ivl, "duid": duid, "mw_inferred": mw, "quality": quality,
@@ -546,9 +547,15 @@ class TestBuildGenerationForecast:
 
     def test_region_filtering_excludes_other_regions(self):
         rows = pd.DataFrame([
-            _gen_row(self.RUN, self.IVL1, "A", 100.0, region="NSW1"),
-            _gen_row(self.RUN, self.IVL1, "B", 200.0, region="VIC1"),
+            _gen_row(self.RUN, self.IVL1, "A", 100.0, region="NSW"),
+            _gen_row(self.RUN, self.IVL1, "B", 200.0, region="VIC"),
         ])
+        out = build_generation_forecast(rows, "NSW1")
+        assert [u["duid"] for u in out["units"]] == ["A"]
+
+    def test_regionid_request_matches_short_form_generator_info_regions(self):
+        # generator_info stores 'NSW'; a 'NSW1' request must still find the unit (regionid -> short form).
+        rows = pd.DataFrame([_gen_row(self.RUN, self.IVL1, "A", 100.0, region="NSW")])
         out = build_generation_forecast(rows, "NSW1")
         assert [u["duid"] for u in out["units"]] == ["A"]
 

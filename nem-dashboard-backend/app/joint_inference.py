@@ -420,14 +420,16 @@ def build_generation_forecast(rows: pd.DataFrame, region: str) -> dict:
 
     rows: run_datetime, interval_datetime, duid, mw_inferred, quality, station_name, region,
         fuel_source, technology_type, capacity_mw -- may span multiple runs; only the latest is used.
+    region arrives in regionid form ('NSW1') but generator_info stores the short form ('NSW').
     A unit's series holds only the intervals where it was inferable that interval -- gaps are
     honest absence, never interpolated or zero-filled. Units are ordered by capacity descending.
     """
     if rows.empty:
         return {"units": [], "fleets": []}
 
+    region_short = region[:-1] if region.endswith("1") else region
     latest = rows[rows["run_datetime"] == rows["run_datetime"].max()]
-    regional = latest[latest["region"] == region]
+    regional = latest[latest["region"] == region_short]
 
     units = _build_unit_series(regional[regional["fuel_source"].isin(UNIT_FUEL_SOURCES)])
     fleets = _build_fleet_series(regional[regional["fuel_source"].isin(FLEET_FUEL_SOURCES)])
