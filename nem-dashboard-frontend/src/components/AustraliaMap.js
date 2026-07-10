@@ -1,16 +1,9 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { REGION_COLORS } from '../theme';
 
 const NEM_REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS'];
 
-const REGION_COLORS = {
-  'NSW': '#1f77b4',
-  'VIC': '#ff7f0e',
-  'QLD': '#2ca02c',
-  'SA': '#d62728',
-  'TAS': '#9467bd'
-};
-
-const AustraliaMap = ({ darkMode, hoveredRegion, onRegionClick, onRegionHover, onRegionLeave }) => {
+const AustraliaMap = ({ hoveredRegion, onRegionClick, onRegionHover, onRegionLeave }) => {
   const [svgContent, setSvgContent] = useState('');
   const [localHover, setLocalHover] = useState(null);
   const containerRef = useRef(null);
@@ -97,23 +90,10 @@ const AustraliaMap = ({ darkMode, hoveredRegion, onRegionClick, onRegionHover, o
     }
   }, [activeRegion, svgContent]);
 
-  const containerStyle = {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
-    width: '90%',
-    height: '90%',
-    zIndex: 1,
-    opacity: 0.4,
-    filter: darkMode ? 'invert(1) hue-rotate(180deg)' : 'none',
-    transition: 'all 0.3s ease'
-  };
-
   return (
     <div
       ref={containerRef}
-      style={containerStyle}
+      className="australia-map"
       dangerouslySetInnerHTML={{ __html: svgContent }}
     />
   );

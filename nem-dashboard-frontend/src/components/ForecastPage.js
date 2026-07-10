@@ -1,17 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { REGION_COLORS, chartColors, baseLayout } from '../theme';
 import './ForecastPage.css';
 
 const REGIONS = ['NSW1', 'QLD1', 'VIC1', 'SA1', 'TAS1'];
-
-const REGION_COLORS = {
-  NSW1: '#1f77b4',
-  VIC1: '#ff7f0e',
-  QLD1: '#2ca02c',
-  SA1: '#d62728',
-  TAS1: '#9467bd',
-};
 
 // Display y-range guards ($/MWh): cap hides the VOLL spikes that would flatten
 // the chart; floor keeps moderate negative prices visible.
@@ -127,6 +120,8 @@ function ForecastPage({ darkMode }) {
   };
 
   const color = REGION_COLORS[region];
+  const c = chartColors(darkMode);
+  const base = baseLayout(darkMode);
 
   // --- assemble traces + clamp/clip the y-axis around VOLL spikes ---
   const fx = forecast.map((d) => new Date(d.interval_datetime));
@@ -195,7 +190,7 @@ function ForecastPage({ darkMode }) {
       type: 'scatter',
       mode: 'lines',
       name: 'AEMO 7-day pre-dispatch',
-      line: { color: darkMode ? '#cfcfcf' : '#444', width: 2, dash: 'dot', shape: 'hv' },
+      line: { color: c.text2, width: 2, dash: 'dot', shape: 'hv' },
       hovertemplate: '%{x|%a %d %b %H:%M}<br>PD7Day: $%{customdata:.0f}/MWh<extra></extra>',
     });
 
@@ -209,34 +204,29 @@ function ForecastPage({ darkMode }) {
         type: 'scatter',
         mode: 'markers',
         name: 'PD spike (clipped)',
-        marker: { color: '#d62728', symbol: 'triangle-up', size: 10 },
+        marker: { color: c.danger, symbol: 'triangle-up', size: 10 },
         hovertemplate: '%{x|%a %d %b %H:%M}<br>Pre-dispatch: $%{customdata:.0f}/MWh (clipped)<extra></extra>',
       });
     }
   }
 
   const plotLayout = {
+    ...base,
     title: {
       text: `${region} — 7-day price forecast vs AEMO PD7Day`,
-      font: { size: 19, color: darkMode ? '#f5f5f5' : '#333' },
+      font: { size: 19, color: c.text },
     },
     xaxis: {
+      ...base.xaxis,
       title: 'Settlement interval (30-min)',
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
       tickformat: '%a %d %b\n%H:%M',
     },
     yaxis: {
+      ...base.yaxis,
       title: 'Price ($/MWh)',
       range: [yMin, cap],
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
       zeroline: true,
-      zerolinecolor: darkMode ? '#555' : '#ccc',
     },
-    plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-    paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-    font: { color: darkMode ? '#f5f5f5' : '#333' },
     legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.18 },
     margin: { l: 60, r: 30, t: 60, b: 90 },
     hovermode: 'x unified',

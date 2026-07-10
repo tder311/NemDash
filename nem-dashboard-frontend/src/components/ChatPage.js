@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Plot from 'react-plotly.js';
+import { baseLayout, chartColors } from '../theme';
 import './ChatPage.css';
 
 const SUGGESTIONS = [
@@ -24,16 +25,17 @@ function ChatArtifact({ artifact, darkMode }) {
       yaxis: s.axis === 'right' ? 'y2' : 'y',
     }));
     const hasRight = artifact.series.some((s) => s.axis === 'right');
+    const base = baseLayout(darkMode);
+    const c = chartColors(darkMode);
     const layout = {
-      title: { text: artifact.title, font: { size: 14, color: darkMode ? '#f5f5f5' : '#333' } },
+      ...base,
+      title: { text: artifact.title, font: { size: 14, color: c.text } },
       height: 320,
       margin: { l: 50, r: hasRight ? 50 : 20, t: 36, b: 40 },
-      xaxis: { gridcolor: darkMode ? '#404040' : '#e0e0e0', color: darkMode ? '#ccc' : '#333' },
-      yaxis: { gridcolor: darkMode ? '#404040' : '#e0e0e0', color: darkMode ? '#ccc' : '#333' },
-      ...(hasRight && { yaxis2: { overlaying: 'y', side: 'right', color: darkMode ? '#ccc' : '#333', showgrid: false } }),
-      plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-      paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-      font: { color: darkMode ? '#f5f5f5' : '#333', size: 11 },
+      xaxis: { ...base.xaxis },
+      yaxis: { ...base.yaxis },
+      ...(hasRight && { yaxis2: { overlaying: 'y', side: 'right', color: c.text2, showgrid: false } }),
+      font: { ...base.font, size: 11 },
       legend: { orientation: 'h', y: -0.2 },
       showlegend: artifact.series.length > 1,
     };

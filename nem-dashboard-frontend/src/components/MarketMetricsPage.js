@@ -1,17 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { REGION_COLORS, chartColors, baseLayout } from '../theme';
 import './MarketMetricsPage.css';
 
 const REGIONS = ['NSW', 'VIC', 'QLD', 'SA', 'TAS'];
-
-const REGION_COLORS = {
-  'NSW': '#1f77b4',
-  'VIC': '#ff7f0e',
-  'QLD': '#2ca02c',
-  'SA': '#d62728',
-  'TAS': '#9467bd'
-};
 
 const REGION_NAMES = {
   'NSW': 'New South Wales',
@@ -201,11 +194,6 @@ function MarketMetricsPage({ darkMode }) {
     );
   }, [summaryData]);
 
-  const chartFont = {
-    color: darkMode ? '#e5e7eb' : '#374151',
-    family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-  };
-
   const plotConfig = {
     displayModeBar: 'hover',
     displaylogo: false,
@@ -232,6 +220,7 @@ function MarketMetricsPage({ darkMode }) {
   const createDetailTraces = () => {
     if (!detailMetric) return { traces: [], yRange: null };
     const info = getMetricInfo(detailMetric);
+    const c = chartColors(darkMode);
     const traces = [];
     const allAvg7Values = [];
 
@@ -320,7 +309,7 @@ function MarketMetricsPage({ darkMode }) {
         x: allDates, y: allDates.map(() => 100),
         type: 'scatter', mode: 'lines',
         name: '100%',
-        line: { color: darkMode ? '#4b5563' : '#d1d5db', width: 1, dash: 'dot' },
+        line: { color: c.axisLine, width: 1, dash: 'dot' },
         hoverinfo: 'skip',
         showlegend: false
       });
@@ -343,40 +332,33 @@ function MarketMetricsPage({ darkMode }) {
   const createDetailLayout = (yRange) => {
     if (!detailMetric) return {};
     const info = getMetricInfo(detailMetric);
+    const base = baseLayout(darkMode);
 
     return {
+      ...base,
       xaxis: {
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280',
+        ...base.xaxis,
         tickformat: '%b %Y',
         tickfont: { size: 11 },
         showline: true,
         zeroline: false
       },
       yaxis: {
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280',
+        ...base.yaxis,
         ticksuffix: (info.type === 'capture' || info.type === 'ps_freq') ? '%' : '',
         tickprefix: (info.type === 'spread' || info.type === 'capture_price' || info.type === 'ps_price') ? '$' : '',
         tickfont: { size: 11 },
         zeroline: false,
         ...(yRange ? { range: yRange } : {})
       },
-      plot_bgcolor: 'transparent',
-      paper_bgcolor: 'transparent',
-      font: chartFont,
       margin: { l: 60, r: 20, t: 20, b: 40 },
       showlegend: true,
       legend: {
+        ...base.legend,
         orientation: 'h', x: 0.5, xanchor: 'center', y: 1.05, yanchor: 'bottom',
         bgcolor: 'transparent', font: { size: 12 }
       },
-      hovermode: 'x unified',
-      hoverlabel: {
-        bgcolor: darkMode ? '#1f2937' : 'white',
-        bordercolor: darkMode ? '#374151' : '#e5e7eb',
-        font: { size: 12, family: chartFont.family }
-      }
+      hovermode: 'x unified'
     };
   };
 
@@ -447,7 +429,7 @@ function MarketMetricsPage({ darkMode }) {
         </div>
 
         {detailLoading ? (
-          <div className="metrics-loading">
+          <div className="loading">
             <div className="spinner"></div>
             <p>Loading history...</p>
           </div>
@@ -491,7 +473,7 @@ function MarketMetricsPage({ darkMode }) {
       </div>
 
       {initialLoad && (
-        <div className="metrics-loading">
+        <div className="loading">
           <div className="spinner"></div>
           <p>Loading metrics...</p>
         </div>

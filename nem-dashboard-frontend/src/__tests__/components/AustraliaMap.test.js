@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import AustraliaMap from '../../components/AustraliaMap';
+import { REGION_COLORS } from '../../theme';
 
 // Mock fetch for SVG loading
 const mockSvgContent = `
@@ -240,46 +241,19 @@ describe('AustraliaMap', () => {
     expect(container.querySelector('#state-NSW').classList.contains('highlighted')).toBe(false);
   });
 
-  test('applies dark mode filter', async () => {
+  test('renders the theme-aware map container', async () => {
     const { container } = render(
-      <AustraliaMap darkMode={true} onRegionClick={mockOnRegionClick} />
+      <AustraliaMap onRegionClick={mockOnRegionClick} />
     );
 
     await waitFor(() => {
       expect(container.querySelector('svg')).toBeInTheDocument();
     });
 
+    // Theming is CSS-driven via the .australia-map class, not inline styles
     const containerDiv = container.firstChild;
-    expect(containerDiv.style.filter).toBe('invert(1) hue-rotate(180deg)');
-  });
-
-  test('does not apply filter in light mode', async () => {
-    const { container } = render(
-      <AustraliaMap darkMode={false} onRegionClick={mockOnRegionClick} />
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector('svg')).toBeInTheDocument();
-    });
-
-    const containerDiv = container.firstChild;
-    expect(containerDiv.style.filter).toBe('none');
-  });
-
-  test('applies correct positioning styles', async () => {
-    const { container } = render(
-      <AustraliaMap darkMode={false} onRegionClick={mockOnRegionClick} />
-    );
-
-    await waitFor(() => {
-      expect(container.querySelector('svg')).toBeInTheDocument();
-    });
-
-    const containerDiv = container.firstChild;
-    expect(containerDiv.style.position).toBe('absolute');
-    expect(containerDiv.style.top).toBe('50%');
-    expect(containerDiv.style.left).toBe('50%');
-    expect(containerDiv.style.transform).toBe('translate(-50%, -50%)');
+    expect(containerDiv).toHaveClass('australia-map');
+    expect(containerDiv.style.filter).toBe('');
   });
 
   test('cleans up event listener on unmount', async () => {
@@ -413,7 +387,7 @@ describe('AustraliaMap hover events', () => {
     );
 
     const nswPath = container.querySelector('#state-NSW');
-    expect(nswPath.style.stroke).toBe('#1f77b4');
+    expect(nswPath.style.stroke).toBe(REGION_COLORS.NSW);
     expect(nswPath.style.strokeWidth).toBe('3px');
   });
 
@@ -446,11 +420,11 @@ describe('AustraliaMap hover events', () => {
 
   test('each region gets its correct color on hover', async () => {
     const regionColors = {
-      'NSW': '#1f77b4',
-      'VIC': '#ff7f0e',
-      'QLD': '#2ca02c',
-      'SA': '#d62728',
-      'TAS': '#9467bd',
+      NSW: REGION_COLORS.NSW,
+      VIC: REGION_COLORS.VIC,
+      QLD: REGION_COLORS.QLD,
+      SA: REGION_COLORS.SA,
+      TAS: REGION_COLORS.TAS,
     };
 
     const { container, rerender } = render(

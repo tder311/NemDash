@@ -3,6 +3,7 @@ import Plot from 'react-plotly.js';
 import api from '../api';
 import DatabaseHealthPage from './DatabaseHealthPage';
 import PASAPage from './PASAPage';
+import { REGION_COLORS, FUEL_COLORS, chartColors, baseLayout } from '../theme';
 import './StateDetailPage.css';
 
 const REGION_NAMES = {
@@ -11,26 +12,6 @@ const REGION_NAMES = {
   'QLD': 'Queensland',
   'SA': 'South Australia',
   'TAS': 'Tasmania'
-};
-
-const REGION_COLORS = {
-  'NSW': '#1f77b4',
-  'VIC': '#ff7f0e',
-  'QLD': '#2ca02c',
-  'SA': '#d62728',
-  'TAS': '#9467bd'
-};
-
-const FUEL_COLORS = {
-  'Coal': '#4a4a4a',
-  'Gas': '#ff9800',
-  'Hydro': '#2196f3',
-  'Wind': '#4caf50',
-  'Solar': '#ffeb3b',
-  'Battery': '#9c27b0',
-  'Diesel': '#795548',
-  'Biomass': '#8bc34a',
-  'Unknown': '#9e9e9e'
 };
 
 const MONTHS = [
@@ -209,6 +190,9 @@ function StateDetailPage({ region, darkMode, onBack }) {
     };
   }, [fetchData]);
 
+  const c = chartColors(darkMode);
+  const base = baseLayout(darkMode);
+
   const createPriceChartData = () => {
     if (!priceHistory.length) return [];
 
@@ -237,7 +221,7 @@ function StateDetailPage({ region, darkMode, onBack }) {
         mode: 'lines',
         name: 'Demand (MW)',
         line: {
-          color: darkMode ? '#6b7280' : '#9ca3af',
+          color: c.text2,
           width: 1.5,
           shape: 'spline',
           smoothing: 0.8
@@ -281,34 +265,28 @@ function StateDetailPage({ region, darkMode, onBack }) {
   };
 
   const priceChartLayout = {
+    ...base,
     title: {
       text: `Price & Demand`,
-      font: {
-        size: 16,
-        color: darkMode ? '#e5e7eb' : '#374151',
-        family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-      },
+      font: { size: 16, color: c.text, family: base.font.family },
       x: 0.02,
       xanchor: 'left'
     },
     xaxis: {
-      gridcolor: darkMode ? '#374151' : '#f3f4f6',
-      color: darkMode ? '#9ca3af' : '#6b7280',
+      ...base.xaxis,
       tickformat: hoursFromDateRange <= 24 ? '%H:%M' : hoursFromDateRange <= 168 ? '%d %b %H:%M' : hoursFromDateRange <= 720 ? '%d %b' : '%b %Y',
       tickfont: { size: 11 },
-      linecolor: darkMode ? '#374151' : '#e5e7eb',
       showline: true,
       zeroline: false,
       rangeslider: { visible: false }
     },
     yaxis: {
+      ...base.yaxis,
       title: {
         text: '$/MWh',
         font: { size: 11, color: REGION_COLORS[region] },
         standoff: 10
       },
-      gridcolor: darkMode ? '#374151' : '#f3f4f6',
-      color: darkMode ? '#9ca3af' : '#6b7280',
       side: 'left',
       tickfont: { size: 11, color: REGION_COLORS[region] },
       zeroline: false
@@ -316,25 +294,20 @@ function StateDetailPage({ region, darkMode, onBack }) {
     yaxis2: {
       title: {
         text: 'MW',
-        font: { size: 11, color: darkMode ? '#6b7280' : '#9ca3af' },
+        font: { size: 11, color: c.text2 },
         standoff: 10
       },
-      color: darkMode ? '#6b7280' : '#9ca3af',
+      color: c.text2,
       side: 'right',
       overlaying: 'y',
       showgrid: false,
       tickfont: { size: 11 },
       zeroline: false
     },
-    plot_bgcolor: 'transparent',
-    paper_bgcolor: 'transparent',
-    font: {
-      color: darkMode ? '#e5e7eb' : '#374151',
-      family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-    },
     margin: { l: 55, r: 55, t: 40, b: 40 },
     showlegend: true,
     legend: {
+      ...base.legend,
       orientation: 'h',
       x: 1,
       xanchor: 'right',
@@ -343,32 +316,21 @@ function StateDetailPage({ region, darkMode, onBack }) {
       bgcolor: 'transparent',
       font: { size: 11 }
     },
-    hovermode: 'x unified',
-    hoverlabel: {
-      bgcolor: darkMode ? '#1f2937' : 'white',
-      bordercolor: darkMode ? '#374151' : '#e5e7eb',
-      font: { size: 12, family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }
-    }
+    hovermode: 'x unified'
   };
 
   const durationText = formatDuration(startDate, endDate);
 
   const fuelMixLayout = {
+    ...base,
     title: {
       text: `Fuel Mix (${durationText})`,
-      font: {
-        size: 18,
-        color: darkMode ? '#f5f5f5' : '#333'
-      }
-    },
-    plot_bgcolor: darkMode ? '#1e1e1e' : 'white',
-    paper_bgcolor: darkMode ? '#1e1e1e' : 'white',
-    font: {
-      color: darkMode ? '#f5f5f5' : '#333'
+      font: { size: 18, color: c.text }
     },
     margin: { l: 20, r: 20, t: 50, b: 20 },
     showlegend: true,
     legend: {
+      ...base.legend,
       orientation: 'h',
       x: 0.5,
       xanchor: 'center',
@@ -416,45 +378,34 @@ function StateDetailPage({ region, darkMode, onBack }) {
   };
 
   const generationHistoryLayout = {
+    ...base,
     title: {
       text: 'Generation by Fuel',
-      font: {
-        size: 16,
-        color: darkMode ? '#e5e7eb' : '#374151',
-        family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-      },
+      font: { size: 16, color: c.text, family: base.font.family },
       x: 0.02,
       xanchor: 'left'
     },
     xaxis: {
-      gridcolor: darkMode ? '#374151' : '#f3f4f6',
-      color: darkMode ? '#9ca3af' : '#6b7280',
+      ...base.xaxis,
       tickformat: hoursFromDateRange <= 24 ? '%H:%M' : hoursFromDateRange <= 168 ? '%d %b %H:%M' : hoursFromDateRange <= 720 ? '%d %b' : '%b %Y',
       tickfont: { size: 11 },
-      linecolor: darkMode ? '#374151' : '#e5e7eb',
       showline: true,
       zeroline: false
     },
     yaxis: {
+      ...base.yaxis,
       title: {
         text: 'MW',
-        font: { size: 11, color: darkMode ? '#9ca3af' : '#6b7280' },
+        font: { size: 11, color: c.text2 },
         standoff: 10
       },
-      gridcolor: darkMode ? '#374151' : '#f3f4f6',
-      color: darkMode ? '#9ca3af' : '#6b7280',
       tickfont: { size: 11 },
       zeroline: false
-    },
-    plot_bgcolor: 'transparent',
-    paper_bgcolor: 'transparent',
-    font: {
-      color: darkMode ? '#e5e7eb' : '#374151',
-      family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
     },
     margin: { l: 55, r: 55, t: 40, b: 40 },
     showlegend: true,
     legend: {
+      ...base.legend,
       orientation: 'h',
       x: 1,
       xanchor: 'right',
@@ -464,11 +415,6 @@ function StateDetailPage({ region, darkMode, onBack }) {
       font: { size: 11 }
     },
     hovermode: 'x unified',
-    hoverlabel: {
-      bgcolor: darkMode ? '#1f2937' : 'white',
-      bordercolor: darkMode ? '#374151' : '#e5e7eb',
-      font: { size: 12, family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }
-    },
     barmode: 'stack',
     bargap: 0
   };
@@ -726,10 +672,10 @@ function StateDetailPage({ region, darkMode, onBack }) {
           />
         ) : (
           <div className="no-data-message">
-            <h3 style={{ color: darkMode ? '#f5f5f5' : '#333' }}>
+            <h3>
               Generation by Fuel Source ({durationText})
             </h3>
-            <p style={{ color: darkMode ? '#aaa' : '#666' }}>
+            <p>
               No generation history data available. Generator metadata may need to be imported.
             </p>
           </div>

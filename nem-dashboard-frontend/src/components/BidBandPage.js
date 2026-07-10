@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { baseLayout } from '../theme';
 import './BidBandPage.css';
 
 // Band colors: green (cheap) through yellow/orange to red (expensive)
@@ -219,41 +220,35 @@ function BidBandPage({ darkMode }) {
     return traces;
   }, [bidData, sortedBands, dispatchData, darkMode]);
 
-  const chartLayout = useMemo(() => ({
-    barmode: 'stack',
-    bargap: 0,
-    xaxis: {
-      title: { text: 'Time (AEST)', font: { size: 12 } },
-      tickformat: '%H:%M',
-      gridcolor: darkMode ? '#374151' : '#f3f4f6',
-      tickfont: { color: darkMode ? '#9ca3af' : '#6b7280' },
-      zeroline: false
-    },
-    yaxis: {
-      title: { text: 'MW', font: { size: 12 } },
-      gridcolor: darkMode ? '#374151' : '#f3f4f6',
-      tickfont: { color: darkMode ? '#9ca3af' : '#6b7280' },
-      zeroline: false,
-      rangemode: 'tozero'
-    },
-    plot_bgcolor: 'transparent',
-    paper_bgcolor: 'transparent',
-    font: { color: darkMode ? '#f5f5f5' : '#333' },
-    hoverlabel: {
-      bgcolor: darkMode ? '#1f1f1f' : '#fff',
-      bordercolor: darkMode ? '#555' : '#ddd',
-      font: { color: darkMode ? '#f5f5f5' : '#333', size: 12 }
-    },
-    legend: {
-      orientation: 'h',
-      y: -0.2,
-      x: 0.5,
-      xanchor: 'center',
-      font: { size: 11 }
-    },
-    margin: { l: 60, r: 20, t: 10, b: 80 },
-    hovermode: 'x unified'
-  }), [darkMode]);
+  const chartLayout = useMemo(() => {
+    const base = baseLayout(darkMode);
+    return {
+      ...base,
+      barmode: 'stack',
+      bargap: 0,
+      xaxis: {
+        ...base.xaxis,
+        title: { text: 'Time (AEST)', font: { size: 12 } },
+        tickformat: '%H:%M',
+        zeroline: false
+      },
+      yaxis: {
+        ...base.yaxis,
+        title: { text: 'MW', font: { size: 12 } },
+        zeroline: false,
+        rangemode: 'tozero'
+      },
+      legend: {
+        orientation: 'h',
+        y: -0.2,
+        x: 0.5,
+        xanchor: 'center',
+        font: { size: 11 }
+      },
+      margin: { l: 60, r: 20, t: 10, b: 80 },
+      hovermode: 'x unified'
+    };
+  }, [darkMode]);
 
   const plotConfig = useMemo(() => ({
     displayModeBar: 'hover',
@@ -297,7 +292,7 @@ function BidBandPage({ darkMode }) {
           )}
           {searchLoading && (
             <div className="duid-dropdown">
-              <div className="duid-option" style={{ textAlign: 'center', color: '#999' }}>
+              <div className="duid-option duid-option-status">
                 Searching...
               </div>
             </div>

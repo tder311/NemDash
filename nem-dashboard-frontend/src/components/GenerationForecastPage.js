@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { FUEL_COLORS, baseLayout } from '../theme';
 import './GenerationForecastPage.css';
 
 const REGIONS = ['NSW1', 'QLD1', 'VIC1', 'SA1', 'TAS1'];
-const FLEET_COLORS = { Wind: '#2ca02c', Solar: '#ff7f0e' };
 
 // Builds z (utilisation = mw/capacity) and hover customdata over the union of interval
 // timestamps across all units, so a gap in one unit's series is a blank cell, not interpolated.
@@ -35,8 +35,7 @@ function buildUnitHeatmap(units) {
 
 // Builds the two-line (Wind/Solar) MW-sum figure from whichever fleets are present.
 function buildFleetFigure(fleets, darkMode) {
-  const axisColor = darkMode ? '#f5f5f5' : '#333';
-  const gridColor = darkMode ? '#404040' : '#e0e0e0';
+  const base = baseLayout(darkMode);
 
   const data = fleets.map((f) => ({
     x: f.series.map((p) => new Date(p.interval_datetime)),
@@ -45,7 +44,7 @@ function buildFleetFigure(fleets, darkMode) {
     type: 'scatter',
     mode: 'lines',
     name: f.fuel_source,
-    line: { color: FLEET_COLORS[f.fuel_source], width: 2 },
+    line: { color: FUEL_COLORS[f.fuel_source], width: 2 },
     hovertemplate:
       `${f.fuel_source}<br>%{x|%a %d %b %H:%M}<br>%{y:.0f} MW` +
       '<br>%{customdata[0]} units inferable<extra></extra>',
@@ -54,14 +53,12 @@ function buildFleetFigure(fleets, darkMode) {
   return {
     data,
     layout: {
-      plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-      paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-      font: { color: axisColor },
+      ...base,
       margin: { l: 60, r: 20, t: 20, b: 40 },
       height: 320,
       legend: { orientation: 'h', y: -0.2 },
-      xaxis: { gridcolor: gridColor, color: axisColor, tickformat: '%a %H:%M' },
-      yaxis: { title: 'MW', gridcolor: gridColor, color: axisColor },
+      xaxis: { ...base.xaxis, tickformat: '%a %H:%M' },
+      yaxis: { ...base.yaxis, title: 'MW' },
     },
   };
 }
@@ -114,6 +111,7 @@ function GenerationForecastPage({ darkMode }) {
   const solarFleet = data.fleets.find((f) => f.fuel_source === 'Solar') || null;
   const presentFleets = [windFleet, solarFleet].filter(Boolean);
   const fleetFigure = presentFleets.length ? buildFleetFigure(presentFleets, darkMode) : null;
+  const base = baseLayout(darkMode);
 
   const renderHeatmapSection = (title, units, heatmap, emptyMessage, caveat) => (
     <div className="generation-section">
@@ -140,13 +138,11 @@ function GenerationForecastPage({ darkMode }) {
               },
             ]}
             layout={{
-              plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-              paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-              font: { color: darkMode ? '#f5f5f5' : '#333' },
+              ...base,
               margin: { l: 260, r: 30, t: 20, b: 60 },
               height: Math.max(220, units.length * 32 + 100),
-              xaxis: { tickformat: '%a %H:%M', gridcolor: darkMode ? '#404040' : '#e0e0e0' },
-              yaxis: { automargin: true },
+              xaxis: { ...base.xaxis, tickformat: '%a %H:%M' },
+              yaxis: { ...base.yaxis, automargin: true },
             }}
             useResizeHandler
             style={{ width: '100%' }}

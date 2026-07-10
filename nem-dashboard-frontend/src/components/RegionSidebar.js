@@ -1,4 +1,5 @@
 import React from 'react';
+import { REGION_COLORS } from '../theme';
 import './RegionSidebar.css';
 
 const RegionSidebar = ({ regions, darkMode, hoveredRegion, onRegionHover, onRegionLeave, onRegionClick }) => {
@@ -45,11 +46,11 @@ const RegionSidebar = ({ regions, darkMode, hoveredRegion, onRegionHover, onRegi
             </div>
             <div className="region-data">
               <div className="data-item">
-                <span className="data-label">Price:</span>
+                <span className="data-label">Price</span>
                 <span className="data-value price">{formatPrice(region.price)}</span>
               </div>
               <div className="data-item">
-                <span className="data-label">Demand:</span>
+                <span className="data-label">Demand</span>
                 <span className="data-value demand">{formatDemand(region.totaldemand)}</span>
               </div>
             </div>
@@ -60,18 +61,7 @@ const RegionSidebar = ({ regions, darkMode, hoveredRegion, onRegionHover, onRegi
   );
 };
 
-const getRegionColor = (regionCode) => {
-  const colors = {
-    'NSW': '#1f77b4',
-    'VIC': '#ff7f0e',
-    'QLD': '#2ca02c', 
-    'SA': '#d62728',
-    'TAS': '#9467bd',
-    'WA': '#17becf',
-    'NT': '#e377c2'
-  };
-  return colors[regionCode] || '#6b7280';
-};
+const getRegionColor = (regionCode) => REGION_COLORS[regionCode] || '#6e7a90';
 
 const getRegionFullName = (regionCode) => {
   const names = {

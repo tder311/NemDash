@@ -88,12 +88,12 @@ function BidBandsPage({ darkMode }) {
   const discCell = (mw) => {
     if (!mw || mw < 0.05) return {};
     const alpha = Math.min(1, mw / pMax) * 0.65 + 0.1;
-    return { backgroundColor: `rgba(46, 160, 67, ${alpha})`, color: '#fff', fontWeight: 600 };
+    return { backgroundColor: `rgba(52, 201, 142, ${alpha})`, color: '#fff', fontWeight: 600 };
   };
   const chgCell = (mw) => {
     if (!mw || mw < 0.05) return {};
     const alpha = Math.min(1, mw / pMax) * 0.65 + 0.1;
-    return { backgroundColor: `rgba(207, 92, 54, ${alpha})`, color: '#fff', fontWeight: 600 };
+    return { backgroundColor: `rgba(224, 138, 60, ${alpha})`, color: '#fff', fontWeight: 600 };
   };
 
   // Headline numbers per side
