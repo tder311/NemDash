@@ -801,6 +801,7 @@ class TestPredispatchConstraintInsert:
                 'rhs': 100.0,
                 'marginalvalue': 25.0,
                 'violationdegree': 0.0,
+                'lhs': 55.5,
             },
             {
                 'run_datetime': datetime(2025, 6, 22, 0, 30),
@@ -809,14 +810,16 @@ class TestPredispatchConstraintInsert:
                 'rhs': 100.0,
                 'marginalvalue': 0.0,
                 'violationdegree': 0.0,
+                'lhs': 10.0,
             },
         ])
         count = await test_db.insert_predispatch_constraint(df)
         assert count == 1
 
         async with test_db._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT constraintid FROM predispatch_constraint")
+            rows = await conn.fetch("SELECT constraintid, lhs FROM predispatch_constraint")
         assert [r['constraintid'] for r in rows] == ['BINDING_CON']
+        assert rows[0]['lhs'] == pytest.approx(55.5)
 
     @pytest.mark.asyncio
     async def test_insert_predispatch_constraint_empty_df(self, test_db):
@@ -845,17 +848,20 @@ class TestPredispatchConstraintInsert:
             'rhs': 100.0,
             'marginalvalue': 25.0,
             'violationdegree': 0.0,
+            'lhs': 50.0,
         }])
         await test_db.insert_predispatch_constraint(df1)
 
         df2 = df1.copy()
         df2['marginalvalue'] = 40.0
+        df2['lhs'] = 65.0
         await test_db.insert_predispatch_constraint(df2)
 
         async with test_db._pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM predispatch_constraint")
         assert len(rows) == 1
         assert rows[0]['marginalvalue'] == pytest.approx(40.0)
+        assert rows[0]['lhs'] == pytest.approx(65.0)
 
 
 class TestSTPASADataInsert:

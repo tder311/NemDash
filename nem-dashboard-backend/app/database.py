@@ -233,9 +233,18 @@ class NEMDatabase:
                     rhs REAL,
                     marginalvalue REAL,
                     violationdegree REAL,
+                    lhs REAL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(run_datetime, interval_datetime, constraintid)
                 )
+            """)
+
+            # Add lhs to existing predispatch_constraint tables (solved LHS, for unit backsolving)
+            await conn.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE predispatch_constraint ADD COLUMN lhs REAL;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$
             """)
 
             # Served price-forecaster output, one row per serve x interval x region
@@ -1673,17 +1682,19 @@ class NEMDatabase:
                 row.get('rhs'),
                 row.get('marginalvalue'),
                 row.get('violationdegree'),
+                row.get('lhs'),
             ))
 
         async with self._pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO predispatch_constraint
-                (run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                (run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree, lhs)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (run_datetime, interval_datetime, constraintid) DO UPDATE SET
                     rhs = EXCLUDED.rhs,
                     marginalvalue = EXCLUDED.marginalvalue,
-                    violationdegree = EXCLUDED.violationdegree
+                    violationdegree = EXCLUDED.violationdegree,
+                    lhs = EXCLUDED.lhs
             """, records)
         return len(records)
 

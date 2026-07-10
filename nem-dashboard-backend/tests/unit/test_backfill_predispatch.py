@@ -248,8 +248,13 @@ class TestParsePredispatchConstraintCsv:
         df = parse_predispatch_constraint_csv("C,header only\n")
         assert df.empty
         assert list(df.columns) == [
-            "interval_datetime", "constraintid", "rhs", "marginalvalue", "violationdegree",
+            "interval_datetime", "constraintid", "rhs", "marginalvalue", "violationdegree", "lhs",
         ]
+
+    def test_parses_lhs_values(self):
+        df = parse_predispatch_constraint_csv(SAMPLE_CONSTRAINT_CSV)
+        row = df[df["constraintid"] == "C_BINDING"].iloc[0]
+        assert row["lhs"] == pytest.approx(55.33532)
 
 
 class TestBuildRunInterconnectorDataframe:
