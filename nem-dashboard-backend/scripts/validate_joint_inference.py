@@ -171,7 +171,12 @@ async def fetch_realised_for_days(days: List[pd.Timestamp], target_duids: Set[st
     frames = []
     async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
         for day in days:
-            frames.append(await fetch_realised_dispatch(client, day, target_duids))
+            try:
+                frames.append(await fetch_realised_dispatch(client, day, target_duids))
+            except (httpx.HTTPError, SystemExit) as e:
+                print(f"  WARNING: skipping Next_Day_Dispatch for {day.date()}: {e}")
+    if not frames:
+        raise ValueError("No Next_Day_Dispatch data fetched for any validation day.")
     realised_5min = pd.concat(frames, ignore_index=True)
     return aggregate_realised_to_30min(realised_5min)
 
