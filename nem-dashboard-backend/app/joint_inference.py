@@ -296,7 +296,9 @@ def compute_unit_tracking(inferred: pd.DataFrame, realised: pd.DataFrame) -> pd.
 
     rows = []
     for duid, group in merged.groupby("duid"):
-        corr = group["mw_inferred"].corr(group["mw_realised"]) if len(group) >= 2 else np.nan
+        # Constant series have undefined correlation; guard so numpy never warns on the zero stddev.
+        varying = len(group) >= 2 and group["mw_inferred"].std() > 0 and group["mw_realised"].std() > 0
+        corr = group["mw_inferred"].corr(group["mw_realised"]) if varying else np.nan
         mae = (group["mw_inferred"] - group["mw_realised"]).abs().mean()
         rows.append({
             "duid": duid,
