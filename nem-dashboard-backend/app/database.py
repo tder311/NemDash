@@ -1728,12 +1728,13 @@ class NEMDatabase:
         return [dict(row) for row in rows]
 
     async def get_latest_predispatch_constraints(self) -> List[Dict[str, Any]]:
-        """Get the latest pre-dispatch run's binding-or-violated constraint rows, across all constraints."""
+        """Get the latest pre-dispatch run's forward binding-or-violated constraint rows, across all constraints."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree
                 FROM predispatch_constraint
                 WHERE run_datetime = (SELECT MAX(run_datetime) FROM predispatch_constraint)
+                AND interval_datetime >= NOW()
                 ORDER BY constraintid, interval_datetime ASC
             """)
         return [dict(row) for row in rows]

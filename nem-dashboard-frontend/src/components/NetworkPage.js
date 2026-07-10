@@ -3,7 +3,6 @@ import Plot from 'react-plotly.js';
 import api from '../api';
 import './NetworkPage.css';
 
-const SHORT_REGION = { NSW1: 'NSW', VIC1: 'VIC', QLD1: 'QLD', SA1: 'SA', TAS1: 'TAS' };
 const IC_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'];
 const NEAR_LIMIT_MW = 1; // flow within this many MW of a limit gets an alert marker
 
@@ -12,21 +11,11 @@ const fillFor = (hex, alpha) => {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 };
 
-// Distance from the flow to the nearer of the two feasible-envelope bounds.
+// Distance from the flow to the nearer of the two feasible-envelope bounds; null when any input is missing.
 const headroomOf = (flow, exportLimit, importLimit) =>
-  Math.min(exportLimit - flow, flow - importLimit);
-
-function formatBadge(constraint) {
-  const { category, regions, kind } = constraint;
-  if (category === 'other') return 'other';
-  const shortRegions = regions.map((r) => SHORT_REGION[r] || r);
-  if (category === 'fcas') {
-    if (!shortRegions.length) return 'FCAS · system';
-    if (shortRegions.length === 4) return 'FCAS · mainland';
-    return `FCAS · ${shortRegions.join('/')}`;
-  }
-  return `${shortRegions.length ? shortRegions.join('↔') : '?'} · ${kind}`;
-}
+  flow == null || exportLimit == null || importLimit == null
+    ? null
+    : Math.min(exportLimit - flow, flow - importLimit);
 
 // Builds the two Plotly traces (feasible-envelope shading + flow line + alert markers) for one interconnector.
 function ribbonTraces(interconnectorId, intervals, axisNum, color) {
@@ -191,8 +180,9 @@ function NetworkPage({ darkMode }) {
   const ribbonFigure = icIds.length ? buildRibbonFigure(icIds, interconnectors.data, darkMode) : null;
 
   const heatmap = constraints.constraints.length ? buildHeatmapMatrix(constraints.constraints) : null;
+  // "Other" constraints carry the raw id as their label — skip the redundant parenthetical.
   const yLabels = constraints.constraints.map(
-    (c) => `${c.constraintid} (${formatBadge(c)})`
+    (c) => (c.label === c.constraintid ? c.constraintid : `${c.constraintid} (${c.label})`)
   );
 
   return (

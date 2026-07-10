@@ -24,6 +24,7 @@ const mockConstraints = {
       category: 'network',
       regions: ['NSW1'],
       kind: 'thermal',
+      label: 'NSW · thermal',
       intervals: [
         { interval_datetime: '2025-01-15T10:30:00+10:00', marginalvalue: 50, rhs: 100, violationdegree: 0 },
       ],

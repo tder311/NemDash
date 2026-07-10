@@ -1871,10 +1871,14 @@ class TestNetworkConstraintsEndpoint:
                 fcas_entry = data["constraints"][0]
                 assert fcas_entry["category"] == "fcas"
                 assert fcas_entry["regions"] == ["NSW1", "QLD1", "VIC1", "SA1"]
+                assert fcas_entry["label"] == "FCAS · mainland"
                 network_entry = data["constraints"][1]
                 assert network_entry["category"] == "network"
                 assert network_entry["kind"] == "thermal"
+                assert network_entry["label"] == "NSW · thermal"
                 assert len(network_entry["intervals"]) == 2
+                other_entry = data["constraints"][2]
+                assert other_entry["label"] == "I_6F_NS_150"
         finally:
             main_module.db = original_db
 

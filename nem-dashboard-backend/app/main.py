@@ -1289,6 +1289,7 @@ async def get_network_constraints(
                 "category": parsed[cid]["category"],
                 "regions": parsed[cid]["regions"],
                 "kind": parsed[cid]["kind"],
+                "label": parsed[cid]["label"],
                 "intervals": [
                     {
                         "interval_datetime": row.interval_datetime.isoformat(),

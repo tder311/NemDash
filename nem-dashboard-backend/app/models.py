@@ -286,6 +286,7 @@ class ConstraintSummary(BaseModel):
     category: str
     regions: List[str]
     kind: Optional[str] = None
+    label: str
     intervals: List[ConstraintInterval]
 
 
