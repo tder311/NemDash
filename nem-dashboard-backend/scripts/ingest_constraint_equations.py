@@ -19,15 +19,20 @@ elsewhere in this codebase.
 
 Only ENERGY-bidtype terms are kept (FCAS constraints are out of scope for MW
 backsolving), and only each constraint's latest (EFFECTIVEDATE, VERSIONNO) --
-v1 stores no effective-date history. A later run REPLACES the whole table
-(transactional delete + insert in ``insert_constraint_equation_terms``) so
-terms AEMO removes from an equation don't linger as phantom rows.
+v1 stores no effective-date history.
 
 Connection points with no *current* DUDETAILSUMMARY row (END_DATE >= today;
 ~1-2% in practice -- retired/renamed plant) cannot be mapped to a DUID and
 are dropped, as are fully retired connection points.
 MMSDM lags real-time by ~1-2 months; the default (no --year/--month) finds
 the latest month with a published archive by listing the year-index page(s).
+
+Superseded by ``scripts/ingest_nemde_constraints.py``, which carries real
+per-version effective dates. ``constraint_equation_terms`` is now versioned
+(see ``app/database.py``): this script's output has no effective_date, so its
+rows are always stamped with the sentinel version and upserted, not
+truncate-replaced -- a re-run here no longer purges terms AEMO has removed
+from an equation, it just refreshes the single sentinel row per constraint/term.
 """
 
 import argparse
@@ -44,7 +49,7 @@ import httpx
 import pandas as pd
 from dotenv import load_dotenv
 
-from app.database import NEMDatabase
+from app.database import NEMDatabase, SENTINEL_MMSDM_VERSION
 
 BASE_URL = "https://www.nemweb.com.au"
 ARCHIVE_DIR = "Data_Archive/Wholesale_Electricity/MMSDM"
@@ -211,7 +216,10 @@ def build_constraint_equation_terms(
     combined = latest_version_only(combined)
     # Distinct connection points can map to the same DUID, so duplicates survive the version filter.
     combined = combined.drop_duplicates(subset=["constraintid", "term_type", "term_id"], keep="first")
-    return combined.rename(columns={"versionno": "version"})[
+    # This source carries no effective_date, so its rows always take the sentinel version --
+    # real VERSIONNO is only used above to pick the single latest-known term per constraint.
+    combined["version"] = SENTINEL_MMSDM_VERSION
+    return combined[
         ["constraintid", "version", "term_type", "term_id", "factor"]
     ].reset_index(drop=True)
 

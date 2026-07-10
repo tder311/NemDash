@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+from app.database import SENTINEL_MMSDM_VERSION
 from scripts.ingest_constraint_equations import (
     archive_url,
     build_constraint_equation_terms,
@@ -171,7 +172,9 @@ class TestBuildConstraintEquationTerms:
         duid_row = c_binding[c_binding["term_type"] == "duid"].iloc[0]
         assert duid_row["term_id"] == "BAYSW1"
         assert duid_row["factor"] == pytest.approx(1.0)
-        assert duid_row["version"] == 1
+        # This source has no effective_date, so output rows always take the sentinel version --
+        # v2 (factor 0.5) was already dropped by latest_version_only above.
+        assert duid_row["version"] == SENTINEL_MMSDM_VERSION
 
         c_region = terms[terms["constraintid"] == "C_REGION"]
         assert len(c_region) == 1

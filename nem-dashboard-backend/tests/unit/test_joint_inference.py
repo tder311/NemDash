@@ -4,15 +4,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.database import SENTINEL_MMSDM_VERSION
 from app.joint_inference import (
     OUTPUT_COLUMNS,
     SERIES_COLUMNS,
+    TERMS_OUTPUT_COLUMNS,
     TRACKING_COLUMNS,
     TRACKING_CORR_THRESHOLD,
     aggregate_realised_30min,
     build_paired_series,
     compute_unit_tracking,
     select_short_lead_latest_run,
+    select_terms_for_run_date,
     solve_unit_generation,
 )
 
@@ -377,3 +380,58 @@ class TestBuildPairedSeries:
         )
         assert out.empty
         assert list(out.columns) == SERIES_COLUMNS
+
+
+def _versioned_term(cid, version, effective_date, term_type, term_id, factor, first_seen=None):
+    return {
+        "constraintid": cid, "version": version, "effective_date": effective_date,
+        "term_type": term_type, "term_id": term_id, "factor": factor,
+        "first_seen": first_seen or effective_date,
+    }
+
+
+class TestSelectTermsForRunDate:
+    def test_two_versions_run_date_picks_the_effective_one(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C1", 1, pd.Timestamp("2024-01-01").date(), "duid", "A", 1.0),
+            _versioned_term("C1", 2, pd.Timestamp("2026-01-01").date(), "duid", "A", 0.5),
+        ])
+
+        before = select_terms_for_run_date(all_terms, pd.Timestamp("2025-06-01"))
+        assert before["factor"].iloc[0] == pytest.approx(1.0)
+
+        after = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert after["factor"].iloc[0] == pytest.approx(0.5)
+
+    def test_future_version_not_yet_effective_is_ignored(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C1", 1, pd.Timestamp("2024-01-01").date(), "duid", "A", 1.0),
+            _versioned_term("C1", 2, pd.Timestamp("2099-01-01").date(), "duid", "A", 0.5),
+        ])
+        out = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert out["factor"].iloc[0] == pytest.approx(1.0)
+
+    def test_sentinel_fallback_when_no_dated_version_exists(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C_LEGACY", SENTINEL_MMSDM_VERSION, None, "duid", "A", 1.0),
+        ])
+        out = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert list(out.columns) == TERMS_OUTPUT_COLUMNS
+        assert out.iloc[0]["constraintid"] == "C_LEGACY"
+        assert out.iloc[0]["factor"] == pytest.approx(1.0)
+
+    def test_sentinel_ignored_once_a_dated_version_exists(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C1", SENTINEL_MMSDM_VERSION, None, "duid", "A", 9.0),
+            _versioned_term("C1", 1, pd.Timestamp("2024-01-01").date(), "duid", "A", 1.0),
+        ])
+        out = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert len(out) == 1
+        assert out.iloc[0]["factor"] == pytest.approx(1.0)
+
+    def test_empty_input_returns_empty_with_columns(self):
+        out = select_terms_for_run_date(pd.DataFrame(columns=[
+            "constraintid", "version", "effective_date", "term_type", "term_id", "factor", "first_seen",
+        ]), pd.Timestamp("2026-06-01"))
+        assert out.empty
+        assert list(out.columns) == TERMS_OUTPUT_COLUMNS

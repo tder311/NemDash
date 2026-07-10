@@ -6,7 +6,7 @@ Configuration:
 """
 
 import pandas as pd
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 import logging
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 # NEM operates on Australian Eastern Standard Time (AEST, UTC+10) year-round
 # It does NOT observe daylight saving time to avoid market complexity
 AEST = timezone(timedelta(hours=10))
+
+# constraint_equation_terms.version sentinel for rows migrated from the old MMSDM
+# latest-snapshot table (no effective_date). Real NEMDE VersionNo values start at 1,
+# so this can never collide and these rows are only ever a fallback (see fetch_terms).
+SENTINEL_MMSDM_VERSION = -1
 
 
 def to_aest_isoformat(dt):
@@ -247,7 +252,9 @@ class NEMDatabase:
                 END $$
             """)
 
-            # Constraint equation terms (LHS = sum(factor*term)), latest version only, no history (v1)
+            # Constraint equation terms (LHS = sum(factor*term)). Versioned: a constraintid can
+            # carry many (version, effective_date) equations over time, see fetch_terms for
+            # date-aware selection and insert_constraint_equation_terms for upsert semantics.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS constraint_equation_terms (
                     id BIGSERIAL PRIMARY KEY,
@@ -259,6 +266,56 @@ class NEMDatabase:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(constraintid, term_type, term_id)
                 )
+            """)
+
+            # Versioning columns added by the NEMDE ingest (scripts/ingest_nemde_constraints.py).
+            # effective_date is NULL for rows from the old MMSDM ingest (no per-version dates);
+            # first_seen/last_seen track the observation window of a given (constraintid, version).
+            for col, col_type in [
+                ('effective_date', 'DATE'),
+                ('first_seen', 'DATE'),
+                ('last_seen', 'DATE'),
+            ]:
+                await conn.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE constraint_equation_terms ADD COLUMN {col} {col_type};
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$
+                """)
+
+            # One-time migration: rows with no effective_date predate the NEMDE ingest and get the
+            # sentinel version, so they only ever serve as a fallback once real versions exist.
+            await conn.execute(f"""
+                UPDATE constraint_equation_terms
+                SET version = {SENTINEL_MMSDM_VERSION},
+                    first_seen = COALESCE(first_seen, CURRENT_DATE),
+                    last_seen = COALESCE(last_seen, CURRENT_DATE)
+                WHERE effective_date IS NULL AND version IS DISTINCT FROM {SENTINEL_MMSDM_VERSION}
+            """)
+
+            # Versions are immutable once observed, so the unique key extends to (..., version)
+            # instead of the old latest-snapshot (constraintid, term_type, term_id) key.
+            await conn.execute("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'constraint_equation_terms_constraintid_term_type_term_id_key'
+                    ) THEN
+                        ALTER TABLE constraint_equation_terms
+                            DROP CONSTRAINT constraint_equation_terms_constraintid_term_type_term_id_key;
+                    END IF;
+                END $$
+            """)
+            await conn.execute("""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'constraint_equation_terms_version_key'
+                    ) THEN
+                        ALTER TABLE constraint_equation_terms
+                            ADD CONSTRAINT constraint_equation_terms_version_key
+                            UNIQUE (constraintid, version, term_type, term_id);
+                    END IF;
+                END $$
             """)
 
             # Joint-inference backsolved unit MW, good+weak quality only (see insert_inferred_unit_generation)
@@ -1734,24 +1791,38 @@ class NEMDatabase:
         return len(records)
 
     async def insert_constraint_equation_terms(self, df: pd.DataFrame) -> int:
-        """Replace ALL constraint equation terms with this snapshot (transactional delete + insert).
+        """Upsert constraint equation term rows onto the versioned (constraintid, version,
+        term_type, term_id) key.
 
-        The table is a latest-snapshot by design: upserting would leave phantom rows for terms
-        AEMO has since removed from an equation, corrupting unknown-term counts in inference.
+        Once a version is seen it is immutable (AEMO never reuses or edits a VersionNo), so a
+        repeat sighting only extends last_seen; factor/effective_date are refreshed too in case
+        of a correction. This replaces the old table's transactional delete + insert -- there is
+        no more "current snapshot" to truncate, since old versions are kept for date-aware lookup
+        (see fetch_terms) rather than purged. An 'effective_date' column is optional in df (NULL
+        for the legacy MMSDM ingest); first_seen/last_seen default to today for new rows.
         """
         if df.empty:
             return 0
-        records = [
-            (row['constraintid'], int(row['version']), row['term_type'], row['term_id'], row.get('factor'))
-            for _, row in df.iterrows()
-        ]
+        today = date.today()
+        records = []
+        for _, row in df.iterrows():
+            eff = row.get('effective_date')
+            eff = eff.date() if hasattr(eff, 'date') else eff
+            records.append((
+                row['constraintid'], int(row['version']), eff, row['term_type'], row['term_id'],
+                row.get('factor'), today, today,
+            ))
         async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("DELETE FROM constraint_equation_terms")
-                await conn.executemany("""
-                    INSERT INTO constraint_equation_terms (constraintid, version, term_type, term_id, factor)
-                    VALUES ($1, $2, $3, $4, $5)
-                """, records)
+            await conn.executemany("""
+                INSERT INTO constraint_equation_terms
+                (constraintid, version, effective_date, term_type, term_id, factor, first_seen, last_seen)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (constraintid, version, term_type, term_id) DO UPDATE SET
+                    effective_date = COALESCE(EXCLUDED.effective_date, constraint_equation_terms.effective_date),
+                    factor = EXCLUDED.factor,
+                    last_seen = EXCLUDED.last_seen,
+                    updated_at = CURRENT_TIMESTAMP
+            """, records)
         return len(records)
 
     async def insert_inferred_unit_generation(self, df: pd.DataFrame) -> int:
