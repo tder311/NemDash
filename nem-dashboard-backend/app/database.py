@@ -1825,10 +1825,15 @@ class NEMDatabase:
         records = []
         for _, row in df.iterrows():
             eff = row.get('effective_date')
-            eff = eff.date() if hasattr(eff, 'date') else eff
+            eff = None if pd.isna(eff) else (eff.date() if hasattr(eff, 'date') else eff)
+            # pandas 3 str-dtype columns surface missing values as NaN, which asyncpg rejects
+            tradetype = row.get('tradetype')
+            factor = row.get('factor')
             records.append((
                 row['constraintid'], int(row['version']), eff, row['term_type'], row['term_id'],
-                row.get('tradetype'), row.get('factor'), seen, seen,
+                None if pd.isna(tradetype) else tradetype,
+                None if pd.isna(factor) else float(factor),
+                seen, seen,
             ))
         async with self._pool.acquire() as conn:
             await conn.executemany("""

@@ -3,7 +3,7 @@ Unit tests for NEMPriceClient
 """
 import pytest
 
-from app.nem_price_client import NEMPriceClient, REGION_MAPPING
+from app.nem_price_client import NEMPriceClient, REGION_MAPPING, _fetch_zip_with_retry
 from tests.fixtures.sample_price_csv import (
     SAMPLE_DISPATCH_PRICE_CSV,
     SAMPLE_DISPATCH_PRICE_CSV_V5,
@@ -13,6 +13,8 @@ from tests.fixtures.sample_price_csv import (
     SAMPLE_DISPATCH_PRICE_DIR,
     SAMPLE_TRADING_DIR,
     create_price_zip,
+    create_public_prices_archive_zip,
+    create_trading_price_csv_for_time,
 )
 
 
@@ -38,6 +40,58 @@ class TestRegionMapping:
         assert REGION_MAPPING['3'] == 'QLD'
         assert REGION_MAPPING['4'] == 'SA'
         assert REGION_MAPPING['5'] == 'TAS'
+
+
+class TestFetchZipWithRetry:
+    """Tests for the module-level _fetch_zip_with_retry helper"""
+
+    @pytest.mark.asyncio
+    async def test_succeeds_after_retryable_429(self, httpx_mock):
+        import httpx
+
+        httpx_mock.add_response(url="https://x.test/file.zip", status_code=429)
+        httpx_mock.add_response(url="https://x.test/file.zip", content=b"zipbytes")
+
+        async with httpx.AsyncClient() as client:
+            content = await _fetch_zip_with_retry(client, "https://x.test/file.zip", "file.zip", initial_backoff=0.001)
+
+        assert content == b"zipbytes"
+
+    @pytest.mark.asyncio
+    async def test_gives_up_after_max_attempts_403(self, httpx_mock):
+        import httpx
+
+        for _ in range(3):
+            httpx_mock.add_response(url="https://x.test/file.zip", status_code=403)
+
+        async with httpx.AsyncClient() as client:
+            content = await _fetch_zip_with_retry(
+                client, "https://x.test/file.zip", "file.zip", max_attempts=3, initial_backoff=0.001
+            )
+
+        assert content is None
+
+    @pytest.mark.asyncio
+    async def test_non_retryable_status_stops_immediately(self, httpx_mock):
+        import httpx
+
+        httpx_mock.add_response(url="https://x.test/file.zip", status_code=400)
+
+        async with httpx.AsyncClient() as client:
+            content = await _fetch_zip_with_retry(client, "https://x.test/file.zip", "file.zip")
+
+        assert content is None
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_returns_none(self, httpx_mock):
+        import httpx
+
+        httpx_mock.add_exception(httpx.ConnectError("refused"))
+
+        async with httpx.AsyncClient() as client:
+            content = await _fetch_zip_with_retry(client, "https://x.test/file.zip", "file.zip")
+
+        assert content is None
 
 
 class TestNEMPriceClientInit:
@@ -844,4 +898,399 @@ class TestGetAllCurrentTradingPrices:
         httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
 
         df = await client.get_all_current_trading_prices()
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_fetches_all_trading_files_from_directory(self, client, httpx_mock):
+        """Should fetch and parse all available trading ZIP files"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_TRADINGIS_202501150400_0000000123456780.zip">file1</a>
+<a href="PUBLIC_TRADINGIS_202501150405_0000000123456781.zip">file2</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html=dir_html
+        )
+        for suffix in ["202501150400_0000000123456780", "202501150405_0000000123456781"]:
+            csv_content = create_trading_price_csv_for_time("2025/01/15 04:00:00")
+            httpx_mock.add_response(
+                url=f"https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/PUBLIC_TRADINGIS_{suffix}.zip",
+                content=create_price_zip(csv_content, 'TRADING')
+            )
+
+        df = await client.get_all_current_trading_prices(request_delay=0)
+
+        assert df is not None
+        assert 'settlementdate' in df.columns
+        assert 'region' in df.columns
+        # Should be deduped by (settlementdate, region): both files share the same timestamp
+        assert df.duplicated(subset=['settlementdate', 'region']).sum() == 0
+
+    @pytest.mark.asyncio
+    async def test_filters_trading_files_by_since_parameter(self, client, httpx_mock):
+        """Should only fetch trading files newer than 'since'"""
+        from datetime import datetime
+
+        dir_html = '''<html><body>
+<a href="PUBLIC_TRADINGIS_202501150400_0000000123456780.zip">file1</a>
+<a href="PUBLIC_TRADINGIS_202501150430_0000000123456781.zip">file2</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html=dir_html
+        )
+        csv_content = create_trading_price_csv_for_time("2025/01/15 04:30:00")
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/PUBLIC_TRADINGIS_202501150430_0000000123456781.zip",
+            content=create_price_zip(csv_content, 'TRADING')
+        )
+
+        since = datetime(2025, 1, 15, 4, 10)
+        df = await client.get_all_current_trading_prices(since=since, request_delay=0)
+
+        assert df is not None
+        assert all(df['settlementdate'] > since)
+
+    @pytest.mark.asyncio
+    async def test_trading_since_returns_none_when_no_newer_files(self, client, httpx_mock):
+        """Should return None when no trading files are newer than 'since'"""
+        from datetime import datetime
+
+        dir_html = '''<html><body>
+<a href="PUBLIC_TRADINGIS_202501150400_0000000123456780.zip">file1</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html=dir_html
+        )
+
+        since = datetime(2025, 1, 15, 12, 0)
+        df = await client.get_all_current_trading_prices(since=since, request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_trading_all_files_fail_returns_none(self, client, httpx_mock):
+        """Should return None when every matched trading file fails to download"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_TRADINGIS_202501150400_0000000123456780.zip">file1</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html=dir_html
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/PUBLIC_TRADINGIS_202501150400_0000000123456780.zip",
+            status_code=404
+        )
+
+        df = await client.get_all_current_trading_prices(request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_trading_skips_files_with_invalid_timestamp(self, client, httpx_mock):
+        """Should skip filenames whose timestamp segment fails to parse"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_TRADINGIS_202513991020_0000000123456789.zip">bad</a>
+<a href="PUBLIC_TRADINGIS_202501150400_0000000123456781.zip">good</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/",
+            html=dir_html
+        )
+        csv_content = create_trading_price_csv_for_time("2025/01/15 04:00:00")
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/TradingIS_Reports/PUBLIC_TRADINGIS_202501150400_0000000123456781.zip",
+            content=create_price_zip(csv_content, 'TRADING')
+        )
+
+        df = await client.get_all_current_trading_prices(request_delay=0)
+        assert df is not None
+
+
+class TestDispatchPricesEdgeCases:
+    """Additional coverage for get_all_current_dispatch_prices branches."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_all_dispatch_files_fail_returns_none(self, client, httpx_mock):
+        """Should return None when every matched dispatch file fails to download"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip">file1</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=dir_html
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip",
+            status_code=404
+        )
+
+        df = await client.get_all_current_dispatch_prices(request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_skips_files_with_invalid_timestamp(self, client, httpx_mock):
+        """Should skip filenames whose timestamp segment fails to parse"""
+        from tests.fixtures.sample_price_csv import create_dispatch_price_csv_for_time
+
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHIS_202513991020_0000000123456789.zip">bad</a>
+<a href="PUBLIC_DISPATCHIS_202501150400_0000000123456781.zip">good</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=dir_html
+        )
+        csv_content = create_dispatch_price_csv_for_time("2025/01/15 04:00:00")
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_202501150400_0000000123456781.zip",
+            content=create_price_zip(csv_content, 'DISPATCH')
+        )
+
+        df = await client.get_all_current_dispatch_prices(request_delay=0)
+        assert df is not None
+
+    @pytest.mark.asyncio
+    async def test_dispatch_dedupes_duplicate_filename_in_directory_html(self, client, httpx_mock):
+        """A filename appearing twice (href + link text) should only be fetched once"""
+        from tests.fixtures.sample_price_csv import create_dispatch_price_csv_for_time
+
+        dir_html = ('<a href="PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip">'
+                    'PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip</a>')
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/",
+            html=dir_html
+        )
+        csv_content = create_dispatch_price_csv_for_time("2025/01/15 04:00:00")
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/DispatchIS_Reports/PUBLIC_DISPATCHIS_202501150400_0000000123456780.zip",
+            content=create_price_zip(csv_content, 'DISPATCH')
+        )
+
+        df = await client.get_all_current_dispatch_prices(request_delay=0)
+        assert df is not None
+        assert len(df) == 5  # fetched once, not twice
+
+
+class TestGetDailyPricesFallback:
+    """Tests for get_daily_prices Current-then-Archive fallback behaviour."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_archive_when_current_has_no_files(self, client, httpx_mock):
+        """When Current has no matching files, should fall back to the monthly Archive."""
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/Public_Prices/",
+            html="<html><body>no matching files</body></html>"
+        )
+        archive_zip = create_public_prices_archive_zip([
+            'PUBLIC_PRICES_202501140000_00000000000001.zip',
+            'PUBLIC_PRICES_202501150000_00000000000001.zip',
+        ])
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Public_Prices/PUBLIC_PRICES_20250101.zip",
+            content=archive_zip
+        )
+
+        df = await client.get_daily_prices(test_date)
+        assert df is not None
+        assert not df.empty
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_current_and_archive_both_empty(self, client, httpx_mock):
+        """Should return None when neither Current nor Archive have data."""
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/Public_Prices/",
+            html="<html><body>no matching files</body></html>"
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Public_Prices/PUBLIC_PRICES_20250101.zip",
+            status_code=404
+        )
+
+        df = await client.get_daily_prices(test_date)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_current_error_falls_through_to_archive(self, client, httpx_mock):
+        """A network error hitting Current should not prevent trying the Archive."""
+        import httpx
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        httpx_mock.add_exception(
+            httpx.ConnectError("refused"),
+            url="https://www.nemweb.com.au/Reports/Current/Public_Prices/",
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Public_Prices/PUBLIC_PRICES_20250101.zip",
+            status_code=404
+        )
+
+        df = await client.get_daily_prices(test_date)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_current_only_has_target_day_file_not_previous_day(self, client, httpx_mock):
+        """When only the target day's file is listed, the previous-day fetch should be skipped, not fail."""
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/Public_Prices/",
+            html='<a href="PUBLIC_PRICES_202501150000_00000000000001.zip">file</a>'
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Current/Public_Prices/PUBLIC_PRICES_202501150000_00000000000001.zip",
+            content=create_price_zip(SAMPLE_PUBLIC_PRICE_CSV, 'PUBLIC')
+        )
+
+        df = await client.get_daily_prices(test_date)
+        assert df is not None
+
+
+class TestGetMonthlyArchivePricesSuccess:
+    """Tests for the get_monthly_archive_prices success path and generic errors."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    @pytest.mark.asyncio
+    async def test_returns_combined_dataframe(self, client, httpx_mock):
+        archive_zip = create_public_prices_archive_zip([
+            'PUBLIC_PRICES_202501010000_00000000000001.zip',
+            'PUBLIC_PRICES_202501020000_00000000000001.zip',
+        ])
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Public_Prices/PUBLIC_PRICES_20250101.zip",
+            content=archive_zip
+        )
+
+        df = await client.get_monthly_archive_prices(2025, 1)
+        assert df is not None
+        assert df.duplicated(subset=['settlementdate', 'region']).sum() == 0
+
+    @pytest.mark.asyncio
+    async def test_generic_network_error_returns_none(self, client, httpx_mock):
+        import httpx
+        httpx_mock.add_exception(httpx.ConnectError("refused"))
+
+        df = await client.get_monthly_archive_prices(2025, 1)
+        assert df is None
+
+
+class TestParseArchiveMonthlyZipSkipsAndParses:
+    """Additional _parse_archive_monthly_zip coverage: non-zip entries + successful parse."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    def test_skips_non_zip_entries_and_parses_matching_zip(self, client):
+        import io
+        import zipfile
+        from datetime import datetime
+
+        outer_buffer = io.BytesIO()
+        with zipfile.ZipFile(outer_buffer, 'w') as zf:
+            zf.writestr('readme.txt', 'not a zip')
+            zf.writestr(
+                'PUBLIC_PRICES_202501150000_00000000000001.zip',
+                create_price_zip(SAMPLE_PUBLIC_PRICE_CSV, 'PUBLIC'),
+            )
+
+        result = client._parse_archive_monthly_zip(
+            outer_buffer.getvalue(),
+            datetime(2025, 1, 15).date(),
+            datetime(2025, 1, 14).date(),
+        )
+        assert len(result) == 1
+
+
+class TestParseZipEdgeCases:
+    """Coverage for the no-CSV and exception branches of the ZIP parsers."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    def test_parse_trading_zip_no_csv(self, client):
+        import io
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as zf:
+            zf.writestr('readme.txt', 'no csv here')
+
+        df = client._parse_trading_price_zip(buffer.getvalue())
+        assert df is None
+
+    def test_parse_trading_zip_invalid_content(self, client):
+        df = client._parse_trading_price_zip(b'not a zip')
+        assert df is None
+
+    def test_parse_public_prices_zip_no_csv(self, client):
+        import io
+        import zipfile
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as zf:
+            zf.writestr('readme.txt', 'no csv here')
+
+        df = client._parse_public_prices_zip(buffer.getvalue())
+        assert df is None
+
+    def test_parse_public_prices_zip_invalid_content(self, client):
+        df = client._parse_public_prices_zip(b'not a zip')
+        assert df is None
+
+
+class TestParsePriceCsvErrorBranches:
+    """Coverage for malformed-line and decode-error branches of _parse_price_csv."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPriceClient()
+
+    def test_dispatch_line_with_non_numeric_version_is_skipped(self, client):
+        """A DISPATCH,PRICE line with a corrupt version field should be skipped, not raise."""
+        csv_content = b'''C,NEMP.WORLD,,DISPATCH,PRICE,1
+I,DISPATCH,PRICE,3,SETTLEMENTDATE,RUNNO,REGIONID,DISPATCHINTERVAL,RRP,EEP,ROP,APCFLAG
+D,DISPATCH,PRICE,BAD,"2025/01/15 10:30:00",1,NSW1,0,85.50,0,0,0
+D,DISPATCH,PRICE,3,"2025/01/15 10:30:00",1,VIC1,0,72.30,0,0,0
+C,END OF REPORT,,,
+'''
+        df = client._parse_price_csv(csv_content, 'DISPATCH')
+        assert df is not None
+        assert len(df) == 1
+        assert df.iloc[0]['region'] == 'VIC'
+
+    def test_invalid_utf8_content_returns_none(self, client):
+        df = client._parse_price_csv(b'\xff\xfe\x00invalid', 'DISPATCH')
         assert df is None

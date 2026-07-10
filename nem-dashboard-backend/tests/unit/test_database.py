@@ -97,19 +97,21 @@ class TestNEMDatabaseInit:
     @pytest.mark.asyncio
     async def test_initialize_idempotent(self, test_db):
         """Test that initialize can be called multiple times safely"""
-        # Call initialize again (should not raise)
+        table_count_query = """
+            SELECT COUNT(*) FROM pg_tables
+            WHERE schemaname = 'public'
+        """
+        async with test_db._pool.acquire() as conn:
+            count_before = await conn.fetchval(table_count_query)
+
+        # Call initialize again (should not raise or create duplicate tables)
         await test_db.initialize()
 
         async with test_db._pool.acquire() as conn:
-            count = await conn.fetchval("""
-                SELECT COUNT(*) FROM pg_tables
-                WHERE schemaname = 'public'
-            """)
+            count_after = await conn.fetchval(table_count_query)
 
-        # Should still have same number of application tables (14: dispatch_data, price_data, generator_info,
-        # pdpasa_data, stpasa_data, predispatch_price, predispatch_interconnector, predispatch_constraint,
-        # constraint_equation_terms, forecast_history, daily_metrics, price_setter_data, bid_day_offer, bid_per_offer)
-        assert count == 14
+        assert count_before > 0
+        assert count_after == count_before
 
 
 class TestDispatchDataInsert:

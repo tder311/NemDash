@@ -196,6 +196,11 @@ class TestParseDispatchCsv:
         df = client._parse_dispatch_csv(b"")
         assert df is None
 
+    def test_parse_dispatch_csv_invalid_utf8(self, client):
+        """Test bytes that fail UTF-8 decoding are handled and return None"""
+        df = client._parse_dispatch_csv(b'\xff\xfe\x00invalid')
+        assert df is None
+
 
 class TestParseDispatchZip:
     """Tests for _parse_dispatch_zip method"""
@@ -320,3 +325,240 @@ class TestAsyncMethods:
 
         df = await client.get_historical_dispatch_data(test_date)
         assert df is None
+
+    @pytest.mark.asyncio
+    async def test_get_historical_dispatch_data_no_inner_zips(self, client, httpx_mock):
+        """Test archive with no nested ZIP files returns None"""
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as zf:
+            zf.writestr('readme.txt', 'no zips here')
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip",
+            content=buffer.getvalue()
+        )
+
+        df = await client.get_historical_dispatch_data(test_date)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_get_historical_dispatch_data_skips_corrupted_inner_zip(self, client, httpx_mock):
+        """Test that a corrupted inner ZIP is skipped but valid ones are still processed"""
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        outer_buffer = io.BytesIO()
+        with zipfile.ZipFile(outer_buffer, 'w', zipfile.ZIP_DEFLATED) as outer_zf:
+            # Corrupted inner "zip" - not actually a valid ZIP
+            outer_zf.writestr('PUBLIC_DISPATCHSCADA_202501151030_0000000123456789.zip', b'not a zip')
+
+            # Valid inner zip with CSV
+            inner_buffer = io.BytesIO()
+            with zipfile.ZipFile(inner_buffer, 'w', zipfile.ZIP_DEFLATED) as inner_zf:
+                inner_zf.writestr('PUBLIC_DISPATCHSCADA_202501151035.CSV', SAMPLE_DISPATCH_CSV)
+            outer_zf.writestr('PUBLIC_DISPATCHSCADA_202501151035_0000000123456790.zip', inner_buffer.getvalue())
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip",
+            content=outer_buffer.getvalue()
+        )
+
+        df = await client.get_historical_dispatch_data(test_date)
+        assert df is not None
+        assert len(df) == 5
+
+    @pytest.mark.asyncio
+    async def test_get_historical_dispatch_data_no_valid_records(self, client, httpx_mock):
+        """Test archive whose inner ZIPs contain no usable dispatch data returns None"""
+        from datetime import datetime
+
+        test_date = datetime(2025, 1, 15)
+
+        outer_buffer = io.BytesIO()
+        with zipfile.ZipFile(outer_buffer, 'w', zipfile.ZIP_DEFLATED) as outer_zf:
+            inner_buffer = io.BytesIO()
+            with zipfile.ZipFile(inner_buffer, 'w', zipfile.ZIP_DEFLATED) as inner_zf:
+                inner_zf.writestr('readme.txt', 'no csv in here')
+            outer_zf.writestr('PUBLIC_DISPATCHSCADA_202501151030_0000000123456789.zip', inner_buffer.getvalue())
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/Reports/Archive/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_20250115.zip",
+            content=outer_buffer.getvalue()
+        )
+
+        df = await client.get_historical_dispatch_data(test_date)
+        assert df is None
+
+
+class TestGetAllCurrentDispatchData:
+    """Tests for get_all_current_dispatch_data method (backfill from Current directory)"""
+
+    @pytest.fixture
+    def client(self):
+        return NEMDispatchClient()
+
+    @pytest.mark.asyncio
+    async def test_fetches_all_files_from_directory(self, client, httpx_mock):
+        """Should fetch and parse all available ZIP files"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip">file1</a>
+<a href="PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip">file2</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html=dir_html
+        )
+
+        for suffix in ["202501151020_0000000123456789", "202501151025_0000000123456790"]:
+            httpx_mock.add_response(
+                url=f"https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_{suffix}.zip",
+                content=create_sample_dispatch_zip()
+            )
+
+        df = await client.get_all_current_dispatch_data(request_delay=0)
+
+        assert df is not None
+        assert len(df) == 5
+
+    @pytest.mark.asyncio
+    async def test_handles_empty_directory(self, client, httpx_mock):
+        """Should return None if no files found in directory"""
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html="<html><body>No files</body></html>"
+        )
+
+        df = await client.get_all_current_dispatch_data(request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_filters_files_by_since_parameter(self, client, httpx_mock):
+        """Should only fetch files with timestamps after 'since' parameter"""
+        from datetime import datetime
+
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip">file1</a>
+<a href="PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip">file2</a>
+<a href="PUBLIC_DISPATCHSCADA_202501151030_0000000123456791.zip">file3</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html=dir_html
+        )
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_202501151030_0000000123456791.zip",
+            content=create_sample_dispatch_zip()
+        )
+
+        since = datetime(2025, 1, 15, 10, 25)
+        df = await client.get_all_current_dispatch_data(since=since, request_delay=0)
+
+        assert df is not None
+        assert len(df) == 5
+
+    @pytest.mark.asyncio
+    async def test_since_returns_none_when_no_newer_files(self, client, httpx_mock):
+        """Should return None when no files are newer than 'since'"""
+        from datetime import datetime
+
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip">file1</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html=dir_html
+        )
+
+        since = datetime(2025, 1, 15, 12, 0)
+        df = await client.get_all_current_dispatch_data(since=since, request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_continues_on_individual_file_error(self, client, httpx_mock):
+        """Should continue processing even if one file fails to download"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip">file1</a>
+<a href="PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip">file2</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html=dir_html
+        )
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip",
+            status_code=404
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip",
+            content=create_sample_dispatch_zip()
+        )
+
+        df = await client.get_all_current_dispatch_data(request_delay=0)
+
+        assert df is not None
+        assert len(df) == 5
+
+    @pytest.mark.asyncio
+    async def test_network_error_returns_none(self, client, httpx_mock):
+        """Should return None on network error"""
+        import httpx
+        httpx_mock.add_exception(httpx.ConnectError("Connection refused"))
+
+        df = await client.get_all_current_dispatch_data(request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_all_files_fail_returns_none(self, client, httpx_mock):
+        """Should return None when every matched file fails to download"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip">file1</a>
+<a href="PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip">file2</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html=dir_html
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_202501151020_0000000123456789.zip",
+            status_code=404
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip",
+            status_code=404
+        )
+
+        df = await client.get_all_current_dispatch_data(request_delay=0)
+        assert df is None
+
+    @pytest.mark.asyncio
+    async def test_skips_files_with_invalid_timestamp(self, client, httpx_mock):
+        """Should skip filenames whose timestamp segment fails to parse"""
+        dir_html = '''<html><body>
+<a href="PUBLIC_DISPATCHSCADA_202513991020_0000000123456789.zip">bad</a>
+<a href="PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip">good</a>
+</body></html>'''
+
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/",
+            html=dir_html
+        )
+        httpx_mock.add_response(
+            url="https://www.nemweb.com.au/REPORTS/CURRENT/Dispatch_SCADA/PUBLIC_DISPATCHSCADA_202501151025_0000000123456790.zip",
+            content=create_sample_dispatch_zip()
+        )
+
+        df = await client.get_all_current_dispatch_data(request_delay=0)
+        assert df is not None
+        assert len(df) == 5
