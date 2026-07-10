@@ -233,8 +233,31 @@ class NEMDatabase:
                     rhs REAL,
                     marginalvalue REAL,
                     violationdegree REAL,
+                    lhs REAL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(run_datetime, interval_datetime, constraintid)
+                )
+            """)
+
+            # Add lhs to existing predispatch_constraint tables (solved LHS, for unit backsolving)
+            await conn.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE predispatch_constraint ADD COLUMN lhs REAL;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$
+            """)
+
+            # Constraint equation terms (LHS = sum(factor*term)), latest version only, no history (v1)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS constraint_equation_terms (
+                    id BIGSERIAL PRIMARY KEY,
+                    constraintid TEXT NOT NULL,
+                    version INTEGER,
+                    term_type TEXT NOT NULL,
+                    term_id TEXT NOT NULL,
+                    factor REAL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(constraintid, term_type, term_id)
                 )
             """)
 
@@ -359,6 +382,7 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id ON predispatch_constraint(constraintid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id_run ON predispatch_constraint(constraintid, run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_forecast_history_region_interval ON forecast_history(region, interval_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_constraint_terms_constraintid ON constraint_equation_terms(constraintid)")
 
             # Daily metrics indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
@@ -1673,18 +1697,41 @@ class NEMDatabase:
                 row.get('rhs'),
                 row.get('marginalvalue'),
                 row.get('violationdegree'),
+                row.get('lhs'),
             ))
 
         async with self._pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO predispatch_constraint
-                (run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                (run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree, lhs)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (run_datetime, interval_datetime, constraintid) DO UPDATE SET
                     rhs = EXCLUDED.rhs,
                     marginalvalue = EXCLUDED.marginalvalue,
-                    violationdegree = EXCLUDED.violationdegree
+                    violationdegree = EXCLUDED.violationdegree,
+                    lhs = EXCLUDED.lhs
             """, records)
+        return len(records)
+
+    async def insert_constraint_equation_terms(self, df: pd.DataFrame) -> int:
+        """Replace ALL constraint equation terms with this snapshot (transactional delete + insert).
+
+        The table is a latest-snapshot by design: upserting would leave phantom rows for terms
+        AEMO has since removed from an equation, corrupting unknown-term counts in inference.
+        """
+        if df.empty:
+            return 0
+        records = [
+            (row['constraintid'], int(row['version']), row['term_type'], row['term_id'], row.get('factor'))
+            for _, row in df.iterrows()
+        ]
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM constraint_equation_terms")
+                await conn.executemany("""
+                    INSERT INTO constraint_equation_terms (constraintid, version, term_type, term_id, factor)
+                    VALUES ($1, $2, $3, $4, $5)
+                """, records)
         return len(records)
 
     async def insert_forecast_history(self, rows: List[Dict[str, Any]]) -> int:

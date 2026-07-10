@@ -28,17 +28,18 @@ SAMPLE_PD7DAY_CSV = (
     # Intervention row should be dropped.
     'D,PD7DAY,INTERCONNECTORSOLUTION,1,"2026/07/09 18:00:00",1,"2026/07/09 18:00:00",NSW1-QLD1,'
     '999.0,999.0,999.0,999.0,"2026/07/09 17:39:24"\n'
+    # Real header lines verified against a downloaded PUBLIC_PD7DAY_*.zip (2026-07-10 run) -- LHS added.
     'I,PD7DAY,CONSTRAINTSOLUTION,1,RUN_DATETIME,INTERVENTION,INTERVAL_DATETIME,CONSTRAINTID,RHS,'
-    'MARGINALVALUE,VIOLATIONDEGREE,LASTCHANGED\n'
+    'MARGINALVALUE,VIOLATIONDEGREE,LHS,LASTCHANGED\n'
     'D,PD7DAY,CONSTRAINTSOLUTION,1,"2026/07/09 18:00:00",0,"2026/07/09 18:00:00",C_BINDING,150,'
-    '25.5,0,"2026/07/09 17:39:24"\n'
+    '25.5,0,140.0,"2026/07/09 17:39:24"\n'
     'D,PD7DAY,CONSTRAINTSOLUTION,1,"2026/07/09 18:00:00",0,"2026/07/09 18:00:00",C_SLACK,80,0,0,'
-    '"2026/07/09 17:39:24"\n'
+    '60.0,"2026/07/09 17:39:24"\n'
     'D,PD7DAY,CONSTRAINTSOLUTION,1,"2026/07/09 18:00:00",0,"2026/07/09 18:00:00",C_VIOLATED,10,0,'
-    '5,"2026/07/09 17:39:24"\n'
+    '5,15.0,"2026/07/09 17:39:24"\n'
     # Intervention row should be dropped.
     'D,PD7DAY,CONSTRAINTSOLUTION,1,"2026/07/09 18:00:00",1,"2026/07/09 18:00:00",C_BINDING,150,'
-    '999.0,0,"2026/07/09 17:39:24"\n'
+    '999.0,0,999.0,"2026/07/09 17:39:24"\n'
     'C,"END OF REPORT",9\n'
 )
 
@@ -120,7 +121,7 @@ class TestParseConstraintCsv:
         assert set(df["constraintid"]) == {"C_BINDING", "C_SLACK", "C_VIOLATED"}
         assert list(df.columns) == [
             "run_datetime", "interval_datetime", "constraintid",
-            "rhs", "marginalvalue", "violationdegree",
+            "rhs", "marginalvalue", "violationdegree", "lhs",
         ]
 
     def test_drops_intervention_rows(self, client):
@@ -133,6 +134,7 @@ class TestParseConstraintCsv:
         assert row["rhs"] == pytest.approx(10.0)
         assert row["marginalvalue"] == pytest.approx(0.0)
         assert row["violationdegree"] == pytest.approx(5.0)
+        assert row["lhs"] == pytest.approx(15.0)
 
     def test_no_table_returns_none(self, client):
         assert client._parse_constraint_csv("C,header only\n") is None

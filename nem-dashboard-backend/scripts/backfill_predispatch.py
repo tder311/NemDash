@@ -16,7 +16,7 @@ whose CSV carries the run's full multi-hour half-hourly forecast in three
 tables (verified against the 2025-06-22 week and a live 2026-07-09 run):
 ``PREDISPATCH,REGION_PRICES`` (RRP), ``PREDISPATCH,INTERCONNECTOR_SOLN``
 (flows vs limits, ~6 interconnectors/interval), and
-``PREDISPATCH,CONSTRAINT_SOLUTION`` (RHS/marginal value/violation degree,
+``PREDISPATCH,CONSTRAINT_SOLUTION`` (RHS/marginal value/violation degree/LHS,
 ~900 constraints/interval, ~1-2% binding). INTERVENTION column present on all
 three tables.
 
@@ -72,7 +72,7 @@ EMPTY_COLUMNS = {
     ],
     "constraint": [
         "run_datetime", "interval_datetime", "constraintid",
-        "rhs", "marginalvalue", "violationdegree",
+        "rhs", "marginalvalue", "violationdegree", "lhs",
     ],
 }
 
@@ -193,7 +193,7 @@ def parse_predispatch_interconnector_csv(text: str) -> pd.DataFrame:
 
 def parse_predispatch_constraint_csv(text: str) -> pd.DataFrame:
     """Extract PREDISPATCH,CONSTRAINT_SOLUTION D rows -> interval_datetime, constraintid, rhs,
-    marginalvalue, violationdegree (unfiltered; binding-only filter applied downstream)."""
+    marginalvalue, violationdegree, lhs (unfiltered; binding-only filter applied downstream)."""
     headers: Optional[List[str]] = None
     rows: List[List[str]] = []
     for line in text.splitlines():
@@ -218,6 +218,7 @@ def parse_predispatch_constraint_csv(text: str) -> pd.DataFrame:
         "rhs": pd.to_numeric(df["RHS"], errors="coerce"),
         "marginalvalue": pd.to_numeric(df["MARGINALVALUE"], errors="coerce"),
         "violationdegree": pd.to_numeric(df["VIOLATIONDEGREE"], errors="coerce"),
+        "lhs": pd.to_numeric(df["LHS"], errors="coerce"),
     })
     return out.dropna(subset=["interval_datetime", "constraintid"]).reset_index(drop=True)
 

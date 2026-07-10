@@ -25,7 +25,7 @@ ARCHIVE_FILE_RE = r"PUBLIC_PD7DAY_\d{8}\.zip"
 
 # Numeric columns pulled from each PD7Day table (lowercased, post-parse).
 INTERCONNECTOR_NUMERIC_COLS = ["mwflow", "exportlimit", "importlimit", "marginalvalue"]
-CONSTRAINT_NUMERIC_COLS = ["rhs", "marginalvalue", "violationdegree"]
+CONSTRAINT_NUMERIC_COLS = ["rhs", "marginalvalue", "violationdegree", "lhs"]
 
 
 class NEMPredispatchClient:
@@ -193,7 +193,7 @@ class NEMPredispatchClient:
         return out.reset_index(drop=True)
 
     def _parse_constraint_csv(self, text: str) -> Optional[pd.DataFrame]:
-        """Extract PD7DAY CONSTRAINTSOLUTION rows -> run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree."""
+        """Extract PD7DAY CONSTRAINTSOLUTION rows -> run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree, lhs."""
         df = self._extract_table(text, "CONSTRAINTSOLUTION")
         if df is None:
             logger.warning("No PD7DAY CONSTRAINTSOLUTION rows found")
