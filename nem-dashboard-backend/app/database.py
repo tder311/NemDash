@@ -1715,6 +1715,30 @@ class NEMDatabase:
             """, region)
         return [dict(row) for row in rows]
 
+    async def get_latest_predispatch_interconnectors(self) -> List[Dict[str, Any]]:
+        """Get the latest pre-dispatch run's forward interconnector flow/limit rows, across all interconnectors."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT run_datetime, interval_datetime, interconnectorid, mwflow, exportlimit, importlimit, marginalvalue
+                FROM predispatch_interconnector
+                WHERE run_datetime = (SELECT MAX(run_datetime) FROM predispatch_interconnector)
+                AND interval_datetime >= NOW()
+                ORDER BY interconnectorid, interval_datetime ASC
+            """)
+        return [dict(row) for row in rows]
+
+    async def get_latest_predispatch_constraints(self) -> List[Dict[str, Any]]:
+        """Get the latest pre-dispatch run's forward binding-or-violated constraint rows, across all constraints."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT run_datetime, interval_datetime, constraintid, rhs, marginalvalue, violationdegree
+                FROM predispatch_constraint
+                WHERE run_datetime = (SELECT MAX(run_datetime) FROM predispatch_constraint)
+                AND interval_datetime >= NOW()
+                ORDER BY constraintid, interval_datetime ASC
+            """)
+        return [dict(row) for row in rows]
+
     # Export methods for CSV downloads
     async def get_unique_fuel_sources(self) -> List[str]:
         """Get list of all unique fuel sources for filter dropdown."""

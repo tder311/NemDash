@@ -259,3 +259,37 @@ class ForecastAccuracyResponse(BaseModel):
     buckets: List[ForecastAccuracyBucket]
     overall: ForecastAccuracyStats
     message: str
+
+
+class InterconnectorInterval(BaseModel):
+    interval_datetime: str
+    mwflow: Optional[float] = None
+    exportlimit: Optional[float] = None
+    importlimit: Optional[float] = None
+    marginalvalue: Optional[float] = None
+
+
+class NetworkInterconnectorsResponse(BaseModel):
+    run_datetime: Optional[str] = None
+    data: Dict[str, List[InterconnectorInterval]]
+
+
+class ConstraintInterval(BaseModel):
+    interval_datetime: str
+    marginalvalue: Optional[float] = None
+    rhs: Optional[float] = None
+    violationdegree: Optional[float] = None
+
+
+class ConstraintSummary(BaseModel):
+    constraintid: str
+    category: str
+    regions: List[str]
+    kind: Optional[str] = None
+    label: str
+    intervals: List[ConstraintInterval]
+
+
+class NetworkConstraintsResponse(BaseModel):
+    run_datetime: Optional[str] = None
+    constraints: List[ConstraintSummary]

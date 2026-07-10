@@ -9,9 +9,11 @@ import math
 import os
 import logging
 import asyncio
+import pandas as pd
 
 from .database import NEMDatabase, calculate_aggregation_minutes, to_aest_isoformat
 from .data_ingester import DataIngester, import_generator_info_from_csv
+from .constraint_ids import parse_constraint_id
 from .models import (
     DispatchDataResponse,
     GenerationByFuelResponse,
@@ -33,6 +35,8 @@ from .models import (
     DUIDSearchResponse,
     PriceForecastResponse,
     ForecastAccuracyResponse,
+    NetworkInterconnectorsResponse,
+    NetworkConstraintsResponse,
 )
 from .forecaster import (
     REGIONS,
@@ -1218,6 +1222,94 @@ async def get_predispatch_prices(region: str):
         "run_datetime": iso(rows[0]["run_datetime"]) if rows else None,
         "message": f"Latest pre-dispatch price forecast for {region} ({len(data)} intervals)",
     }
+
+
+@app.get("/api/network/interconnectors", response_model=NetworkInterconnectorsResponse)
+async def get_network_interconnectors():
+    """Latest pre-dispatch run's forward interconnector flows/limits, for the network ribbons."""
+    try:
+        rows = await db.get_latest_predispatch_interconnectors()
+        if not rows:
+            return NetworkInterconnectorsResponse(run_datetime=None, data={})
+
+        df = pd.DataFrame(rows)
+        run_datetime = df["run_datetime"].iloc[0]
+
+        data = {
+            ic_id: [
+                {
+                    "interval_datetime": row.interval_datetime.isoformat(),
+                    "mwflow": row.mwflow,
+                    "exportlimit": row.exportlimit,
+                    "importlimit": row.importlimit,
+                    "marginalvalue": row.marginalvalue,
+                }
+                for row in group.sort_values("interval_datetime").itertuples(index=False)
+            ]
+            for ic_id, group in df.groupby("interconnectorid", sort=False)
+        }
+
+        return NetworkInterconnectorsResponse(run_datetime=to_aest_isoformat(run_datetime), data=data)
+
+    except Exception as e:
+        logger.error(f"Error getting network interconnectors: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/network/constraints", response_model=NetworkConstraintsResponse)
+async def get_network_constraints(
+    top: int = Query(default=25, ge=1, le=200, description="Number of constraints to return"),
+    category: str = Query(default="all", description="all|network|fcas"),
+):
+    """Latest pre-dispatch run's binding constraints, ranked by peak |marginalvalue|, with parsed metadata."""
+    valid_categories = {"all", "network", "fcas"}
+    if category not in valid_categories:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}")
+
+    try:
+        rows = await db.get_latest_predispatch_constraints()
+        if not rows:
+            return NetworkConstraintsResponse(run_datetime=None, constraints=[])
+
+        df = pd.DataFrame(rows)
+        run_datetime = df["run_datetime"].iloc[0]
+
+        peak_abs_mv = df.assign(abs_mv=df["marginalvalue"].abs()).groupby("constraintid", sort=False)["abs_mv"].max()
+        parsed = {cid: parse_constraint_id(cid) for cid in peak_abs_mv.index}
+
+        if category != "all":
+            peak_abs_mv = peak_abs_mv[[cid for cid in peak_abs_mv.index if parsed[cid]["category"] == category]]
+
+        top_ids = peak_abs_mv.sort_values(ascending=False).head(top).index
+        groups = {cid: g.sort_values("interval_datetime") for cid, g in df.groupby("constraintid", sort=False)}
+
+        constraints = [
+            {
+                "constraintid": cid,
+                "category": parsed[cid]["category"],
+                "regions": parsed[cid]["regions"],
+                "kind": parsed[cid]["kind"],
+                "label": parsed[cid]["label"],
+                "intervals": [
+                    {
+                        "interval_datetime": row.interval_datetime.isoformat(),
+                        "marginalvalue": row.marginalvalue,
+                        "rhs": row.rhs,
+                        "violationdegree": row.violationdegree,
+                    }
+                    for row in groups[cid].itertuples(index=False)
+                ],
+            }
+            for cid in top_ids
+        ]
+
+        return NetworkConstraintsResponse(run_datetime=to_aest_isoformat(run_datetime), constraints=constraints)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting network constraints: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/optimise/dispatch")

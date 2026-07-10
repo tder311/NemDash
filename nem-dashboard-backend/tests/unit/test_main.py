@@ -1720,3 +1720,268 @@ class TestForecastAccuracyEndpoint:
                     assert response.status_code == 500
         finally:
             main_module.db = original_db
+
+
+class TestNetworkInterconnectorsEndpoint:
+    """Tests for /api/network/interconnectors."""
+
+    def _rows(self):
+        return [
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 10, 30),
+                "interconnectorid": "N-Q-MNSP1",
+                "mwflow": 150.0, "exportlimit": 210.0, "importlimit": -100.0, "marginalvalue": 0.0,
+            },
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 11, 0),
+                "interconnectorid": "N-Q-MNSP1",
+                "mwflow": 160.0, "exportlimit": 210.0, "importlimit": -100.0, "marginalvalue": 5.0,
+            },
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 10, 30),
+                "interconnectorid": "VIC1-NSW1",
+                "mwflow": -50.0, "exportlimit": 600.0, "importlimit": -600.0, "marginalvalue": 0.0,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_groups_rows_by_interconnector(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_interconnectors = AsyncMock(return_value=self._rows())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/interconnectors")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["run_datetime"] is not None
+                assert set(data["data"].keys()) == {"N-Q-MNSP1", "VIC1-NSW1"}
+                assert len(data["data"]["N-Q-MNSP1"]) == 2
+                assert data["data"]["N-Q-MNSP1"][0]["mwflow"] == 150.0
+                assert data["data"]["N-Q-MNSP1"][0]["exportlimit"] == 210.0
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_empty_data(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_interconnectors = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/interconnectors")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["run_datetime"] is None
+                assert data["data"] == {}
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_interconnectors = AsyncMock(side_effect=Exception("boom"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/interconnectors")
+                assert response.status_code == 500
+                assert "boom" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+
+class TestNetworkConstraintsEndpoint:
+    """Tests for /api/network/constraints."""
+
+    def _rows(self):
+        return [
+            # Network constraint (thermal), peak |mv| = 50
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 10, 30),
+                "constraintid": "N>NIL_94T",
+                "rhs": 100.0, "marginalvalue": 50.0, "violationdegree": 0.0,
+            },
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 11, 0),
+                "constraintid": "N>NIL_94T",
+                "rhs": 100.0, "marginalvalue": -20.0, "violationdegree": 0.0,
+            },
+            # FCAS constraint, peak |mv| = 7,000,000 (near the $7M cap mentioned in the spec)
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 10, 30),
+                "constraintid": "F_MAIN+NIL_MG_R1",
+                "rhs": 10.0, "marginalvalue": 7_000_000.0, "violationdegree": 0.0,
+            },
+            # Other-category constraint, peak |mv| = 1
+            {
+                "run_datetime": datetime(2025, 1, 15, 10, 0),
+                "interval_datetime": datetime(2025, 1, 15, 10, 30),
+                "constraintid": "I_6F_NS_150",
+                "rhs": 5.0, "marginalvalue": 1.0, "violationdegree": 0.0,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ranks_by_peak_abs_marginal_value(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_constraints = AsyncMock(return_value=self._rows())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/constraints?top=25&category=all")
+                assert response.status_code == 200
+                data = response.json()
+                ids = [c["constraintid"] for c in data["constraints"]]
+                assert ids == ["F_MAIN+NIL_MG_R1", "N>NIL_94T", "I_6F_NS_150"]
+                fcas_entry = data["constraints"][0]
+                assert fcas_entry["category"] == "fcas"
+                assert fcas_entry["regions"] == ["NSW1", "QLD1", "VIC1", "SA1"]
+                assert fcas_entry["label"] == "FCAS · mainland"
+                network_entry = data["constraints"][1]
+                assert network_entry["category"] == "network"
+                assert network_entry["kind"] == "thermal"
+                assert network_entry["label"] == "NSW · thermal"
+                assert len(network_entry["intervals"]) == 2
+                other_entry = data["constraints"][2]
+                assert other_entry["label"] == "I_6F_NS_150"
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_category_filter_network_only(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_constraints = AsyncMock(return_value=self._rows())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/constraints?category=network")
+                assert response.status_code == 200
+                data = response.json()
+                assert [c["constraintid"] for c in data["constraints"]] == ["N>NIL_94T"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_top_limits_result_count(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_constraints = AsyncMock(return_value=self._rows())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/constraints?top=1")
+                assert response.status_code == 200
+                data = response.json()
+                assert len(data["constraints"]) == 1
+                assert data["constraints"][0]["constraintid"] == "F_MAIN+NIL_MG_R1"
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_invalid_category_returns_400(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/constraints?category=bogus")
+                assert response.status_code == 400
+                assert "Invalid category" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_empty_data(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_constraints = AsyncMock(return_value=[])
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/constraints")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["run_datetime"] is None
+                assert data["constraints"] == []
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_latest_predispatch_constraints = AsyncMock(side_effect=Exception("boom"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/constraints")
+                assert response.status_code == 500
+                assert "boom" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
