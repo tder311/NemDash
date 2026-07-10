@@ -2037,6 +2037,45 @@ class TestUnitInferenceUnitsEndpoint:
             main_module.db = original_db
 
     @pytest.mark.asyncio
+    async def test_nan_corr_unit_serialises_as_null_and_sorts_last(self):
+        import pandas as pd
+        import app.main as main_module
+
+        inferred, ivls = self._inferred()
+        # CONST is flat in both series: corr is NaN and must serialise as null, not 500.
+        const_inferred = pd.DataFrame([
+            {"run_datetime": datetime(2026, 7, 9, 10, 0), "interval_datetime": ivl, "duid": "CONST",
+             "mw_inferred": 50.0, "quality": "good", "n_equations": 3, "residual": 0.1}
+            for ivl in ivls
+        ])
+        inferred = pd.concat([inferred, const_inferred], ignore_index=True)
+        realised = pd.DataFrame({
+            "settlementdate": ivls * 2,
+            "duid": ["A"] * 4 + ["CONST"] * 4,
+            "scadavalue": [12.0, 18.0, 33.0, 38.0] + [50.0] * 4,
+        })
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(return_value=inferred)
+        mock_db.get_dispatch_data_for_duids = AsyncMock(return_value=realised)
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/units?days=14")
+                assert response.status_code == 200
+                data = response.json()
+                assert [u["duid"] for u in data["units"]] == ["A", "CONST"]
+                const_unit = data["units"][1]
+                assert const_unit["observed_corr"] is None
+                assert const_unit["tracking"] is False
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
     async def test_no_stored_rows_returns_empty_units(self):
         import pandas as pd
         import app.main as main_module

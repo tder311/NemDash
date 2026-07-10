@@ -411,6 +411,7 @@ function NetworkPage({ darkMode }) {
                   {u.duid} · corr {u.observed_corr != null ? u.observed_corr.toFixed(2) : 'n/a'} · n={u.n}
                 </button>
               ))}
+              {units.message && <div className="network-meta">{units.message}</div>}
             </div>
 
             <div className="unit-inference-detail">
@@ -435,6 +436,7 @@ function NetworkPage({ darkMode }) {
                     <span>n={series.stats.n}</span>
                     <span>{series.stats.quality || 'n/a'}</span>
                   </div>
+                  {series.message && <div className="network-meta">{series.message}</div>}
                   <div className="chart-container">
                     <Plot
                       data={unitInferenceFigure.data}

@@ -41,6 +41,7 @@ const mockUnits = {
     { duid: 'BAYSW1', quality: 'good', n: 412, observed_corr: 0.95, mae: 5.2, tracking: true },
     { duid: 'LDBESS1', quality: 'good', n: 380, observed_corr: 0.02, mae: 40.1, tracking: false },
   ],
+  message: '2 DUIDs with stored inference over 14d',
 };
 
 const mockSeries = {
@@ -180,6 +181,9 @@ describe('NetworkPage', () => {
     expect(document.querySelector('.unit-stats-chip').textContent).toMatch(/corr 0\.95/i);
     expect(screen.getByText(/MAE 5\.2 MW/i)).toBeInTheDocument();
     expect(screen.getByText(/Median equations per solve: 6/i)).toBeInTheDocument();
+    // Provenance lines from both endpoints' message fields.
+    expect(screen.getByText('2 DUIDs with stored inference over 14d')).toBeInTheDocument();
+    expect(screen.getByText('2 paired intervals for BAYSW1 over 14d')).toBeInTheDocument();
   });
 
   test('clicking a non-tracking DUID fetches its series', async () => {

@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import lsq_linear
 
+from .database import NEMDatabase
+
 OUTPUT_COLUMNS = [
     "run_datetime", "interval_datetime", "duid",
     "mw_inferred", "quality", "n_equations", "system_residual",
@@ -330,14 +332,14 @@ def aggregate_bounds_to_30min(bids: pd.DataFrame) -> pd.DataFrame:
 
 # --- DB-aware input fetchers (async; everything above is pure and DataFrame-in/DataFrame-out) ---
 
-async def fetch_terms(db) -> pd.DataFrame:
+async def fetch_terms(db: NEMDatabase) -> pd.DataFrame:
     """Full constraint equation terms table (latest snapshot)."""
     async with db._pool.acquire() as conn:
         rows = await conn.fetch("SELECT constraintid, term_type, term_id, factor FROM constraint_equation_terms")
     return pd.DataFrame([dict(r) for r in rows])
 
 
-async def fetch_bounds(db, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+async def fetch_bounds(db: NEMDatabase, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     """Per-(30-min interval, duid) MAXAVAIL bounds from stored bid_per_offer rows."""
     async with db._pool.acquire() as conn:
         rows = await conn.fetch("""

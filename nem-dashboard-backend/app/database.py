@@ -1776,7 +1776,7 @@ class NEMDatabase:
                 row.get("mw_inferred"),
                 row["quality"],
                 int(row["n_equations"]) if pd.notna(row.get("n_equations")) else None,
-                row.get("system_residual", row.get("residual")),
+                row["system_residual"],
             ))
 
         async with self._pool.acquire() as conn:

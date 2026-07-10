@@ -321,6 +321,22 @@ class TestComputeUnitTracking:
         assert not out.iloc[0]["tracking"]
         assert out.iloc[0]["corr"] < 0
 
+    def test_constant_series_has_nan_corr_not_tracking_and_sorts_last(self):
+        # Correlation is undefined for a zero-variance series; such a unit must not be trusted.
+        varying_inf, varying_real = self._series("A", [10.0, 20.0, 30.0, 40.0], [12.0, 18.0, 33.0, 38.0])
+        const_inf, const_real = self._series("CONST", [50.0, 50.0, 50.0, 50.0], [50.0, 50.0, 50.0, 50.0])
+        inferred = pd.concat([varying_inf, const_inf], ignore_index=True)
+        realised = pd.concat([varying_real, const_real], ignore_index=True)
+
+        out = compute_unit_tracking(inferred, realised)
+
+        const_row = out[out["duid"] == "CONST"].iloc[0]
+        assert pd.isna(const_row["corr"])
+        assert not const_row["tracking"]
+        assert const_row["mae"] == pytest.approx(0.0)
+        # NaN corr sorts after every real correlation.
+        assert out.iloc[-1]["duid"] == "CONST"
+
     def test_empty_overlap_returns_empty_frame_with_columns(self):
         inferred = pd.DataFrame([
             _inferred_row(pd.Timestamp("2026-07-09 10:00:00"), pd.Timestamp("2026-07-09 10:30:00"), "A", 10.0),
