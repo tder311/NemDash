@@ -589,3 +589,109 @@ class TestRunContinuousIngestionFast:
         # Verify timestamps were fetched
         mock_db.get_latest_dispatch_timestamp.assert_called_once()
         assert mock_db.get_latest_price_timestamp.call_count == 2
+
+
+class TestInferUnitGeneration:
+    """Tests for DataIngester._infer_unit_generation (joint unit-inference live hook)."""
+
+    def _ingester(self):
+        return DataIngester("postgresql://mock:mock@localhost/test")
+
+    def _con_df(self):
+        run = pd.Timestamp("2026-07-09 10:00:00")
+        ivl = pd.Timestamp("2026-07-09 10:30:00")
+        return pd.DataFrame([
+            {"run_datetime": run, "interval_datetime": ivl, "constraintid": "C1", "lhs": 30.0},
+        ])
+
+    def _terms(self):
+        return pd.DataFrame([
+            {"constraintid": "C1", "term_type": "duid", "term_id": "A", "factor": 1.0},
+        ])
+
+    @pytest.mark.asyncio
+    async def test_solves_and_persists_good_weak_rows(self):
+        ingester = self._ingester()
+        ingester.db = MagicMock()
+        ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=1)
+
+        with patch("app.data_ingester.fetch_terms", AsyncMock(return_value=self._terms())), \
+             patch("app.data_ingester.fetch_bounds", AsyncMock(return_value=pd.DataFrame(columns=["duid", "maxavail"]))):
+            await ingester._infer_unit_generation(self._con_df(), None)
+
+        ingester.db.insert_inferred_unit_generation.assert_called_once()
+        solved = ingester.db.insert_inferred_unit_generation.call_args[0][0]
+        assert solved.iloc[0]["duid"] == "A"
+        assert solved.iloc[0]["mw_inferred"] == pytest.approx(30.0)
+
+    @pytest.mark.asyncio
+    async def test_empty_or_missing_constraint_frame_is_a_noop(self):
+        ingester = self._ingester()
+        ingester.db = MagicMock()
+        ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=0)
+
+        await ingester._infer_unit_generation(pd.DataFrame(), None)
+        await ingester._infer_unit_generation(None, None)
+
+        ingester.db.insert_inferred_unit_generation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_solve_failure_is_caught_and_does_not_raise(self):
+        ingester = self._ingester()
+        ingester.db = MagicMock()
+        ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=0)
+
+        with patch("app.data_ingester.fetch_terms", AsyncMock(side_effect=Exception("db down"))):
+            await ingester._infer_unit_generation(self._con_df(), None)  # must not raise
+
+        ingester.db.insert_inferred_unit_generation.assert_not_called()
+
+
+class TestIngestPredispatchDataTriggersInference:
+    """Tests that the PD7Day ingest cycle hooks into joint unit inference after the existing insert."""
+
+    @pytest.mark.asyncio
+    async def test_new_run_triggers_unit_inference_with_unfiltered_frames(self):
+        ingester = DataIngester("postgresql://mock:mock@localhost/test")
+        ingester.db = MagicMock()
+        ingester.db.insert_predispatch_price = AsyncMock(return_value=5)
+        ingester.db.insert_predispatch_interconnector = AsyncMock(return_value=2)
+        ingester.db.insert_predispatch_constraint = AsyncMock(return_value=1)
+        ingester.last_predispatch_run = None
+
+        run = pd.Timestamp("2026-07-09 10:00:00")
+        prices = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "regionid": "NSW1", "rrp": 80.0}])
+        con_df = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "constraintid": "C1", "lhs": 1.0}])
+        ic_df = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "interconnectorid": "IC1", "mwflow": 1.0}])
+        ingester.predispatch_client = MagicMock()
+        ingester.predispatch_client.get_latest_predispatch_all = AsyncMock(return_value={
+            "prices": prices, "interconnector": ic_df, "constraint": con_df,
+        })
+        ingester._infer_unit_generation = AsyncMock()
+
+        result = await ingester.ingest_predispatch_data()
+
+        assert result is True
+        ingester._infer_unit_generation.assert_called_once()
+        called_con_df, called_ic_df = ingester._infer_unit_generation.call_args[0]
+        assert called_con_df is con_df
+        assert called_ic_df is ic_df
+
+    @pytest.mark.asyncio
+    async def test_already_ingested_run_skips_inference(self):
+        ingester = DataIngester("postgresql://mock:mock@localhost/test")
+        ingester.db = MagicMock()
+        run = pd.Timestamp("2026-07-09 10:00:00")
+        ingester.last_predispatch_run = run
+
+        prices = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "regionid": "NSW1", "rrp": 80.0}])
+        ingester.predispatch_client = MagicMock()
+        ingester.predispatch_client.get_latest_predispatch_all = AsyncMock(return_value={
+            "prices": prices, "interconnector": pd.DataFrame(), "constraint": pd.DataFrame(),
+        })
+        ingester._infer_unit_generation = AsyncMock()
+
+        result = await ingester.ingest_predispatch_data()
+
+        assert result is True
+        ingester._infer_unit_generation.assert_not_called()
