@@ -105,6 +105,21 @@ C,END OF REPORT,,,
 '''.encode('utf-8')
 
 
+def create_trading_price_csv_for_time(timestamp: str) -> bytes:
+    """Create sample trading price CSV for a specific timestamp"""
+    return f'''C,NEMP.WORLD,,TRADING,PRICE,1
+I,TRADING,PRICE,3,SETTLEMENTDATE,RUNNO,REGIONID,PERIODID,RRP,EEP,INVALIDFLAG,LASTCHANGED,ROP,APCFLAG
+D,TRADING,PRICE,3,"{timestamp}",1,NSW1,167,85.50,0,0,"{timestamp}",85.50,0
+D,TRADING,PRICE,3,"{timestamp}",1,VIC1,167,72.30,0,0,"{timestamp}",72.30,0
+D,TRADING,PRICE,3,"{timestamp}",1,QLD1,167,65.10,0,0,"{timestamp}",65.10,0
+D,TRADING,PRICE,3,"{timestamp}",1,SA1,167,-50.25,0,0,"{timestamp}",-50.25,0
+D,TRADING,PRICE,3,"{timestamp}",1,TAS1,167,55.00,0,0,"{timestamp}",55.00,0
+D,TRADING,REGIONSUM,3,"{timestamp}",1,NSW1,167,85.50,0,7500.0,0,0
+D,TRADING,REGIONSUM,3,"{timestamp}",1,SA1,167,-50.25,0,2100.0,0,0
+C,END OF REPORT,,,
+'''.encode('utf-8')
+
+
 def create_price_zip(csv_content: bytes, price_type: str = 'DISPATCH') -> bytes:
     """Create a sample price ZIP file for testing"""
     buffer = io.BytesIO()
@@ -116,3 +131,16 @@ def create_price_zip(csv_content: bytes, price_type: str = 'DISPATCH') -> bytes:
         else:
             zf.writestr('PUBLIC_PRICES_202501150000.CSV', csv_content)
     return buffer.getvalue()
+
+
+def create_public_prices_archive_zip(inner_daily_names: list) -> bytes:
+    """Create a monthly archive ZIP (ZIP of daily ZIPs) like NEMWEB Archive/Public_Prices.
+
+    Each name in ``inner_daily_names`` becomes an inner ZIP containing one
+    day's PUBLIC price CSV.
+    """
+    outer_buffer = io.BytesIO()
+    with zipfile.ZipFile(outer_buffer, 'w', zipfile.ZIP_DEFLATED) as outer_zf:
+        for inner_name in inner_daily_names:
+            outer_zf.writestr(inner_name, create_price_zip(SAMPLE_PUBLIC_PRICE_CSV, 'PUBLIC'))
+    return outer_buffer.getvalue()
