@@ -35,13 +35,40 @@ const mockConstraints = {
 const emptyInterconnectors = { run_datetime: null, data: {} };
 const emptyConstraints = { run_datetime: null, constraints: [] };
 
-const setupMocks = ({ interconnectors, constraints }) => {
+const mockUnits = {
+  days: 14,
+  units: [
+    { duid: 'BAYSW1', quality: 'good', n: 412, observed_corr: 0.95, mae: 5.2, tracking: true },
+    { duid: 'LDBESS1', quality: 'good', n: 380, observed_corr: 0.02, mae: 40.1, tracking: false },
+  ],
+};
+
+const mockSeries = {
+  duid: 'BAYSW1',
+  days: 14,
+  data: [
+    { interval_datetime: '2025-01-15T10:30:00+10:00', mw_inferred: 500, mw_realised: 510 },
+    { interval_datetime: '2025-01-15T11:00:00+10:00', mw_inferred: 520, mw_realised: 515 },
+  ],
+  stats: { n: 2, corr: 0.95, mae: 5.2, quality: 'good', median_n_equations: 6 },
+  message: '2 paired intervals for BAYSW1 over 14d',
+};
+
+const emptyUnits = { days: 14, units: [] };
+
+const setupMocks = ({ interconnectors, constraints, units, series }) => {
   axios.get.mockImplementation((url) => {
     if (url.includes('/api/network/interconnectors')) {
       return Promise.resolve({ data: interconnectors });
     }
     if (url.includes('/api/network/constraints')) {
       return Promise.resolve({ data: constraints });
+    }
+    if (url.includes('/api/network/unit-inference/units')) {
+      return Promise.resolve({ data: units || emptyUnits });
+    }
+    if (url.includes('/api/network/unit-inference/series')) {
+      return Promise.resolve({ data: series || mockSeries });
     }
     return Promise.resolve({ data: {} });
   });
@@ -85,6 +112,9 @@ describe('NetworkPage', () => {
       if (url.includes('/api/network/interconnectors')) {
         return Promise.reject({ response: { data: { detail: 'boom' } } });
       }
+      if (url.includes('/api/network/unit-inference')) {
+        return Promise.resolve({ data: emptyUnits });
+      }
       return Promise.resolve({ data: emptyConstraints });
     });
     render(<NetworkPage darkMode={false} />);
@@ -121,6 +151,54 @@ describe('NetworkPage', () => {
 
     await waitFor(() => {
       expect(document.querySelector('.network-container')).toHaveClass('dark');
+    });
+  });
+
+  test('shows empty state when no unit-inference rows are stored', async () => {
+    setupMocks({ interconnectors: emptyInterconnectors, constraints: emptyConstraints, units: emptyUnits });
+    render(<NetworkPage darkMode={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No stored unit-inference rows yet/i)).toBeInTheDocument();
+    });
+  });
+
+  test('lists DUIDs labelled with corr and n, selects the top one, and renders its paired series', async () => {
+    setupMocks({
+      interconnectors: emptyInterconnectors, constraints: emptyConstraints, units: mockUnits, series: mockSeries,
+    });
+    render(<NetworkPage darkMode={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/BAYSW1 · corr 0\.95 · n=412/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/LDBESS1 · corr 0\.02 · n=380/i)).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('plotly-chart')).toBeInTheDocument();
+    });
+    expect(document.querySelector('.unit-stats-chip').textContent).toMatch(/corr 0\.95/i);
+    expect(screen.getByText(/MAE 5\.2 MW/i)).toBeInTheDocument();
+    expect(screen.getByText(/Median equations per solve: 6/i)).toBeInTheDocument();
+  });
+
+  test('clicking a non-tracking DUID fetches its series', async () => {
+    setupMocks({
+      interconnectors: emptyInterconnectors, constraints: emptyConstraints, units: mockUnits, series: mockSeries,
+    });
+    render(<NetworkPage darkMode={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/LDBESS1 · corr 0\.02 · n=380/i)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText(/LDBESS1 · corr 0\.02 · n=380/i));
+
+    await waitFor(() => {
+      expect(axios.get).toHaveBeenCalledWith(
+        '/api/network/unit-inference/series',
+        expect.objectContaining({ params: expect.objectContaining({ duid: 'LDBESS1' }) })
+      );
     });
   });
 });
