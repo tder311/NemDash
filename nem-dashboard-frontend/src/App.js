@@ -8,6 +8,7 @@ import ForecastPage from './components/ForecastPage';
 import DispatchPage from './components/DispatchPage';
 import BidBandsPage from './components/BidBandsPage';
 import ChatPage from './components/ChatPage';
+import NetworkPage from './components/NetworkPage';
 
 function App() {
   const [darkMode, setDarkMode] = useState(true);
@@ -64,6 +65,12 @@ function App() {
             Ask NemDash
           </button>
           <button
+            className={`tab-button ${activeTab === 'network' ? 'active' : ''}`}
+            onClick={() => setActiveTab('network')}
+          >
+            Network
+          </button>
+          <button
             className={`tab-button ${activeTab === 'bids' ? 'active' : ''}`}
             onClick={() => setActiveTab('bids')}
           >
@@ -95,6 +102,7 @@ function App() {
         {activeTab === 'dispatch' && <DispatchPage darkMode={darkMode} />}
         {activeTab === 'bidbands' && <BidBandsPage darkMode={darkMode} />}
         {activeTab === 'chat' && <ChatPage darkMode={darkMode} />}
+        {activeTab === 'network' && <NetworkPage darkMode={darkMode} />}
         {activeTab === 'bids' && <BidBandPage darkMode={darkMode} />}
         {activeTab === 'downloads' && <DownloadsPage darkMode={darkMode} />}
       </div>
