@@ -261,6 +261,26 @@ class NEMDatabase:
                 )
             """)
 
+            # Joint-inference backsolved unit MW, good+weak quality only (see insert_inferred_unit_generation)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS inferred_unit_generation (
+                    id BIGSERIAL PRIMARY KEY,
+                    run_datetime TIMESTAMP NOT NULL,
+                    interval_datetime TIMESTAMP NOT NULL,
+                    duid TEXT NOT NULL,
+                    mw_inferred REAL,
+                    quality TEXT NOT NULL,
+                    n_equations INTEGER,
+                    residual REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(run_datetime, interval_datetime, duid)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inferred_unit_gen_duid_interval "
+                "ON inferred_unit_generation(duid, interval_datetime)"
+            )
+
             # Served price-forecaster output, one row per serve x interval x region
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS forecast_history (
@@ -1733,6 +1753,86 @@ class NEMDatabase:
                     VALUES ($1, $2, $3, $4, $5)
                 """, records)
         return len(records)
+
+    async def insert_inferred_unit_generation(self, df: pd.DataFrame) -> int:
+        """Upsert joint-inference backsolved unit MW, keeping only 'good'/'weak' quality rows.
+
+        'unidentifiable' rows are ~80% of solve volume and carry no usable MW estimate
+        (structurally inseparable from other units), so they are dropped here rather than stored.
+        """
+        if df.empty:
+            return 0
+        df = df[df["quality"].isin(["good", "weak"])]
+        if df.empty:
+            return 0
+        records = []
+        for _, row in df.iterrows():
+            run = row["run_datetime"]
+            interval = row["interval_datetime"]
+            records.append((
+                run.to_pydatetime() if hasattr(run, "to_pydatetime") else run,
+                interval.to_pydatetime() if hasattr(interval, "to_pydatetime") else interval,
+                row["duid"],
+                row.get("mw_inferred"),
+                row["quality"],
+                int(row["n_equations"]) if pd.notna(row.get("n_equations")) else None,
+                row.get("system_residual", row.get("residual")),
+            ))
+
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO inferred_unit_generation
+                (run_datetime, interval_datetime, duid, mw_inferred, quality, n_equations, residual)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (run_datetime, interval_datetime, duid) DO UPDATE SET
+                    mw_inferred = EXCLUDED.mw_inferred,
+                    quality = EXCLUDED.quality,
+                    n_equations = EXCLUDED.n_equations,
+                    residual = EXCLUDED.residual
+            """, records)
+        return len(records)
+
+    async def get_inferred_unit_generation(self, start: datetime, duid: Optional[str] = None) -> pd.DataFrame:
+        """Stored joint-inference rows (good/weak only, by construction) with interval_datetime >= start."""
+        columns = ["run_datetime", "interval_datetime", "duid", "mw_inferred", "quality", "n_equations", "residual"]
+        async with self._pool.acquire() as conn:
+            if duid:
+                rows = await conn.fetch(f"""
+                    SELECT {", ".join(columns)} FROM inferred_unit_generation
+                    WHERE interval_datetime >= $1 AND duid = $2
+                    ORDER BY interval_datetime
+                """, start, duid)
+            else:
+                rows = await conn.fetch(f"""
+                    SELECT {", ".join(columns)} FROM inferred_unit_generation
+                    WHERE interval_datetime >= $1
+                    ORDER BY interval_datetime
+                """, start)
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        out = pd.DataFrame([dict(row) for row in rows])
+        out["run_datetime"] = pd.to_datetime(out["run_datetime"])
+        out["interval_datetime"] = pd.to_datetime(out["interval_datetime"])
+        return out
+
+    async def get_dispatch_data_for_duids(
+        self, duids: List[str], start_date: datetime, end_date: datetime
+    ) -> pd.DataFrame:
+        """5-min realised scadavalue rows for a set of DUIDs, for comparison against inferred MW."""
+        columns = ["settlementdate", "duid", "scadavalue"]
+        if not duids:
+            return pd.DataFrame(columns=columns)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT settlementdate, duid, scadavalue FROM dispatch_data
+                WHERE duid = ANY($1::text[]) AND settlementdate >= $2 AND settlementdate <= $3
+                ORDER BY settlementdate
+            """, duids, start_date, end_date)
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        out = pd.DataFrame([dict(row) for row in rows])
+        out["settlementdate"] = pd.to_datetime(out["settlementdate"])
+        return out
 
     async def insert_forecast_history(self, rows: List[Dict[str, Any]]) -> int:
         """Persist a served forecast so misses are diagnosable and models scorecardable."""

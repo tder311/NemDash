@@ -33,6 +33,14 @@ NULL_TOL = 1e-6
 # Estimable units whose pseudoinverse row-norm (noise amplification) exceeds this are 'weak'.
 WEAK_SENSITIVITY = 10.0
 
+# Inferred rows are only trusted up to this lead (interval - run) for user-facing series/stats.
+SHORT_LEAD_HOURS = 2.0
+# A unit is considered to track realised generation when its observed correlation clears this.
+TRACKING_CORR_THRESHOLD = 0.6
+
+TRACKING_COLUMNS = ["duid", "n", "corr", "mae", "quality", "median_n_equations", "tracking"]
+SERIES_COLUMNS = ["interval_datetime", "mw_inferred", "mw_realised"]
+
 
 def _empty_output() -> pd.DataFrame:
     """Empty result frame with the canonical output schema."""
@@ -235,3 +243,79 @@ def _classify_units(a_matrix: np.ndarray) -> list:
     quality = np.where(null_projection > NULL_TOL, "unidentifiable",
                        np.where(sensitivity > WEAK_SENSITIVITY, "weak", "good"))
     return quality.tolist()
+
+
+def select_short_lead_latest_run(
+    inferred: pd.DataFrame, max_lead_hours: float = SHORT_LEAD_HOURS
+) -> pd.DataFrame:
+    """One row per (duid, interval_datetime): the latest run within max_lead_hours of that interval.
+
+    Rows with a non-positive or over-long lead (interval - run) are dropped first, since a
+    later/closer run is always the more reliable forecast of that interval's generation.
+    """
+    if inferred.empty:
+        return inferred.copy()
+    lead = inferred["interval_datetime"] - inferred["run_datetime"]
+    within = inferred[(lead > pd.Timedelta(0)) & (lead <= pd.Timedelta(hours=max_lead_hours))]
+    if within.empty:
+        return within.reset_index(drop=True)
+    within = within.sort_values("run_datetime")
+    return within.drop_duplicates(subset=["duid", "interval_datetime"], keep="last").reset_index(drop=True)
+
+
+def aggregate_realised_30min(dispatch: pd.DataFrame) -> pd.DataFrame:
+    """Mean 5-min scadavalue per 30-min bucket, per DUID (bucket = period-ending, via ceil)."""
+    out_columns = ["interval_datetime", "duid", "mw_realised"]
+    if dispatch.empty:
+        return pd.DataFrame(columns=out_columns)
+    out = dispatch.copy()
+    out["interval_datetime"] = out["settlementdate"].dt.ceil("30min")
+    return (
+        out.groupby(["interval_datetime", "duid"], as_index=False)["scadavalue"]
+        .mean()
+        .rename(columns={"scadavalue": "mw_realised"})
+    )
+
+
+def compute_unit_tracking(inferred: pd.DataFrame, realised: pd.DataFrame) -> pd.DataFrame:
+    """Per-DUID observed tracking quality: n, corr, mae, quality mode, median n_equations, tracking gate.
+
+    Scored on short-lead/latest-run rows only, matching what a user sees in the paired series --
+    a unit's 'good' solver flag does not guarantee it tracks realised MW (e.g. BESS charging
+    violates the solver's g>=0 bound), so trust is gated on this observed correlation instead.
+    """
+    selected = select_short_lead_latest_run(inferred)
+    if selected.empty or realised.empty:
+        return pd.DataFrame(columns=TRACKING_COLUMNS)
+
+    merged = selected.merge(realised, on=["interval_datetime", "duid"], how="inner")
+    if merged.empty:
+        return pd.DataFrame(columns=TRACKING_COLUMNS)
+
+    rows = []
+    for duid, group in merged.groupby("duid"):
+        corr = group["mw_inferred"].corr(group["mw_realised"]) if len(group) >= 2 else np.nan
+        mae = (group["mw_inferred"] - group["mw_realised"]).abs().mean()
+        rows.append({
+            "duid": duid,
+            "n": len(group),
+            "corr": corr,
+            "mae": mae,
+            "quality": group["quality"].mode().iloc[0],
+            "median_n_equations": group["n_equations"].median(),
+            "tracking": bool(pd.notna(corr) and corr >= TRACKING_CORR_THRESHOLD),
+        })
+    return pd.DataFrame(rows).sort_values("corr", ascending=False, na_position="last").reset_index(drop=True)
+
+
+def build_paired_series(inferred: pd.DataFrame, realised: pd.DataFrame) -> pd.DataFrame:
+    """Short-lead inferred MW outer-joined with realised 30-min MW for one DUID, by interval.
+
+    Outer join so a gap in either source shows up as a null point rather than being dropped,
+    letting the chart render the full window even where one side has no data.
+    """
+    selected = select_short_lead_latest_run(inferred)
+    if selected.empty and realised.empty:
+        return pd.DataFrame(columns=SERIES_COLUMNS)
+    merged = selected.merge(realised, on=["interval_datetime", "duid"], how="outer")
+    return merged.sort_values("interval_datetime")[SERIES_COLUMNS].reset_index(drop=True)

@@ -4,7 +4,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.joint_inference import OUTPUT_COLUMNS, solve_unit_generation
+from app.joint_inference import (
+    OUTPUT_COLUMNS,
+    SERIES_COLUMNS,
+    TRACKING_COLUMNS,
+    TRACKING_CORR_THRESHOLD,
+    aggregate_realised_30min,
+    build_paired_series,
+    compute_unit_tracking,
+    select_short_lead_latest_run,
+    solve_unit_generation,
+)
 
 RUN = pd.Timestamp("2026-07-09 10:00:00")
 IVL = pd.Timestamp("2026-07-09 10:30:00")
@@ -220,3 +230,134 @@ class TestEmptyInputs:
         n_by_duid = out.set_index("duid")["n_equations"]
         assert n_by_duid["A"] == 2
         assert n_by_duid["B"] == 1
+
+
+def _inferred_row(run, ivl, duid, mw, quality="good", n_eq=3):
+    return {
+        "run_datetime": run, "interval_datetime": ivl, "duid": duid, "mw_inferred": mw,
+        "quality": quality, "n_equations": n_eq, "system_residual": 0.0,
+    }
+
+
+class TestShortLeadLatestRunSelection:
+    def test_picks_latest_run_within_lead_window(self):
+        ivl = pd.Timestamp("2026-07-09 11:00:00")
+        inferred = pd.DataFrame([
+            _inferred_row(pd.Timestamp("2026-07-09 09:00:00"), ivl, "A", 10.0),
+            _inferred_row(pd.Timestamp("2026-07-09 10:00:00"), ivl, "A", 20.0),
+        ])
+        out = select_short_lead_latest_run(inferred)
+        assert len(out) == 1
+        assert out.iloc[0]["mw_inferred"] == 20.0
+
+    def test_boundary_lead_exactly_at_limit_is_included(self):
+        run = pd.Timestamp("2026-07-09 09:00:00")
+        ivl = run + pd.Timedelta(hours=2)  # exactly SHORT_LEAD_HOURS
+        inferred = pd.DataFrame([_inferred_row(run, ivl, "A", 10.0)])
+        out = select_short_lead_latest_run(inferred)
+        assert len(out) == 1
+
+    def test_drops_rows_beyond_lead_window(self):
+        run = pd.Timestamp("2026-07-09 05:00:00")
+        ivl = pd.Timestamp("2026-07-09 11:00:00")  # 6h lead
+        inferred = pd.DataFrame([_inferred_row(run, ivl, "A", 10.0)])
+        assert select_short_lead_latest_run(inferred).empty
+
+    def test_drops_non_positive_lead(self):
+        run = pd.Timestamp("2026-07-09 11:00:00")
+        inferred = pd.DataFrame([_inferred_row(run, run, "A", 10.0)])  # lead == 0
+        assert select_short_lead_latest_run(inferred).empty
+
+    def test_empty_input_returns_empty(self):
+        out = select_short_lead_latest_run(pd.DataFrame(columns=OUTPUT_COLUMNS))
+        assert out.empty
+
+
+class TestAggregateRealised30min:
+    def test_ceils_to_30min_period_ending_mean(self):
+        dispatch = pd.DataFrame([
+            {"settlementdate": pd.Timestamp("2026-07-09 10:05:00"), "duid": "A", "scadavalue": 10.0},
+            {"settlementdate": pd.Timestamp("2026-07-09 10:25:00"), "duid": "A", "scadavalue": 20.0},
+        ])
+        out = aggregate_realised_30min(dispatch)
+        assert len(out) == 1
+        assert out.iloc[0]["interval_datetime"] == pd.Timestamp("2026-07-09 10:30:00")
+        assert out.iloc[0]["mw_realised"] == pytest.approx(15.0)
+
+    def test_empty_input_returns_empty_with_columns(self):
+        out = aggregate_realised_30min(pd.DataFrame(columns=["settlementdate", "duid", "scadavalue"]))
+        assert out.empty
+        assert list(out.columns) == ["interval_datetime", "duid", "mw_realised"]
+
+
+class TestComputeUnitTracking:
+    def _series(self, duid, mws, mws_realised):
+        run = pd.Timestamp("2026-07-09 10:00:00")
+        ivls = [pd.Timestamp("2026-07-09 10:30:00") + pd.Timedelta(minutes=30 * i) for i in range(len(mws))]
+        inferred = pd.DataFrame([_inferred_row(run, ivl, duid, mw) for ivl, mw in zip(ivls, mws)])
+        realised = pd.DataFrame({"interval_datetime": ivls, "duid": duid, "mw_realised": mws_realised})
+        return inferred, realised
+
+    def test_corr_and_mae_correctness(self):
+        mws, mws_realised = [10.0, 20.0, 30.0, 40.0], [12.0, 18.0, 33.0, 38.0]
+        inferred, realised = self._series("A", mws, mws_realised)
+
+        out = compute_unit_tracking(inferred, realised)
+
+        row = out.iloc[0]
+        expected_corr = pd.Series(mws).corr(pd.Series(mws_realised))
+        expected_mae = (pd.Series(mws) - pd.Series(mws_realised)).abs().mean()
+        assert row["duid"] == "A"
+        assert row["n"] == 4
+        assert row["corr"] == pytest.approx(expected_corr)
+        assert row["mae"] == pytest.approx(expected_mae)
+        assert row["quality"] == "good"
+        assert row["median_n_equations"] == 3
+        assert row["tracking"] == (expected_corr >= TRACKING_CORR_THRESHOLD)
+
+    def test_anti_correlated_unit_is_not_tracking(self):
+        inferred, realised = self._series("B", [10.0, 20.0, 30.0, 40.0], [40.0, 30.0, 20.0, 10.0])
+        out = compute_unit_tracking(inferred, realised)
+        assert not out.iloc[0]["tracking"]
+        assert out.iloc[0]["corr"] < 0
+
+    def test_empty_overlap_returns_empty_frame_with_columns(self):
+        inferred = pd.DataFrame([
+            _inferred_row(pd.Timestamp("2026-07-09 10:00:00"), pd.Timestamp("2026-07-09 10:30:00"), "A", 10.0),
+        ])
+        realised = pd.DataFrame({
+            "interval_datetime": [pd.Timestamp("2026-07-10 10:30:00")], "duid": ["A"], "mw_realised": [5.0],
+        })
+        out = compute_unit_tracking(inferred, realised)
+        assert out.empty
+        assert list(out.columns) == TRACKING_COLUMNS
+
+    def test_empty_inputs_return_empty_frame(self):
+        out = compute_unit_tracking(pd.DataFrame(columns=OUTPUT_COLUMNS), pd.DataFrame(columns=["interval_datetime", "duid", "mw_realised"]))
+        assert out.empty
+        assert list(out.columns) == TRACKING_COLUMNS
+
+
+class TestBuildPairedSeries:
+    def test_outer_join_keeps_gaps_as_nan(self):
+        run = pd.Timestamp("2026-07-09 10:00:00")
+        ivl1 = pd.Timestamp("2026-07-09 10:30:00")
+        ivl2 = pd.Timestamp("2026-07-09 11:00:00")
+        inferred = pd.DataFrame([_inferred_row(run, ivl1, "A", 10.0)])
+        realised = pd.DataFrame({"interval_datetime": [ivl1, ivl2], "duid": ["A", "A"], "mw_realised": [12.0, 22.0]})
+
+        out = build_paired_series(inferred, realised)
+
+        assert len(out) == 2
+        row2 = out[out["interval_datetime"] == ivl2].iloc[0]
+        assert pd.isna(row2["mw_inferred"])
+        assert row2["mw_realised"] == 22.0
+        assert list(out.columns) == SERIES_COLUMNS
+
+    def test_empty_inputs_return_empty_with_columns(self):
+        out = build_paired_series(
+            pd.DataFrame(columns=OUTPUT_COLUMNS),
+            pd.DataFrame(columns=["interval_datetime", "duid", "mw_realised"]),
+        )
+        assert out.empty
+        assert list(out.columns) == SERIES_COLUMNS

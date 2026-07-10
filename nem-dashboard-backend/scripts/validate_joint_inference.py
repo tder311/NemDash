@@ -21,6 +21,9 @@ before any solve is trusted.
 Run from the backend directory (``nem-dashboard-backend/``):
 
     python -m scripts.validate_joint_inference --start 2026-06-19 --end 2026-07-09
+
+Add ``--persist`` to also upsert solved good/weak rows into ``inferred_unit_generation``
+(seeds history for the unit-inference API/chart; unidentifiable rows are still dropped).
 """
 
 import argparse
@@ -217,7 +220,7 @@ def _print_report(report: Dict) -> None:
         print(f"{row['duid']:<14}{row['n']:>6}{corr:>10}{row['mae']:>12.2f}")
 
 
-async def validate(start_str: str, end_str: str) -> None:
+async def validate(start_str: str, end_str: str, persist: bool = False) -> None:
     load_dotenv()
     start = pd.Timestamp(start_str).normalize()
     end = pd.Timestamp(end_str).normalize()
@@ -230,51 +233,57 @@ async def validate(start_str: str, end_str: str) -> None:
     try:
         terms = await fetch_terms(db)
         bounds = await fetch_bounds(db, start, end)
+        print(f"Loaded {len(terms)} terms, {len(bounds)} (interval, duid) MAXAVAIL bounds")
+
+        inferred_frames, calibration_frames = [], []
+        async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+            run_files = await list_pd7day_runs(client, start, end)
+            print(f"Found {len(run_files)} PD7Day runs in window")
+            for i, filename in enumerate(run_files, 1):
+                constraints, ic_flows = await fetch_run_tables(client, filename)
+                constraints = filter_forward_window(constraints.dropna(subset=["lhs"]))
+                ic_flows = filter_forward_window(ic_flows)
+                calibration_frames.append(compute_calibration_errors(constraints, terms, ic_flows))
+                solved = solve_unit_generation(
+                    constraints[["run_datetime", "interval_datetime", "constraintid", "lhs"]],
+                    terms, ic_flows, pd.DataFrame(columns=["run_datetime", "interval_datetime", "regionid", "demand"]),
+                    bounds=bounds,
+                )
+                inferred_frames.append(solved)
+                print(f"  [{i}/{len(run_files)}] {filename}: {len(constraints)} constraint rows -> {len(solved)} unit rows")
+
+        inferred = pd.concat(inferred_frames, ignore_index=True)
+        calibration = pd.concat(calibration_frames, ignore_index=True)
+        calibration_summary = summarise_calibration(calibration)
+        quality_summary = summarise_quality(inferred) if not inferred.empty else {}
+        print(f"\nCalibration (zero-DUID constraints): {calibration_summary}")
+
+        if persist and not inferred.empty:
+            persisted = await db.insert_inferred_unit_generation(inferred)
+            print(f"Persisted {persisted} good/weak rows to inferred_unit_generation "
+                  f"(of {len(inferred)} solved rows)")
+
+        good = inferred[inferred["quality"] == "good"]
+        days = list(pd.date_range(start, end, freq="D"))
+        realised = await fetch_realised_for_days(days, set(good["duid"].unique()))
+        metrics = compute_validation_metrics(good[["interval_datetime", "duid", "mw_inferred"]], realised)
+
+        report = build_report(calibration_summary, quality_summary, metrics, inferred, len(run_files))
+        _print_report(report)
+        with open(REPORT_PATH, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        print(f"\nReport written to {REPORT_PATH}")
     finally:
         await db.close()
-    print(f"Loaded {len(terms)} terms, {len(bounds)} (interval, duid) MAXAVAIL bounds")
-
-    inferred_frames, calibration_frames = [], []
-    async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
-        run_files = await list_pd7day_runs(client, start, end)
-        print(f"Found {len(run_files)} PD7Day runs in window")
-        for i, filename in enumerate(run_files, 1):
-            constraints, ic_flows = await fetch_run_tables(client, filename)
-            constraints = filter_forward_window(constraints.dropna(subset=["lhs"]))
-            ic_flows = filter_forward_window(ic_flows)
-            calibration_frames.append(compute_calibration_errors(constraints, terms, ic_flows))
-            solved = solve_unit_generation(
-                constraints[["run_datetime", "interval_datetime", "constraintid", "lhs"]],
-                terms, ic_flows, pd.DataFrame(columns=["run_datetime", "interval_datetime", "regionid", "demand"]),
-                bounds=bounds,
-            )
-            inferred_frames.append(solved)
-            print(f"  [{i}/{len(run_files)}] {filename}: {len(constraints)} constraint rows -> {len(solved)} unit rows")
-
-    inferred = pd.concat(inferred_frames, ignore_index=True)
-    calibration = pd.concat(calibration_frames, ignore_index=True)
-    calibration_summary = summarise_calibration(calibration)
-    quality_summary = summarise_quality(inferred) if not inferred.empty else {}
-    print(f"\nCalibration (zero-DUID constraints): {calibration_summary}")
-
-    good = inferred[inferred["quality"] == "good"]
-    days = list(pd.date_range(start, end, freq="D"))
-    realised = await fetch_realised_for_days(days, set(good["duid"].unique()))
-    metrics = compute_validation_metrics(good[["interval_datetime", "duid", "mw_inferred"]], realised)
-
-    report = build_report(calibration_summary, quality_summary, metrics, inferred, len(run_files))
-    _print_report(report)
-    with open(REPORT_PATH, "w") as f:
-        json.dump(report, f, indent=2, default=str)
-    print(f"\nReport written to {REPORT_PATH}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Validate app.joint_inference against realised dispatch.")
     ap.add_argument("--start", required=True, help="first trading day, YYYY-MM-DD")
     ap.add_argument("--end", required=True, help="last trading day, YYYY-MM-DD (must be settled)")
+    ap.add_argument("--persist", action="store_true", help="write solved good/weak rows to inferred_unit_generation")
     args = ap.parse_args()
-    asyncio.run(validate(args.start, args.end))
+    asyncio.run(validate(args.start, args.end, persist=args.persist))
 
 
 if __name__ == "__main__":

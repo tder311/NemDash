@@ -922,6 +922,101 @@ class TestConstraintEquationTermsInsert:
         assert [r['term_id'] for r in rows] == ['BAYSW1']
 
 
+class TestInferredUnitGenerationMocked:
+    """Tests for insert/get_inferred_unit_generation and get_dispatch_data_for_duids.
+
+    Mocked at the pool level (like TestForecastHistoryInsert) so these run without
+    a real database and assert on the query/records contract.
+    """
+
+    def _mocked_db(self, fetch_return=None):
+        mock_conn = AsyncMock()
+        mock_conn.fetch.return_value = fetch_return if fetch_return is not None else []
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+        mock_pool.acquire.return_value.__aexit__.return_value = None
+        db = NEMDatabase("postgresql://unused")
+        db._pool = mock_pool
+        return db, mock_conn
+
+    @pytest.mark.asyncio
+    async def test_insert_empty_df_returns_zero_without_acquiring(self):
+        db, _ = self._mocked_db()
+        count = await db.insert_inferred_unit_generation(pd.DataFrame())
+        assert count == 0
+        db._pool.acquire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_insert_drops_unidentifiable_rows(self):
+        db, mock_conn = self._mocked_db()
+        run = datetime(2026, 7, 9, 10, 0)
+        interval = datetime(2026, 7, 9, 10, 30)
+        df = pd.DataFrame([
+            {"run_datetime": run, "interval_datetime": interval, "duid": "A", "mw_inferred": 30.0,
+             "quality": "good", "n_equations": 2, "system_residual": 0.01},
+            {"run_datetime": run, "interval_datetime": interval, "duid": "B", "mw_inferred": 10.0,
+             "quality": "weak", "n_equations": 1, "system_residual": 0.5},
+            {"run_datetime": run, "interval_datetime": interval, "duid": "C", "mw_inferred": 5.0,
+             "quality": "unidentifiable", "n_equations": 1, "system_residual": 0.9},
+        ])
+
+        count = await db.insert_inferred_unit_generation(df)
+
+        assert count == 2
+        _, records = mock_conn.executemany.call_args.args
+        duids = [r[2] for r in records]
+        assert duids == ["A", "B"]
+        assert all(len(r) == 7 for r in records)
+
+    @pytest.mark.asyncio
+    async def test_insert_all_unidentifiable_returns_zero(self):
+        db, mock_conn = self._mocked_db()
+        run = datetime(2026, 7, 9, 10, 0)
+        interval = datetime(2026, 7, 9, 10, 30)
+        df = pd.DataFrame([{
+            "run_datetime": run, "interval_datetime": interval, "duid": "C", "mw_inferred": 5.0,
+            "quality": "unidentifiable", "n_equations": 1, "system_residual": 0.9,
+        }])
+
+        count = await db.insert_inferred_unit_generation(df)
+
+        assert count == 0
+        mock_conn.executemany.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_inferred_unit_generation_empty_returns_columns(self):
+        db, _ = self._mocked_db(fetch_return=[])
+        out = await db.get_inferred_unit_generation(datetime(2026, 7, 1))
+        assert out.empty
+        assert list(out.columns) == [
+            "run_datetime", "interval_datetime", "duid", "mw_inferred", "quality", "n_equations", "residual",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_inferred_unit_generation_filters_by_duid_when_given(self):
+        db, mock_conn = self._mocked_db(fetch_return=[])
+        await db.get_inferred_unit_generation(datetime(2026, 7, 1), duid="A")
+        sql, start_arg, duid_arg = mock_conn.fetch.call_args.args
+        assert "duid = $2" in sql
+        assert duid_arg == "A"
+
+    @pytest.mark.asyncio
+    async def test_get_dispatch_data_for_duids_empty_list_returns_columns_without_acquiring(self):
+        db, _ = self._mocked_db()
+        out = await db.get_dispatch_data_for_duids([], datetime(2026, 7, 1), datetime(2026, 7, 2))
+        assert out.empty
+        assert list(out.columns) == ["settlementdate", "duid", "scadavalue"]
+        db._pool.acquire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_dispatch_data_for_duids_passes_duid_list(self):
+        db, mock_conn = self._mocked_db(fetch_return=[])
+        await db.get_dispatch_data_for_duids(["A", "B"], datetime(2026, 7, 1), datetime(2026, 7, 2))
+        (sql, duids_arg, start_arg, end_arg) = mock_conn.fetch.call_args.args
+        assert duids_arg == ["A", "B"]
+        assert "duid = ANY($1::text[])" in sql
+
+
 class TestSTPASADataInsert:
     """Tests for insert_stpasa_data method"""
 
