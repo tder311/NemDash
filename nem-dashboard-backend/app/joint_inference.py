@@ -616,6 +616,92 @@ def select_terms_for_run_date(all_terms: pd.DataFrame, run_date) -> pd.DataFrame
 
 # --- DB-aware input fetchers (async; everything above is pure and DataFrame-in/DataFrame-out) ---
 
+# Fuels shown as per-unit heatmaps (individually identifiable enough to be worth a row each).
+UNIT_FUEL_SOURCES = ("Coal", "Gas", "Battery")
+# Fuels shown as fleet aggregates only -- too numerous/small to chart per-unit.
+FLEET_FUEL_SOURCES = ("Wind", "Solar")
+
+GENERATION_FORECAST_UNIT_INFO_COLUMNS = ["station_name", "fuel_source", "technology_type", "capacity_mw"]
+
+
+def build_generation_forecast(rows: pd.DataFrame, region: str) -> dict:
+    """Shape latest-run inferred generation into per-unit series (Coal/Gas/Battery) and fleet
+    aggregates (Wind/Solar) for one region.
+
+    rows: run_datetime, interval_datetime, duid, mw_inferred, quality, station_name, region,
+        fuel_source, technology_type, capacity_mw -- may span multiple runs; only the latest is used.
+    region arrives in regionid form ('NSW1') but generator_info stores the short form ('NSW').
+    A unit's series holds only the intervals where it was inferable that interval -- gaps are
+    honest absence, never interpolated or zero-filled. Units are ordered by capacity descending.
+    """
+    if rows.empty:
+        return {"units": [], "fleets": []}
+
+    region_short = region[:-1] if region.endswith("1") else region
+    latest = rows[rows["run_datetime"] == rows["run_datetime"].max()]
+    regional = latest[latest["region"] == region_short]
+
+    units = _build_unit_series(regional[regional["fuel_source"].isin(UNIT_FUEL_SOURCES)])
+    fleets = _build_fleet_series(regional[regional["fuel_source"].isin(FLEET_FUEL_SOURCES)])
+    return {"units": units, "fleets": fleets}
+
+
+def _build_unit_series(df: pd.DataFrame) -> list:
+    """One entry per DUID: static generator_info fields plus its inferable-interval-only series."""
+    if df.empty:
+        return []
+    info = df.drop_duplicates("duid").set_index("duid")[GENERATION_FORECAST_UNIT_INFO_COLUMNS]
+    info = info.sort_values("capacity_mw", ascending=False)
+
+    series_by_duid = {
+        duid: [
+            {"interval_datetime": row.interval_datetime, "mw": row.mw_inferred, "quality": row.quality}
+            for row in group.sort_values("interval_datetime").itertuples(index=False)
+        ]
+        for duid, group in df.groupby("duid", sort=False)
+    }
+    return [
+        {
+            "duid": duid,
+            "station_name": meta["station_name"],
+            "fuel_source": meta["fuel_source"],
+            "technology_type": meta["technology_type"],
+            "capacity_mw": float(meta["capacity_mw"]),
+            "series": series_by_duid[duid],
+        }
+        for duid, meta in info.iterrows()
+    ]
+
+
+def _build_fleet_series(df: pd.DataFrame) -> list:
+    """Per fuel source (Wind/Solar): summed MW and unit/capacity coverage per interval, plus fleet totals."""
+    if df.empty:
+        return []
+    fleets = []
+    for fuel, group in df.groupby("fuel_source", sort=False):
+        fleet_units = group.drop_duplicates("duid")
+        per_interval = (
+            group.groupby("interval_datetime")
+            .agg(mw_sum=("mw_inferred", "sum"), n_units=("duid", "nunique"), capacity_inferable=("capacity_mw", "sum"))
+            .sort_index()
+        )
+        fleets.append({
+            "fuel_source": fuel,
+            "n_units_total": int(fleet_units["duid"].nunique()),
+            "capacity_total": float(fleet_units["capacity_mw"].sum()),
+            "series": [
+                {
+                    "interval_datetime": row.Index,
+                    "mw_sum": float(row.mw_sum),
+                    "n_units": int(row.n_units),
+                    "capacity_inferable": float(row.capacity_inferable),
+                }
+                for row in per_interval.itertuples()
+            ],
+        })
+    return fleets
+
+
 async def fetch_terms(db: NEMDatabase, run_date) -> pd.DataFrame:
     """Constraint equation terms in force at run_date (see select_terms_for_run_date)."""
     async with db._pool.acquire() as conn:

@@ -9,6 +9,7 @@ import DispatchPage from './components/DispatchPage';
 import BidBandsPage from './components/BidBandsPage';
 import ChatPage from './components/ChatPage';
 import NetworkPage from './components/NetworkPage';
+import GenerationForecastPage from './components/GenerationForecastPage';
 
 function App() {
   const [darkMode, setDarkMode] = useState(true);
@@ -71,6 +72,12 @@ function App() {
             Network
           </button>
           <button
+            className={`tab-button ${activeTab === 'generation' ? 'active' : ''}`}
+            onClick={() => setActiveTab('generation')}
+          >
+            Generation
+          </button>
+          <button
             className={`tab-button ${activeTab === 'bids' ? 'active' : ''}`}
             onClick={() => setActiveTab('bids')}
           >
@@ -103,6 +110,7 @@ function App() {
         {activeTab === 'bidbands' && <BidBandsPage darkMode={darkMode} />}
         {activeTab === 'chat' && <ChatPage darkMode={darkMode} />}
         {activeTab === 'network' && <NetworkPage darkMode={darkMode} />}
+        {activeTab === 'generation' && <GenerationForecastPage darkMode={darkMode} />}
         {activeTab === 'bids' && <BidBandPage darkMode={darkMode} />}
         {activeTab === 'downloads' && <DownloadsPage darkMode={darkMode} />}
       </div>
