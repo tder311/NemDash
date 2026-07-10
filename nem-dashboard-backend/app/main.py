@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import io
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import math
 import os
@@ -37,7 +37,13 @@ from .models import (
     ForecastAccuracyResponse,
     NetworkInterconnectorsResponse,
     NetworkConstraintsResponse,
+    UnitInferenceUnitsResponse,
+    UnitInferenceSummary,
+    UnitInferenceSeriesResponse,
+    UnitInferenceSeriesPoint,
+    UnitInferenceStats,
 )
+from .joint_inference import aggregate_realised_30min, build_paired_series, compute_unit_tracking
 from .forecaster import (
     REGIONS,
     HORIZON_INTERVALS,
@@ -1309,6 +1315,98 @@ async def get_network_constraints(
         raise
     except Exception as e:
         logger.error(f"Error getting network constraints: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _none_if_nan(v):
+    """NaN (pandas' "no overlap yet" sentinel) -> None so the response is valid JSON."""
+    return None if isinstance(v, float) and math.isnan(v) else v
+
+
+@app.get("/api/network/unit-inference/units", response_model=UnitInferenceUnitsResponse)
+async def get_unit_inference_units(
+    days: int = Query(default=14, ge=1, le=90, description="Lookback window in days"),
+):
+    """DUIDs with stored joint-inference rows, ranked by observed correlation vs realised dispatch.
+
+    Trust is gated on this observed correlation, not the solver's quality flag alone -- some
+    'good'-flagged units (e.g. BESS charging) violate the solver's g>=0 bound and track poorly.
+    """
+    try:
+        now = datetime.now()
+        start = now - timedelta(days=days)
+        inferred = await db.get_inferred_unit_generation(start)
+        if inferred.empty:
+            return UnitInferenceUnitsResponse(days=days, units=[], message="No stored unit-inference rows yet.")
+
+        realised = await db.get_dispatch_data_for_duids(list(inferred["duid"].unique()), start, now)
+        realised_30min = aggregate_realised_30min(realised)
+        stats = compute_unit_tracking(inferred, realised_30min)
+
+        units = [
+            UnitInferenceSummary(
+                duid=row.duid,
+                quality=row.quality,
+                n=int(row.n),
+                observed_corr=_none_if_nan(row.corr),
+                mae=_none_if_nan(row.mae),
+                tracking=bool(row.tracking),
+            )
+            for row in stats.itertuples(index=False)
+        ]
+        return UnitInferenceUnitsResponse(
+            days=days, units=units, message=f"{len(units)} DUIDs with stored inference over {days}d",
+        )
+    except Exception as e:
+        logger.error(f"Error getting unit inference units: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/network/unit-inference/series", response_model=UnitInferenceSeriesResponse)
+async def get_unit_inference_series(
+    duid: str,
+    days: int = Query(default=14, ge=1, le=90, description="Lookback window in days"),
+):
+    """Paired short-lead inferred vs realised 30-min MW series for one DUID, plus tracking stats."""
+    try:
+        now = datetime.now()
+        start = now - timedelta(days=days)
+        inferred = await db.get_inferred_unit_generation(start, duid=duid)
+        if inferred.empty:
+            raise HTTPException(status_code=404, detail=f"No stored unit-inference rows for DUID '{duid}'.")
+
+        realised = await db.get_dispatch_data_for_duids([duid], start, now)
+        realised_30min = aggregate_realised_30min(realised)
+
+        paired = build_paired_series(inferred, realised_30min)
+        stats_df = compute_unit_tracking(inferred, realised_30min)
+        stats = stats_df.iloc[0] if not stats_df.empty else None
+
+        data = [
+            UnitInferenceSeriesPoint(
+                interval_datetime=row.interval_datetime.isoformat(),
+                mw_inferred=_none_if_nan(row.mw_inferred),
+                mw_realised=_none_if_nan(row.mw_realised),
+            )
+            for row in paired.itertuples(index=False)
+        ]
+        return UnitInferenceSeriesResponse(
+            duid=duid,
+            days=days,
+            data=data,
+            stats=UnitInferenceStats(
+                n=int(stats["n"]) if stats is not None else 0,
+                corr=_none_if_nan(stats["corr"]) if stats is not None else None,
+                mae=_none_if_nan(stats["mae"]) if stats is not None else None,
+                quality=stats["quality"] if stats is not None else None,
+                median_n_equations=_none_if_nan(stats["median_n_equations"]) if stats is not None else None,
+            ),
+            message=f"{len(data)} paired intervals for {duid} over {days}d",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting unit inference series for {duid}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

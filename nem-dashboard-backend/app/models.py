@@ -293,3 +293,40 @@ class ConstraintSummary(BaseModel):
 class NetworkConstraintsResponse(BaseModel):
     run_datetime: Optional[str] = None
     constraints: List[ConstraintSummary]
+
+
+class UnitInferenceSummary(BaseModel):
+    duid: str
+    quality: str
+    n: int
+    observed_corr: Optional[float] = None
+    mae: Optional[float] = None
+    tracking: bool
+
+
+class UnitInferenceUnitsResponse(BaseModel):
+    days: int
+    units: List[UnitInferenceSummary]
+    message: str
+
+
+class UnitInferenceSeriesPoint(BaseModel):
+    interval_datetime: str
+    mw_inferred: Optional[float] = None
+    mw_realised: Optional[float] = None
+
+
+class UnitInferenceStats(BaseModel):
+    n: int
+    corr: Optional[float] = None
+    mae: Optional[float] = None
+    quality: Optional[str] = None
+    median_n_equations: Optional[float] = None
+
+
+class UnitInferenceSeriesResponse(BaseModel):
+    duid: str
+    days: int
+    data: List[UnitInferenceSeriesPoint]
+    stats: UnitInferenceStats
+    message: str

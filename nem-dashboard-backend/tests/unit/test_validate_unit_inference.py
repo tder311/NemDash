@@ -7,6 +7,7 @@ from scripts.validate_unit_inference import (
     aggregate_realised_to_30min,
     compute_validation_metrics,
     parse_next_day_dispatch_csv,
+    resolve_report_url,
 )
 
 # Real header verified against a downloaded PUBLIC_NEXT_DAY_DISPATCH_*.zip (2026-07-09 file).
@@ -99,3 +100,17 @@ class TestComputeValidationMetrics:
         out = compute_validation_metrics(pd.DataFrame(columns=["interval_datetime", "duid", "mw_inferred"]),
                                           pd.DataFrame(columns=["interval_datetime", "duid", "totalcleared"]))
         assert out.empty
+
+
+class TestResolveReportUrl:
+    def test_absolute_path_href_joined_to_host(self):
+        url = resolve_report_url("/Reports/CURRENT/Next_Day_Dispatch/PUBLIC_X.zip")
+        assert url == "https://www.nemweb.com.au/Reports/CURRENT/Next_Day_Dispatch/PUBLIC_X.zip"
+
+    def test_bare_filename_joined_to_report_directory(self):
+        url = resolve_report_url("PUBLIC_X.zip")
+        assert url == "https://www.nemweb.com.au/Reports/Current/Next_Day_Dispatch/PUBLIC_X.zip"
+
+    def test_full_url_passed_through(self):
+        url = resolve_report_url("https://example.com/PUBLIC_X.zip")
+        assert url == "https://example.com/PUBLIC_X.zip"

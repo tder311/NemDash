@@ -132,9 +132,7 @@ async def fetch_realised_dispatch(client: httpx.AsyncClient, day: pd.Timestamp, 
     matches = [n for n in _extract_hrefs(resp.text) if f"NEXT_DAY_DISPATCH_{day_token}_" in n]
     if not matches:
         raise SystemExit(f"No Next_Day_Dispatch file found for {day_token}")
-    filename = matches[0]
-
-    file_resp = await client.get(f"{BASE_URL}/{NEXT_DAY_DISPATCH_PATH}/{filename}")
+    file_resp = await client.get(resolve_report_url(matches[0]))
     file_resp.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
         text = z.read(z.namelist()[0]).decode("utf-8", "ignore")
@@ -145,6 +143,15 @@ def _extract_hrefs(html: str) -> List[str]:
     """Filenames referenced by HREF in a NEMWEB directory listing page."""
     import re
     return re.findall(r'HREF="([^"]+\.zip)"', html, re.IGNORECASE)
+
+
+def resolve_report_url(href: str) -> str:
+    """Full URL for a NEMWEB listing HREF (absolute path, full URL, or bare filename)."""
+    if href.startswith("http"):
+        return href
+    if href.startswith("/"):
+        return f"{BASE_URL}{href}"
+    return f"{BASE_URL}/{NEXT_DAY_DISPATCH_PATH}/{href}"
 
 
 def _print_report(metrics: pd.DataFrame) -> None:

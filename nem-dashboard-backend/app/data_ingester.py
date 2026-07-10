@@ -15,6 +15,12 @@ from .nem_price_setter_client import NEMPriceSetterClient
 from .nem_bid_client import NEMBidClient
 from .database import NEMDatabase
 from .forecaster import select_runs_at_leads
+from .joint_inference import SHORT_LEAD_HOURS, fetch_bounds, fetch_terms, solve_unit_generation
+
+NO_IC_FLOWS = pd.DataFrame(columns=["run_datetime", "interval_datetime", "interconnectorid", "mwflow"])
+NO_REGION_DEMAND = pd.DataFrame(columns=["run_datetime", "interval_datetime", "regionid", "demand"])
+# Buffer before the run's earliest interval, so bid bounds cover the run itself.
+BOUNDS_LOOKBACK = timedelta(hours=1)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -403,12 +409,46 @@ class DataIngester:
                     f"Ingested {inserted} price, {ic_inserted} interconnector, "
                     f"{con_inserted} constraint rows, run: {current_run}"
                 )
+                await self._infer_unit_generation(con_df, ic_df)
             else:
                 logger.debug(f"Pre-dispatch already ingested for run: {current_run}")
             return True
         except Exception as e:
             logger.error(f"Error ingesting pre-dispatch data: {e}")
             return False
+
+    async def _infer_unit_generation(self, con_df: Optional[pd.DataFrame], ic_df: Optional[pd.DataFrame]) -> None:
+        """Backsolve unit MW from this run's UNFILTERED constraint frame and upsert good/weak rows.
+
+        Uses con_df/ic_df straight from the parser, not the binding-only predispatch_constraint
+        table, since the solver needs every constraint's lhs. Never raises -- a solve failure
+        here must not break price/network ingestion, which is why it's called after that commits.
+        """
+        if con_df is None or con_df.empty:
+            return
+        try:
+            lhs_frame = con_df[["run_datetime", "interval_datetime", "constraintid", "lhs"]]
+            bounds_start = con_df["interval_datetime"].min() - BOUNDS_LOOKBACK
+            bounds_end = con_df["interval_datetime"].max()
+            terms = await fetch_terms(self.db)
+            bounds = await fetch_bounds(self.db, bounds_start, bounds_end)
+
+            solved = solve_unit_generation(
+                lhs_frame, terms, ic_df if ic_df is not None else NO_IC_FLOWS, NO_REGION_DEMAND, bounds=bounds,
+            )
+            if solved.empty:
+                logger.info("Joint unit inference: no solvable (run, interval) systems in this run")
+                return
+            persisted = await self.db.insert_inferred_unit_generation(solved)
+            lead = solved["interval_datetime"] - solved["run_datetime"]
+            n_short_lead = int((lead <= pd.Timedelta(hours=SHORT_LEAD_HOURS)).sum())
+            logger.info(
+                f"Joint unit inference: solved {len(solved)} rows across "
+                f"{solved['duid'].nunique()} DUIDs ({n_short_lead} within {SHORT_LEAD_HOURS:.0f}h lead), "
+                f"persisted {persisted} good/weak rows"
+            )
+        except Exception as e:
+            logger.error(f"Error running joint unit inference: {e}")
 
     async def backfill_predispatch_data(self, start_date, end_date=None) -> int:
         """Backfill historical pre-dispatch price (RRP) from the NEMWEB archive."""
