@@ -101,10 +101,10 @@ class TestNEMDatabaseInit:
                 WHERE schemaname = 'public'
             """)
 
-        # Should still have same number of application tables (13: dispatch_data, price_data, generator_info,
+        # Should still have same number of application tables (14: dispatch_data, price_data, generator_info,
         # pdpasa_data, stpasa_data, predispatch_price, predispatch_interconnector, predispatch_constraint,
-        # forecast_history, daily_metrics, price_setter_data, bid_day_offer, bid_per_offer)
-        assert count == 13
+        # constraint_equation_terms, forecast_history, daily_metrics, price_setter_data, bid_day_offer, bid_per_offer)
+        assert count == 14
 
 
 class TestDispatchDataInsert:
@@ -862,6 +862,46 @@ class TestPredispatchConstraintInsert:
         assert len(rows) == 1
         assert rows[0]['marginalvalue'] == pytest.approx(40.0)
         assert rows[0]['lhs'] == pytest.approx(65.0)
+
+
+class TestConstraintEquationTermsInsert:
+    """Tests for insert_constraint_equation_terms method"""
+
+    @pytest.mark.asyncio
+    async def test_insert_constraint_equation_terms(self, test_db):
+        df = pd.DataFrame([
+            {'constraintid': 'C_BINDING', 'version': 1, 'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+            {'constraintid': 'C_BINDING', 'version': 1, 'term_type': 'interconnector', 'term_id': 'NSW1-QLD1', 'factor': -1.0},
+        ])
+        count = await test_db.insert_constraint_equation_terms(df)
+        assert count == 2
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT term_type, term_id, factor FROM constraint_equation_terms ORDER BY term_type")
+        assert [r['term_type'] for r in rows] == ['duid', 'interconnector']
+
+    @pytest.mark.asyncio
+    async def test_insert_constraint_equation_terms_empty_df(self, test_db):
+        count = await test_db.insert_constraint_equation_terms(pd.DataFrame())
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_insert_constraint_equation_terms_upsert_replaces_factor_and_version(self, test_db):
+        df1 = pd.DataFrame([
+            {'constraintid': 'C_BINDING', 'version': 1, 'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+        ])
+        await test_db.insert_constraint_equation_terms(df1)
+
+        df2 = pd.DataFrame([
+            {'constraintid': 'C_BINDING', 'version': 2, 'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 0.5},
+        ])
+        await test_db.insert_constraint_equation_terms(df2)
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM constraint_equation_terms")
+        assert len(rows) == 1
+        assert rows[0]['version'] == 2
+        assert rows[0]['factor'] == pytest.approx(0.5)
 
 
 class TestSTPASADataInsert:

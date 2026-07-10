@@ -247,6 +247,20 @@ class NEMDatabase:
                 END $$
             """)
 
+            # Constraint equation terms (LHS = sum(factor*term)), latest version only, no history (v1)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS constraint_equation_terms (
+                    id BIGSERIAL PRIMARY KEY,
+                    constraintid TEXT NOT NULL,
+                    version INTEGER,
+                    term_type TEXT NOT NULL,
+                    term_id TEXT NOT NULL,
+                    factor REAL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(constraintid, term_type, term_id)
+                )
+            """)
+
             # Served price-forecaster output, one row per serve x interval x region
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS forecast_history (
@@ -368,6 +382,7 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id ON predispatch_constraint(constraintid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id_run ON predispatch_constraint(constraintid, run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_forecast_history_region_interval ON forecast_history(region, interval_datetime)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_constraint_terms_constraintid ON constraint_equation_terms(constraintid)")
 
             # Daily metrics indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
@@ -1695,6 +1710,25 @@ class NEMDatabase:
                     marginalvalue = EXCLUDED.marginalvalue,
                     violationdegree = EXCLUDED.violationdegree,
                     lhs = EXCLUDED.lhs
+            """, records)
+        return len(records)
+
+    async def insert_constraint_equation_terms(self, df: pd.DataFrame) -> int:
+        """Replace constraint equation terms (latest-version-only, no effective-date history)."""
+        if df.empty:
+            return 0
+        records = [
+            (row['constraintid'], int(row['version']), row['term_type'], row['term_id'], row.get('factor'))
+            for _, row in df.iterrows()
+        ]
+        async with self._pool.acquire() as conn:
+            await conn.executemany("""
+                INSERT INTO constraint_equation_terms (constraintid, version, term_type, term_id, factor)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (constraintid, term_type, term_id) DO UPDATE SET
+                    version = EXCLUDED.version,
+                    factor = EXCLUDED.factor,
+                    updated_at = CURRENT_TIMESTAMP
             """, records)
         return len(records)
 
