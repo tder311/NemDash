@@ -19,12 +19,16 @@ SAMPLE_DUDETAILSUMMARY_CSV = (
     'C,SETP.WORLD,DVD_DUDETAILSUMMARY,AEMO,PUBLIC,2026/06/09,11:19:22,1,MONTHLY_ARCHIVE,1\n'
     'I,PARTICIPANT_REGISTRATION,DUDETAILSUMMARY,7,DUID,START_DATE,END_DATE,DISPATCHTYPE,'
     'CONNECTIONPOINTID,REGIONID,STATIONID,PARTICIPANTID,LASTCHANGED,TRANSMISSIONLOSSFACTOR\n'
-    'D,PARTICIPANT_REGISTRATION,DUDETAILSUMMARY,7,BAYSW1,"2020/07/01 00:00:00","2021/07/01 00:00:00",'
+    # Expired generation of NBAYSW pointing at a DIFFERENT DUID -- the current row must win.
+    'D,PARTICIPANT_REGISTRATION,DUDETAILSUMMARY,7,OLDBAYSW,"2020/07/01 00:00:00","2021/07/01 00:00:00",'
     'GENERATOR,NBAYSW,NSW1,BAYSWATER,AGL,"2026/06/08 10:42:26",0.99\n'
     'D,PARTICIPANT_REGISTRATION,DUDETAILSUMMARY,7,BAYSW1,"2021/07/01 00:00:00","2999/12/31 00:00:00",'
     'GENERATOR,NBAYSW,NSW1,BAYSWATER,AGL,"2026/06/08 10:42:26",0.985\n'
     'D,PARTICIPANT_REGISTRATION,DUDETAILSUMMARY,7,ARWF1,"2015/01/01 00:00:00","2999/12/31 00:00:00",'
     'GENERATOR,NARWF,VIC1,ARARAT,PACIFICHYDRO,"2026/06/08 10:42:26",1.0\n'
+    # Fully retired connection point (every row expired) -- must be absent from the mapping.
+    'D,PARTICIPANT_REGISTRATION,DUDETAILSUMMARY,7,RETIRED1,"2010/01/01 00:00:00","2018/07/01 00:00:00",'
+    'GENERATOR,NRETIRED,NSW1,OLDPLANT,GONECO,"2026/06/08 10:42:26",0.95\n'
     'C,"END OF REPORT",9\n'
 )
 
@@ -85,15 +89,23 @@ class TestParseAvailableMonths:
 
 
 class TestParseDudetailsummaryCsv:
-    def test_keeps_latest_active_row_per_connection_point(self):
+    def test_current_generation_wins_over_expired_different_duid(self):
         df = parse_dudetailsummary_csv(SAMPLE_DUDETAILSUMMARY_CSV)
         assert set(df.columns) == {"connectionpointid", "duid"}
         row = df[df["connectionpointid"] == "NBAYSW"].iloc[0]
+        # NBAYSW's expired generation maps to OLDBAYSW; only the current row's DUID is valid.
         assert row["duid"] == "BAYSW1"
+        assert "OLDBAYSW" not in df["duid"].tolist()
+
+    def test_fully_retired_connection_point_is_dropped(self):
+        df = parse_dudetailsummary_csv(SAMPLE_DUDETAILSUMMARY_CSV)
+        assert "NRETIRED" not in df["connectionpointid"].tolist()
+        assert "RETIRED1" not in df["duid"].tolist()
 
     def test_one_row_per_connection_point(self):
         df = parse_dudetailsummary_csv(SAMPLE_DUDETAILSUMMARY_CSV)
         assert len(df) == df["connectionpointid"].nunique()
+        assert set(df["connectionpointid"]) == {"NBAYSW", "NARWF"}
 
 
 class TestParseSpdConnectionPointCsv:

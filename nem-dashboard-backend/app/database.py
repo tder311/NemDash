@@ -1714,7 +1714,11 @@ class NEMDatabase:
         return len(records)
 
     async def insert_constraint_equation_terms(self, df: pd.DataFrame) -> int:
-        """Replace constraint equation terms (latest-version-only, no effective-date history)."""
+        """Replace ALL constraint equation terms with this snapshot (transactional delete + insert).
+
+        The table is a latest-snapshot by design: upserting would leave phantom rows for terms
+        AEMO has since removed from an equation, corrupting unknown-term counts in inference.
+        """
         if df.empty:
             return 0
         records = [
@@ -1722,14 +1726,12 @@ class NEMDatabase:
             for _, row in df.iterrows()
         ]
         async with self._pool.acquire() as conn:
-            await conn.executemany("""
-                INSERT INTO constraint_equation_terms (constraintid, version, term_type, term_id, factor)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (constraintid, term_type, term_id) DO UPDATE SET
-                    version = EXCLUDED.version,
-                    factor = EXCLUDED.factor,
-                    updated_at = CURRENT_TIMESTAMP
-            """, records)
+            async with conn.transaction():
+                await conn.execute("DELETE FROM constraint_equation_terms")
+                await conn.executemany("""
+                    INSERT INTO constraint_equation_terms (constraintid, version, term_type, term_id, factor)
+                    VALUES ($1, $2, $3, $4, $5)
+                """, records)
         return len(records)
 
     async def insert_forecast_history(self, rows: List[Dict[str, Any]]) -> int:

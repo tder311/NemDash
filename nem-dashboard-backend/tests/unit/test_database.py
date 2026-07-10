@@ -886,7 +886,7 @@ class TestConstraintEquationTermsInsert:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_insert_constraint_equation_terms_upsert_replaces_factor_and_version(self, test_db):
+    async def test_insert_constraint_equation_terms_reingest_replaces_factor_and_version(self, test_db):
         df1 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
         ])
@@ -902,6 +902,24 @@ class TestConstraintEquationTermsInsert:
         assert len(rows) == 1
         assert rows[0]['version'] == 2
         assert rows[0]['factor'] == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_insert_constraint_equation_terms_purges_removed_terms(self, test_db):
+        df1 = pd.DataFrame([
+            {'constraintid': 'C_BINDING', 'version': 1, 'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+            {'constraintid': 'C_BINDING', 'version': 1, 'term_type': 'duid', 'term_id': 'REMOVED1', 'factor': 1.0},
+        ])
+        await test_db.insert_constraint_equation_terms(df1)
+
+        # New snapshot no longer contains REMOVED1 -- replace semantics must purge it.
+        df2 = pd.DataFrame([
+            {'constraintid': 'C_BINDING', 'version': 2, 'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+        ])
+        await test_db.insert_constraint_equation_terms(df2)
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT term_id FROM constraint_equation_terms")
+        assert [r['term_id'] for r in rows] == ['BAYSW1']
 
 
 class TestSTPASADataInsert:

@@ -19,12 +19,13 @@ elsewhere in this codebase.
 
 Only ENERGY-bidtype terms are kept (FCAS constraints are out of scope for MW
 backsolving), and only each constraint's latest (EFFECTIVEDATE, VERSIONNO) --
-v1 stores no effective-date history, so a later run simply overwrites earlier
-terms in place (see ``constraint_equation_terms``'s UNIQUE(constraintid,
-term_type, term_id) and its ON CONFLICT DO UPDATE).
+v1 stores no effective-date history. A later run REPLACES the whole table
+(transactional delete + insert in ``insert_constraint_equation_terms``) so
+terms AEMO removes from an equation don't linger as phantom rows.
 
-Connection points with no *current* DUDETAILSUMMARY row (~1-2% in practice --
-e.g. retired/renamed plant) cannot be mapped to a DUID and are dropped.
+Connection points with no *current* DUDETAILSUMMARY row (END_DATE >= today;
+~1-2% in practice -- retired/renamed plant) cannot be mapped to a DUID and
+are dropped, as are fully retired connection points.
 MMSDM lags real-time by ~1-2 months; the default (no --year/--month) finds
 the latest month with a published archive by listing the year-index page(s).
 """
@@ -89,10 +90,12 @@ def _extract_table_rows(text: str, table_marker: str) -> Tuple[Optional[List[str
 
 
 def parse_dudetailsummary_csv(text: str) -> pd.DataFrame:
-    """Latest-active CONNECTIONPOINTID -> DUID mapping (max END_DATE per connection point).
+    """Current CONNECTIONPOINTID -> DUID mapping (END_DATE >= today only; retired points dropped).
 
     END_DATE's "no end yet" sentinel is 2999/12/31, outside pandas' Timestamp range, so this
     compares the fixed-width "YYYY/MM/DD HH:MM:SS" strings directly rather than parsing dates.
+    Fully retired connection points (every row's END_DATE in the past) get no row at all --
+    mapping them to their last historical DUID would silently attribute terms to dead units.
     """
     headers, rows = _extract_table_rows(text, "PARTICIPANT_REGISTRATION,DUDETAILSUMMARY")
     empty = pd.DataFrame(columns=["connectionpointid", "duid"])
@@ -100,8 +103,12 @@ def parse_dudetailsummary_csv(text: str) -> pd.DataFrame:
         return empty
 
     df = pd.DataFrame(rows, columns=headers[: len(rows[0])])
-    latest_idx = df.groupby("CONNECTIONPOINTID")["END_DATE"].idxmax()
-    latest = df.loc[latest_idx]
+    today_str = date.today().strftime("%Y/%m/%d")
+    current = df[df["END_DATE"] >= today_str]
+    if current.empty:
+        return empty
+    latest_idx = current.groupby("CONNECTIONPOINTID")["END_DATE"].idxmax()
+    latest = current.loc[latest_idx]
     return latest.rename(
         columns={"CONNECTIONPOINTID": "connectionpointid", "DUID": "duid"}
     )[["connectionpointid", "duid"]].reset_index(drop=True)
@@ -202,6 +209,7 @@ def build_constraint_equation_terms(
         return pd.DataFrame(columns=["constraintid", "version", "term_type", "term_id", "factor"])
     combined = pd.concat(frames, ignore_index=True)
     combined = latest_version_only(combined)
+    # Distinct connection points can map to the same DUID, so duplicates survive the version filter.
     combined = combined.drop_duplicates(subset=["constraintid", "term_type", "term_id"], keep="first")
     return combined.rename(columns={"versionno": "version"})[
         ["constraintid", "version", "term_type", "term_id", "factor"]
