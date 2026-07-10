@@ -15,9 +15,9 @@
 
 .chat-empty {
   text-align: center;
-  opacity: 0.7;
   margin-top: 40px;
   font-size: 14px;
+  color: var(--text-2);
 }
 
 .chat-suggestions {
@@ -30,16 +30,18 @@
 
 .chat-suggestion {
   padding: 8px 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(31, 119, 180, 0.5);
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
   background: transparent;
-  color: inherit;
+  color: var(--text-2);
   font-size: 13px;
   cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
 }
 
 .chat-suggestion:hover {
-  background: rgba(31, 119, 180, 0.12);
+  border-color: var(--accent);
+  color: var(--text-1);
 }
 
 .chat-msg {
@@ -66,18 +68,16 @@
 }
 
 .chat-msg.user .chat-bubble {
-  background: #1f77b4;
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-contrast);
   border-bottom-right-radius: 4px;
 }
 
 .chat-msg.assistant .chat-bubble {
-  background: rgba(128, 128, 128, 0.15);
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  color: var(--text-1);
   border-bottom-left-radius: 4px;
-}
-
-.chat-container.dark .chat-msg.assistant .chat-bubble {
-  background: #2a2a2a;
 }
 
 /* Assistant messages carrying a chart/table get a wider bubble. */
@@ -88,7 +88,7 @@
 
 .chat-artifact {
   margin-top: 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -96,21 +96,22 @@
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 6px;
-  opacity: 0.85;
+  color: var(--text-2);
 }
 
 .chat-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
 }
 
 .chat-table th,
 .chat-table td {
   padding: 5px 9px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  border-bottom: 1px solid var(--border);
   text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .chat-table th:first-child,
@@ -119,10 +120,12 @@
 }
 
 .chat-table th {
-  font-size: 11px;
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  opacity: 0.7;
+  color: var(--text-3);
+  background: var(--inset);
 }
 
 .chat-cursor {
@@ -139,54 +142,61 @@
 .chat-tool-status {
   font-size: 12px;
   font-style: italic;
-  opacity: 0.6;
+  color: var(--text-3);
   margin: 4px 6px;
 }
 
 .chat-error {
   margin: 8px 6px;
-  padding: 8px 12px;
-  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-md);
   font-size: 13px;
-  color: #d62728;
-  background: rgba(214, 39, 40, 0.08);
-  border: 1px solid rgba(214, 39, 40, 0.4);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .chat-inputbar {
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  padding-top: 10px;
-  border-top: 1px solid rgba(128, 128, 128, 0.25);
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
 .chat-inputbar textarea {
   flex: 1;
   resize: none;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #888;
-  font-size: 14px;
-  font-family: inherit;
+  background: var(--inset);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-1);
+  font: 0.85rem var(--font-ui);
+  padding: 0.45rem 0.6rem;
 }
 
-.chat-container.dark .chat-inputbar textarea {
-  background: #2a2a2a;
-  color: #f5f5f5;
-  border-color: #555;
+.chat-inputbar textarea:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 
 .chat-inputbar button {
-  padding: 10px 20px;
-  border-radius: 8px;
-  border: 1px solid #1f77b4;
-  background: #1f77b4;
-  color: #fff;
-  font-size: 14px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border: none;
+  border-radius: var(--radius-sm);
   font-weight: 600;
+  font-size: 0.85rem;
+  padding: 0.5rem 1rem;
   cursor: pointer;
   height: 44px;
+  transition: background var(--transition-fast);
+}
+
+.chat-inputbar button:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
 
 .chat-inputbar button:disabled {

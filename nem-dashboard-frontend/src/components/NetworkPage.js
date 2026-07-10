@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { REGION_COLORS, chartColors, baseLayout } from '../theme';
 import './NetworkPage.css';
 
-const IC_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'];
+const IC_COLORS = [
+  REGION_COLORS.NSW, REGION_COLORS.VIC, REGION_COLORS.QLD,
+  REGION_COLORS.SA, REGION_COLORS.TAS, '#a0715c',
+];
 const NEAR_LIMIT_MW = 1; // flow within this many MW of a limit gets an alert marker
 const UNIT_INFERENCE_DAYS = 14; // lookback window for the unit-inference validation section
 
@@ -19,7 +23,7 @@ const headroomOf = (flow, exportLimit, importLimit) =>
     : Math.min(exportLimit - flow, flow - importLimit);
 
 // Builds the two Plotly traces (feasible-envelope shading + flow line + alert markers) for one interconnector.
-function ribbonTraces(interconnectorId, intervals, axisNum, color) {
+function ribbonTraces(interconnectorId, intervals, axisNum, color, alertColor) {
   const suffix = axisNum === 1 ? '' : String(axisNum);
   const x = intervals.map((d) => new Date(d.interval_datetime));
   const exportLimit = intervals.map((d) => d.exportlimit);
@@ -69,7 +73,7 @@ function ribbonTraces(interconnectorId, intervals, axisNum, color) {
       y: alertIdx.map((i) => flow[i]),
       customdata: alertIdx.map((i) => customdata[i]),
       type: 'scatter', mode: 'markers',
-      marker: { color: '#d62728', size: 8, symbol: 'circle' },
+      marker: { color: alertColor, size: 8, symbol: 'circle' },
       showlegend: false,
       name: `${interconnectorId} near limit`,
       hovertemplate:
@@ -83,14 +87,12 @@ function ribbonTraces(interconnectorId, intervals, axisNum, color) {
 function buildRibbonFigure(ids, dataByIc, darkMode) {
   const cols = ids.length > 2 ? 2 : 1;
   const rows = Math.ceil(ids.length / cols);
-  const axisColor = darkMode ? '#f5f5f5' : '#333';
-  const gridColor = darkMode ? '#404040' : '#e0e0e0';
+  const base = baseLayout(darkMode);
+  const c = chartColors(darkMode);
 
   const layout = {
+    ...base,
     grid: { rows, columns: cols, pattern: 'independent' },
-    plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-    paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-    font: { color: axisColor },
     margin: { l: 60, r: 20, t: 30, b: 40 },
     height: rows * 260,
     showlegend: false,
@@ -99,17 +101,27 @@ function buildRibbonFigure(ids, dataByIc, darkMode) {
   const data = ids.flatMap((id, idx) => {
     const axisNum = idx + 1;
     const suffix = axisNum === 1 ? '' : String(axisNum);
-    layout[`yaxis${suffix}`] = {
-      title: id, gridcolor: gridColor, color: axisColor, zeroline: true, zerolinecolor: gridColor,
-    };
+    layout[`yaxis${suffix}`] = { ...base.yaxis, title: id, zeroline: true };
     layout[`xaxis${suffix}`] = {
-      gridcolor: gridColor, color: axisColor, tickformat: '%a %H:%M',
+      ...base.xaxis, tickformat: '%a %H:%M',
       ...(axisNum > 1 ? { matches: 'x' } : {}),
     };
-    return ribbonTraces(id, dataByIc[id], axisNum, IC_COLORS[idx % IC_COLORS.length]);
+    return ribbonTraces(id, dataByIc[id], axisNum, IC_COLORS[idx % IC_COLORS.length], c.danger);
   });
 
   return { data, layout };
+}
+
+// Builds the heatmap layout: transparent chrome sized to the label list.
+function buildHeatmapLayout(yLabelCount, darkMode) {
+  const base = baseLayout(darkMode);
+  return {
+    ...base,
+    margin: { l: 220, r: 30, t: 20, b: 60 },
+    height: Math.max(300, yLabelCount * 28 + 100),
+    xaxis: { ...base.xaxis, tickformat: '%a %H:%M' },
+    yaxis: { ...base.yaxis, automargin: true },
+  };
 }
 
 // Builds the heatmap z/customdata matrices over the union of interval timestamps across all constraints.
@@ -136,15 +148,15 @@ function buildHeatmapMatrix(constraints) {
 // Builds the dual-line (realised solid, inferred dashed) figure for one DUID's paired series.
 function buildUnitInferenceFigure(seriesData, darkMode) {
   const x = seriesData.map((d) => new Date(d.interval_datetime));
-  const axisColor = darkMode ? '#f5f5f5' : '#333';
-  const gridColor = darkMode ? '#404040' : '#e0e0e0';
+  const base = baseLayout(darkMode);
+  const c = chartColors(darkMode);
 
   return {
     data: [
       {
         x, y: seriesData.map((d) => d.mw_realised),
         type: 'scatter', mode: 'lines',
-        line: { color: '#1f77b4', width: 2 },
+        line: { color: c.accent, width: 2 },
         name: 'Realised (SCADA)',
         hovertemplate: '%{x|%a %d %b %H:%M}<br>Realised: %{y:.0f} MW<extra></extra>',
       },
@@ -157,14 +169,12 @@ function buildUnitInferenceFigure(seriesData, darkMode) {
       },
     ],
     layout: {
-      plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-      paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-      font: { color: axisColor },
+      ...base,
       margin: { l: 60, r: 20, t: 20, b: 40 },
       height: 320,
       legend: { orientation: 'h', y: -0.2 },
-      xaxis: { gridcolor: gridColor, color: axisColor, tickformat: '%a %H:%M' },
-      yaxis: { title: 'MW', gridcolor: gridColor, color: axisColor },
+      xaxis: { ...base.xaxis, tickformat: '%a %H:%M' },
+      yaxis: { ...base.yaxis, title: 'MW' },
     },
   };
 }
@@ -363,15 +373,7 @@ function NetworkPage({ darkMode }) {
                   colorbar: { title: 'log₁₀(1+|$/MWh|)' },
                 },
               ]}
-              layout={{
-                plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-                paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-                font: { color: darkMode ? '#f5f5f5' : '#333' },
-                margin: { l: 220, r: 30, t: 20, b: 60 },
-                height: Math.max(300, yLabels.length * 28 + 100),
-                xaxis: { tickformat: '%a %H:%M', gridcolor: darkMode ? '#404040' : '#e0e0e0' },
-                yaxis: { automargin: true },
-              }}
+              layout={buildHeatmapLayout(yLabels.length, darkMode)}
               useResizeHandler
               style={{ width: '100%' }}
               config={{ displayModeBar: true, displaylogo: false }}

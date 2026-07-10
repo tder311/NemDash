@@ -4,12 +4,8 @@
   max-width: 1000px;
   margin: 0 auto;
   min-height: 100%;
-  background: var(--bg-light);
+  background: var(--bg);
   overflow-y: auto;
-}
-
-.metrics-container.dark {
-  background: var(--bg-dark);
 }
 
 .metrics-header {
@@ -19,22 +15,14 @@
 .metrics-title {
   font-size: 2rem;
   font-weight: 700;
-  color: #333;
+  color: var(--text-1);
   margin: 0 0 8px 0;
 }
 
-.metrics-container.dark .metrics-title {
-  color: #f5f5f5;
-}
-
 .metrics-subtitle {
-  color: #666;
+  color: var(--text-2);
   margin: 0;
   font-size: 1rem;
-}
-
-.metrics-container.dark .metrics-subtitle {
-  color: #999;
 }
 
 /* Region tabs */
@@ -47,56 +35,37 @@
 .region-tab {
   padding: 8px 0;
   flex: 1;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: transparent;
   cursor: pointer;
-  font-size: 0.95rem;
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
   font-weight: 500;
-  color: #666;
-  transition: all 0.2s;
+  color: var(--text-2);
+  transition: all var(--transition-fast);
   text-align: center;
 }
 
 .region-tab:hover {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
+  background: var(--accent-soft);
+  color: var(--text-1);
 }
 
 .region-tab.active {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: white;
-}
-
-.metrics-container.dark .region-tab {
-  border-color: var(--border-dark);
-  color: var(--text-muted-dark);
-}
-
-.metrics-container.dark .region-tab:hover {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-}
-
-.metrics-container.dark .region-tab.active {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: white;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-1);
 }
 
 /* Table sections */
 .metrics-table-section {
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
-  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  padding: 1rem 1.25rem;
   margin-bottom: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-
-.metrics-container.dark .metrics-table-section {
-  background: rgba(38, 38, 38, 0.95);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 .section-header {
@@ -109,50 +78,37 @@
 .section-title {
   font-size: 1.1rem;
   font-weight: 600;
-  color: #333;
+  color: var(--text-1);
   margin: 0;
-}
-
-.metrics-container.dark .section-title {
-  color: #f5f5f5;
 }
 
 .unit-toggles {
   display: flex;
   gap: 2px;
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.metrics-container.dark .unit-toggles {
-  background: rgba(255, 255, 255, 0.05);
 }
 
 .unit-toggle {
   padding: 4px 10px;
-  border: none;
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: transparent;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
   font-weight: 500;
-  color: #666;
-  transition: all 0.2s;
+  color: var(--text-2);
+  transition: all var(--transition-fast);
+}
+
+.unit-toggle:hover {
+  background: var(--accent-soft);
+  color: var(--text-1);
 }
 
 .unit-toggle.active {
-  background: var(--color-accent);
-  color: white;
-}
-
-.metrics-container.dark .unit-toggle {
-  color: var(--text-muted-dark);
-}
-
-.metrics-container.dark .unit-toggle.active {
-  background: var(--color-accent);
-  color: white;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-1);
 }
 
 /* Table */
@@ -165,39 +121,33 @@
 .metrics-table th {
   text-align: right;
   padding: 10px 16px;
+  font-family: var(--font-mono);
   font-weight: 500;
-  color: #6b7280;
-  border-bottom: 2px solid #e5e7eb;
-  font-size: 0.85rem;
+  color: var(--text-3);
+  background: var(--inset);
+  font-size: 0.65rem;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.1em;
 }
 
 .metrics-table th:first-child {
   text-align: left;
 }
 
-.metrics-container.dark .metrics-table th {
-  color: #9ca3af;
-  border-bottom-color: #374151;
-}
-
 .metrics-table td {
   padding: 12px 16px;
   text-align: right;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
-  color: #333;
-  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.84rem;
+  color: var(--text-1);
+  border-bottom: 1px solid var(--border);
 }
 
 .metrics-table td:first-child {
   text-align: left;
-}
-
-.metrics-container.dark .metrics-table td {
-  color: #f5f5f5;
-  border-bottom-color: #2d2d2d;
+  font-family: var(--font-ui);
 }
 
 .metrics-table tbody tr:last-child td {
@@ -207,15 +157,11 @@
 /* Clickable rows */
 .metrics-table tr.clickable {
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background var(--transition-fast);
 }
 
 .metrics-table tr.clickable:hover {
-  background: var(--color-accent-light);
-}
-
-.metrics-container.dark .metrics-table tr.clickable:hover {
-  background: var(--color-accent-medium);
+  background: var(--accent-soft);
 }
 
 .fuel-label {
@@ -224,35 +170,20 @@
 
 /* Colour-coded cells */
 .cell-high {
-  color: #059669;
+  color: var(--ok);
 }
 
 .cell-above {
-  color: #10b981;
+  color: var(--ok);
+  opacity: 0.75;
 }
 
 .cell-mid {
-  color: #6b7280;
+  color: var(--text-2);
 }
 
 .cell-low {
-  color: #dc2626;
-}
-
-.metrics-container.dark .cell-high {
-  color: #34d399;
-}
-
-.metrics-container.dark .cell-above {
-  color: #6ee7b7;
-}
-
-.metrics-container.dark .cell-mid {
-  color: #9ca3af;
-}
-
-.metrics-container.dark .cell-low {
-  color: #f87171;
+  color: var(--danger);
 }
 
 /* Detail view */
@@ -269,20 +200,20 @@
 
 .back-button {
   padding: 8px 16px;
-  border: none;
-  border-radius: var(--radius-md);
-  background: var(--color-accent);
-  color: white;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
   font-weight: 600;
   font-size: 0.9rem;
   cursor: pointer;
-  transition: all 150ms ease;
+  transition: all var(--transition-fast);
   margin-bottom: 12px;
 }
 
 .back-button:hover {
-  background: var(--color-accent-hover);
-  transform: translateY(-1px);
+  border-color: var(--accent);
+  color: var(--text-1);
 }
 
 /* Duration toggles */
@@ -294,82 +225,43 @@
 
 .duration-toggle {
   padding: 6px 14px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: transparent;
   cursor: pointer;
-  font-size: 0.85rem;
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
   font-weight: 500;
-  color: #666;
-  transition: all 0.2s;
+  color: var(--text-2);
+  transition: all var(--transition-fast);
 }
 
 .duration-toggle:hover {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
+  background: var(--accent-soft);
+  color: var(--text-1);
 }
 
 .duration-toggle.active {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: white;
-}
-
-.metrics-container.dark .duration-toggle {
-  border-color: var(--border-dark);
-  color: var(--text-muted-dark);
-}
-
-.metrics-container.dark .duration-toggle:hover {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-}
-
-.metrics-container.dark .duration-toggle.active {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-  color: white;
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-1);
 }
 
 /* Chart section (reused for detail view) */
 .metrics-chart-section {
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 12px;
-  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  padding: 1rem 1.25rem;
   margin-bottom: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-.metrics-container.dark .metrics-chart-section {
-  background: rgba(38, 38, 38, 0.95);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-
-/* Loading and empty states */
-.metrics-loading,
+/* Empty state */
 .metrics-empty {
   text-align: center;
   padding: 60px 20px;
-  color: #666;
-}
-
-.metrics-container.dark .metrics-loading,
-.metrics-container.dark .metrics-empty {
-  color: #999;
-}
-
-.metrics-loading .spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid rgba(124, 58, 237, 0.2);
-  border-top-color: var(--color-accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin: 0 auto 16px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  color: var(--text-2);
 }
 
 /* Responsive */

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { REGION_COLORS, chartColors, baseLayout } from '../theme';
 import './PASAPage.css';
 
 const REGION_NAMES = {
@@ -11,19 +12,11 @@ const REGION_NAMES = {
   'TAS1': 'Tasmania'
 };
 
-const REGION_COLORS = {
-  'NSW1': '#1f77b4',
-  'VIC1': '#ff7f0e',
-  'QLD1': '#2ca02c',
-  'SA1': '#d62728',
-  'TAS1': '#9467bd'
-};
-
 const LOR_COLORS = {
-  0: '#4caf50',  // Green - No LOR
-  1: '#ff9800',  // Orange - LOR1
-  2: '#f44336',  // Red - LOR2
-  3: '#8b0000'   // Dark Red - LOR3
+  0: '#34c98e',
+  1: '#e8a33d',
+  2: '#e5606b',
+  3: '#a83240'
 };
 
 const LOR_LABELS = {
@@ -91,6 +84,8 @@ function PASAPage({ region, darkMode, onBack }) {
 
   const createDemandCapacityChart = (data, title) => {
     if (!data || data.length === 0) return { data: [], layout: {} };
+    const base = baseLayout(darkMode);
+    const c = chartColors(darkMode);
 
     const traces = [
       {
@@ -107,28 +102,18 @@ function PASAPage({ region, darkMode, onBack }) {
         type: 'scatter',
         mode: 'lines',
         name: 'Available Capacity',
-        line: { color: '#4caf50', width: 2 }
+        line: { color: c.ok, width: 2 }
       }
     ];
 
     const layout = {
-      title: { text: title, font: { size: 16, color: darkMode ? '#e5e7eb' : '#374151' } },
-      xaxis: {
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280',
-        tickformat: '%d %b %H:%M'
-      },
-      yaxis: {
-        title: { text: 'MW', font: { size: 11 } },
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280'
-      },
-      plot_bgcolor: 'transparent',
-      paper_bgcolor: 'transparent',
-      font: { color: darkMode ? '#e5e7eb' : '#374151' },
+      ...base,
+      title: { text: title, font: { size: 16, color: c.text } },
+      xaxis: { ...base.xaxis, tickformat: '%d %b %H:%M' },
+      yaxis: { ...base.yaxis, title: { text: 'MW', font: { size: 11 } } },
       margin: { l: 60, r: 30, t: 40, b: 50 },
       showlegend: true,
-      legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
+      legend: { ...base.legend, orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
       hovermode: 'x unified'
     };
 
@@ -137,6 +122,8 @@ function PASAPage({ region, darkMode, onBack }) {
 
   const createReserveChart = (data, title) => {
     if (!data || data.length === 0) return { data: [], layout: {} };
+    const base = baseLayout(darkMode);
+    const c = chartColors(darkMode);
 
     const traces = [
       {
@@ -145,9 +132,9 @@ function PASAPage({ region, darkMode, onBack }) {
         type: 'scatter',
         mode: 'lines',
         name: 'Surplus Reserve',
-        line: { color: '#9c27b0', width: 2 },
+        line: { color: c.accent, width: 2 },
         fill: 'tozeroy',
-        fillcolor: 'rgba(156, 39, 176, 0.1)'
+        fillcolor: c.accent + '1a'
       },
       {
         x: data.map(d => new Date(d.interval_datetime)),
@@ -155,7 +142,7 @@ function PASAPage({ region, darkMode, onBack }) {
         type: 'scatter',
         mode: 'lines',
         name: 'LOR1 Threshold',
-        line: { color: '#ff9800', width: 1, dash: 'dot' }
+        line: { color: c.warn, width: 1, dash: 'dot' }
       },
       {
         x: data.map(d => new Date(d.interval_datetime)),
@@ -163,28 +150,18 @@ function PASAPage({ region, darkMode, onBack }) {
         type: 'scatter',
         mode: 'lines',
         name: 'LOR2 Threshold',
-        line: { color: '#f44336', width: 1, dash: 'dot' }
+        line: { color: c.danger, width: 1, dash: 'dot' }
       }
     ];
 
     const layout = {
-      title: { text: title, font: { size: 16, color: darkMode ? '#e5e7eb' : '#374151' } },
-      xaxis: {
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280',
-        tickformat: '%d %b %H:%M'
-      },
-      yaxis: {
-        title: { text: 'MW', font: { size: 11 } },
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280'
-      },
-      plot_bgcolor: 'transparent',
-      paper_bgcolor: 'transparent',
-      font: { color: darkMode ? '#e5e7eb' : '#374151' },
+      ...base,
+      title: { text: title, font: { size: 16, color: c.text } },
+      xaxis: { ...base.xaxis, tickformat: '%d %b %H:%M' },
+      yaxis: { ...base.yaxis, title: { text: 'MW', font: { size: 11 } } },
       margin: { l: 60, r: 30, t: 40, b: 50 },
       showlegend: true,
-      legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
+      legend: { ...base.legend, orientation: 'h', x: 0.5, xanchor: 'center', y: -0.15 },
       hovermode: 'x unified'
     };
 
@@ -193,6 +170,8 @@ function PASAPage({ region, darkMode, onBack }) {
 
   const createLORChart = (data, title) => {
     if (!data || data.length === 0) return { data: [], layout: {} };
+    const base = baseLayout(darkMode);
+    const c = chartColors(darkMode);
 
     const lorColors = data.map(d => LOR_COLORS[d.lorcondition] || LOR_COLORS[0]);
 
@@ -209,22 +188,15 @@ function PASAPage({ region, darkMode, onBack }) {
     ];
 
     const layout = {
-      title: { text: title, font: { size: 16, color: darkMode ? '#e5e7eb' : '#374151' } },
-      xaxis: {
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280',
-        tickformat: '%d %b %H:%M'
-      },
+      ...base,
+      title: { text: title, font: { size: 16, color: c.text } },
+      xaxis: { ...base.xaxis, tickformat: '%d %b %H:%M' },
       yaxis: {
+        ...base.yaxis,
         title: { text: 'LOR Level', font: { size: 11 } },
-        gridcolor: darkMode ? '#374151' : '#f3f4f6',
-        color: darkMode ? '#9ca3af' : '#6b7280',
         tickvals: [0, 1, 2, 3],
         range: [-0.5, 3.5]
       },
-      plot_bgcolor: 'transparent',
-      paper_bgcolor: 'transparent',
-      font: { color: darkMode ? '#e5e7eb' : '#374151' },
       margin: { l: 60, r: 30, t: 40, b: 50 },
       showlegend: false,
       hovermode: 'x unified'

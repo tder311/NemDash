@@ -11,6 +11,19 @@ import ChatPage from './components/ChatPage';
 import NetworkPage from './components/NetworkPage';
 import GenerationForecastPage from './components/GenerationForecastPage';
 
+const TABS = [
+  { id: 'dashboard', label: 'Dashboard', Page: LivePricesPage },
+  { id: 'metrics', label: 'Market Metrics', Page: MarketMetricsPage },
+  { id: 'forecast', label: 'Price Forecast', Page: ForecastPage },
+  { id: 'dispatch', label: 'Dispatch', Page: DispatchPage },
+  { id: 'bidbands', label: 'Bid Bands', Page: BidBandsPage },
+  { id: 'chat', label: 'Ask NemDash', Page: ChatPage },
+  { id: 'network', label: 'Network', Page: NetworkPage },
+  { id: 'generation', label: 'Generation', Page: GenerationForecastPage },
+  { id: 'bids', label: 'Bid Analysis', Page: BidBandPage },
+  { id: 'downloads', label: 'Downloads', Page: DownloadsPage },
+];
+
 function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -26,69 +39,21 @@ function App() {
   return (
     <div className={`app ${darkMode ? 'dark' : 'light'}`}>
       <header className="header">
-        <h1 className="title">NEM Market Dashboard</h1>
+        <div className="brand">
+          <span className="pulse-dot" aria-hidden="true"></span>
+          <h1 className="title">NEM Market Dashboard</h1>
+        </div>
 
         <nav className="main-tabs">
-          <button
-            className={`tab-button ${activeTab === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setActiveTab('dashboard')}
-          >
-            Dashboard
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'metrics' ? 'active' : ''}`}
-            onClick={() => setActiveTab('metrics')}
-          >
-            Market Metrics
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'forecast' ? 'active' : ''}`}
-            onClick={() => setActiveTab('forecast')}
-          >
-            Price Forecast
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'dispatch' ? 'active' : ''}`}
-            onClick={() => setActiveTab('dispatch')}
-          >
-            Dispatch
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'bidbands' ? 'active' : ''}`}
-            onClick={() => setActiveTab('bidbands')}
-          >
-            Bid Bands
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
-            onClick={() => setActiveTab('chat')}
-          >
-            Ask NemDash
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'network' ? 'active' : ''}`}
-            onClick={() => setActiveTab('network')}
-          >
-            Network
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'generation' ? 'active' : ''}`}
-            onClick={() => setActiveTab('generation')}
-          >
-            Generation
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'bids' ? 'active' : ''}`}
-            onClick={() => setActiveTab('bids')}
-          >
-            Bid Analysis
-          </button>
-          <button
-            className={`tab-button ${activeTab === 'downloads' ? 'active' : ''}`}
-            onClick={() => setActiveTab('downloads')}
-          >
-            Downloads
-          </button>
+          {TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              className={`tab-button ${activeTab === id ? 'active' : ''}`}
+              onClick={() => setActiveTab(id)}
+            >
+              {label}
+            </button>
+          ))}
         </nav>
 
         <div className="dark-mode-toggle">
@@ -103,16 +68,9 @@ function App() {
       </header>
 
       <div className="content">
-        {activeTab === 'dashboard' && <LivePricesPage darkMode={darkMode} />}
-        {activeTab === 'metrics' && <MarketMetricsPage darkMode={darkMode} />}
-        {activeTab === 'forecast' && <ForecastPage darkMode={darkMode} />}
-        {activeTab === 'dispatch' && <DispatchPage darkMode={darkMode} />}
-        {activeTab === 'bidbands' && <BidBandsPage darkMode={darkMode} />}
-        {activeTab === 'chat' && <ChatPage darkMode={darkMode} />}
-        {activeTab === 'network' && <NetworkPage darkMode={darkMode} />}
-        {activeTab === 'generation' && <GenerationForecastPage darkMode={darkMode} />}
-        {activeTab === 'bids' && <BidBandPage darkMode={darkMode} />}
-        {activeTab === 'downloads' && <DownloadsPage darkMode={darkMode} />}
+        {TABS.map(({ id, Page }) =>
+          activeTab === id ? <Page key={id} darkMode={darkMode} /> : null
+        )}
       </div>
     </div>
   );

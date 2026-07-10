@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import Plot from 'react-plotly.js';
 import api from '../api';
+import { chartColors, baseLayout } from '../theme';
 import './DispatchPage.css';
 
 const REGIONS = ['NSW1', 'QLD1', 'VIC1', 'SA1', 'TAS1'];
@@ -115,6 +116,8 @@ function DispatchPage({ darkMode }) {
   const x = schedule.map((d) => new Date(d.interval_datetime));
   const yPrice = schedule.map((d) => d.price);
   const yNet = schedule.map((d) => d.net_mw);
+  const c = chartColors(darkMode);
+  const base = baseLayout(darkMode);
 
   const plotData = schedule.length
     ? [
@@ -124,7 +127,7 @@ function DispatchPage({ darkMode }) {
           name: 'Forecast price',
           type: 'scatter',
           mode: 'lines',
-          line: { color: '#1f77b4', width: 2, shape: 'hv' },
+          line: { color: c.accent, width: 2, shape: 'hv' },
           yaxis: 'y',
           hovertemplate: '%{x|%a %d %b %H:%M}<br>Price $%{y:.0f}/MWh<extra></extra>',
         },
@@ -144,35 +147,29 @@ function DispatchPage({ darkMode }) {
     : [];
 
   const plotLayout = {
+    ...base,
     title: {
       text: result
         ? `${result.region} dispatch — ${fmtMoney(result.total_revenue)} · ${result.n_cycles.toFixed(2)} cycles`
         : 'Dispatch',
-      font: { size: 18, color: darkMode ? '#f5f5f5' : '#333' },
+      font: { size: 18, color: c.text },
     },
     xaxis: {
+      ...base.xaxis,
       anchor: 'y2',
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
       tickformat: '%a %d %b\n%H:%M',
     },
     yaxis: {
+      ...base.yaxis,
       title: 'Price ($/MWh)',
       domain: [0.56, 1.0],
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
     },
     yaxis2: {
+      ...base.yaxis,
       title: 'Net MW',
       domain: [0, 0.44],
-      gridcolor: darkMode ? '#404040' : '#e0e0e0',
-      color: darkMode ? '#f5f5f5' : '#333',
       zeroline: true,
-      zerolinecolor: darkMode ? '#666' : '#bbb',
     },
-    plot_bgcolor: darkMode ? '#1a1a1a' : 'white',
-    paper_bgcolor: darkMode ? '#1a1a1a' : 'white',
-    font: { color: darkMode ? '#f5f5f5' : '#333' },
     legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: -0.18 },
     margin: { l: 65, r: 30, t: 60, b: 90 },
     hovermode: 'x unified',
