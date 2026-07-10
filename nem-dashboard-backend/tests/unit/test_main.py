@@ -1985,3 +1985,171 @@ class TestNetworkConstraintsEndpoint:
                 assert "boom" in response.json()["detail"]
         finally:
             main_module.db = original_db
+
+
+class TestUnitInferenceUnitsEndpoint:
+    """Tests for /api/network/unit-inference/units."""
+
+    def _inferred(self):
+        import pandas as pd
+
+        run = datetime(2026, 7, 9, 10, 0)
+        ivls = [
+            datetime(2026, 7, 9, 10, 30), datetime(2026, 7, 9, 11, 0),
+            datetime(2026, 7, 9, 11, 30), datetime(2026, 7, 9, 12, 0),
+        ]
+        return pd.DataFrame([
+            {"run_datetime": run, "interval_datetime": ivl, "duid": "A", "mw_inferred": mw,
+             "quality": "good", "n_equations": 3, "residual": 0.1}
+            for ivl, mw in zip(ivls, [10.0, 20.0, 30.0, 40.0])
+        ]), ivls
+
+    @pytest.mark.asyncio
+    async def test_returns_units_with_observed_corr_and_tracking(self):
+        import pandas as pd
+        import app.main as main_module
+
+        inferred, ivls = self._inferred()
+        realised = pd.DataFrame({"settlementdate": ivls, "duid": "A", "scadavalue": [12.0, 18.0, 33.0, 38.0]})
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(return_value=inferred)
+        mock_db.get_dispatch_data_for_duids = AsyncMock(return_value=realised)
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/units?days=14")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["days"] == 14
+                assert len(data["units"]) == 1
+                unit = data["units"][0]
+                assert unit["duid"] == "A"
+                assert unit["quality"] == "good"
+                assert unit["n"] == 4
+                assert unit["observed_corr"] is not None
+                assert unit["tracking"] is True
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_no_stored_rows_returns_empty_units(self):
+        import pandas as pd
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/units")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["units"] == []
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(side_effect=Exception("boom"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/units")
+                assert response.status_code == 500
+                assert "boom" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
+
+
+class TestUnitInferenceSeriesEndpoint:
+    """Tests for /api/network/unit-inference/series."""
+
+    @pytest.mark.asyncio
+    async def test_returns_paired_series_and_stats(self):
+        import pandas as pd
+        import app.main as main_module
+
+        run = datetime(2026, 7, 9, 10, 0)
+        ivl1 = datetime(2026, 7, 9, 10, 30)
+        ivl2 = datetime(2026, 7, 9, 11, 0)
+        inferred = pd.DataFrame([
+            {"run_datetime": run, "interval_datetime": ivl1, "duid": "A", "mw_inferred": 10.0,
+             "quality": "good", "n_equations": 3, "residual": 0.1},
+            {"run_datetime": run, "interval_datetime": ivl2, "duid": "A", "mw_inferred": 20.0,
+             "quality": "good", "n_equations": 4, "residual": 0.2},
+        ])
+        realised = pd.DataFrame({"settlementdate": [ivl1, ivl2], "duid": ["A", "A"], "scadavalue": [12.0, 18.0]})
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(return_value=inferred)
+        mock_db.get_dispatch_data_for_duids = AsyncMock(return_value=realised)
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/series?duid=A&days=14")
+                assert response.status_code == 200
+                data = response.json()
+                assert data["duid"] == "A"
+                assert len(data["data"]) == 2
+                assert data["stats"]["n"] == 2
+                assert data["stats"]["quality"] == "good"
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_unknown_duid_returns_404(self):
+        import pandas as pd
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(return_value=pd.DataFrame())
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/series?duid=UNKNOWN1")
+                assert response.status_code == 404
+        finally:
+            main_module.db = original_db
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_500(self):
+        import app.main as main_module
+
+        mock_db = MagicMock()
+        mock_db.get_inferred_unit_generation = AsyncMock(side_effect=Exception("boom"))
+        original_db = main_module.db
+        main_module.db = mock_db
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/network/unit-inference/series?duid=A")
+                assert response.status_code == 500
+                assert "boom" in response.json()["detail"]
+        finally:
+            main_module.db = original_db
