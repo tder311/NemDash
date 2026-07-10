@@ -1806,7 +1806,7 @@ class NEMDatabase:
             """, records)
         return len(records)
 
-    async def insert_constraint_equation_terms(self, df: pd.DataFrame) -> int:
+    async def insert_constraint_equation_terms(self, df: pd.DataFrame, seen_date: Optional[date] = None) -> int:
         """Upsert constraint equation term rows onto the versioned (constraintid, version,
         term_type, term_id, tradetype) key.
 
@@ -1815,19 +1815,20 @@ class NEMDatabase:
         of a correction. This replaces the old table's transactional delete + insert -- there is
         no more "current snapshot" to truncate, since old versions are kept for date-aware lookup
         (see fetch_terms) rather than purged. 'effective_date' and 'tradetype' columns are
-        optional in df (NULL for the legacy MMSDM ingest / interconnector terms respectively);
-        first_seen/last_seen default to today for new rows.
+        optional in df (NULL for the legacy MMSDM ingest / interconnector terms respectively).
+        seen_date stamps first_seen (new rows) and last_seen, defaulting to today; a historical
+        backfill passes the data day so the observation window reflects the data, not the clock.
         """
         if df.empty:
             return 0
-        today = date.today()
+        seen = seen_date or date.today()
         records = []
         for _, row in df.iterrows():
             eff = row.get('effective_date')
             eff = eff.date() if hasattr(eff, 'date') else eff
             records.append((
                 row['constraintid'], int(row['version']), eff, row['term_type'], row['term_id'],
-                row.get('tradetype'), row.get('factor'), today, today,
+                row.get('tradetype'), row.get('factor'), seen, seen,
             ))
         async with self._pool.acquire() as conn:
             await conn.executemany("""
@@ -1837,7 +1838,8 @@ class NEMDatabase:
                 ON CONFLICT (constraintid, version, term_type, term_id, tradetype) DO UPDATE SET
                     effective_date = COALESCE(EXCLUDED.effective_date, constraint_equation_terms.effective_date),
                     factor = EXCLUDED.factor,
-                    last_seen = EXCLUDED.last_seen,
+                    first_seen = LEAST(constraint_equation_terms.first_seen, EXCLUDED.first_seen),
+                    last_seen = GREATEST(constraint_equation_terms.last_seen, EXCLUDED.last_seen),
                     updated_at = CURRENT_TIMESTAMP
             """, records)
         return len(records)

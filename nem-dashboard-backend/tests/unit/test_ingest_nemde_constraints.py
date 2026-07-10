@@ -8,6 +8,7 @@ import pytest
 from scripts.ingest_nemde_constraints import (
     day_zip_url,
     dedupe_versions,
+    latest_version_terms,
     parse_generic_constraint,
     parse_member_xml,
     select_sample_indices,
@@ -144,3 +145,34 @@ class TestDedupeVersions:
             "constraintid", "version", "effective_date", "term_type", "term_id", "tradetype", "factor",
         ])
         assert dedupe_versions(empty).empty
+
+
+class TestLatestVersionTerms:
+    def _row(self, cid, version, eff, term_id="A", tradetype="ENOF"):
+        return {"constraintid": cid, "version": version, "effective_date": eff,
+                "term_type": "duid", "term_id": term_id, "tradetype": tradetype, "factor": 1.0}
+
+    def test_keeps_only_each_constraints_latest_effective_version(self):
+        rows = pd.DataFrame([
+            self._row("C1", 1, pd.Timestamp("2024-01-01").date()),
+            self._row("C1", 2, pd.Timestamp("2026-01-01").date()),
+            self._row("C2", 5, pd.Timestamp("2025-01-01").date()),
+        ])
+        out = latest_version_terms(rows)
+        assert dict(zip(out["constraintid"], out["version"])) == {"C1": 2, "C2": 5}
+
+    def test_keeps_all_terms_of_the_winning_version(self):
+        rows = pd.DataFrame([
+            self._row("C1", 2, pd.Timestamp("2026-01-01").date(), term_id="A"),
+            self._row("C1", 2, pd.Timestamp("2026-01-01").date(), term_id="B"),
+            self._row("C1", 1, pd.Timestamp("2024-01-01").date(), term_id="A"),
+        ])
+        out = latest_version_terms(rows)
+        assert len(out) == 2
+        assert set(out["term_id"]) == {"A", "B"}
+
+    def test_empty_input_returns_empty(self):
+        empty = pd.DataFrame(columns=[
+            "constraintid", "version", "effective_date", "term_type", "term_id", "tradetype", "factor",
+        ])
+        assert latest_version_terms(empty).empty

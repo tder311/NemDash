@@ -348,7 +348,9 @@ def drop_non_energy_constraints(terms: pd.DataFrame) -> pd.DataFrame:
     Such a factor multiplies the unit's FCAS variable, not its energy MW, so the constraint's
     published LHS includes contributions the solver cannot substitute -- keeping any of its
     terms would poison every system containing it (same logic as the region-demand exclusion).
-    Interconnector terms carry a NULL tradetype and never trigger the exclusion.
+    Interconnector terms carry a NULL tradetype and never trigger the exclusion. Precondition:
+    the caller has narrowed terms to at most one version per constraintid (exclusion is
+    keyed on constraintid, so a stale FCAS version would otherwise veto a clean current one).
     """
     if terms.empty:
         return terms

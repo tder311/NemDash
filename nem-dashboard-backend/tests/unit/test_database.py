@@ -8,7 +8,12 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
-from app.database import NEMDatabase, filter_binding_constraints
+from app.database import (
+    NEMDatabase,
+    SENTINEL_MMSDM_TRADETYPE,
+    SENTINEL_MMSDM_VERSION,
+    filter_binding_constraints,
+)
 
 
 class TestFilterBindingConstraints:
@@ -908,24 +913,27 @@ class TestConstraintEquationTermsInsert:
 
     @pytest.mark.asyncio
     async def test_reingest_same_version_updates_factor_and_last_seen_only(self, test_db):
-        """A version is immutable once seen -- re-seeing it just refreshes factor/last_seen."""
+        """A version is immutable once seen -- re-seeing it just refreshes factor and extends
+        the first_seen/last_seen observation window."""
         df1 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
              'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 1.0},
         ])
-        await test_db.insert_constraint_equation_terms(df1)
+        await test_db.insert_constraint_equation_terms(df1, seen_date=date(2026, 7, 1))
 
         df2 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
              'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 0.5},
         ])
-        await test_db.insert_constraint_equation_terms(df2)
+        await test_db.insert_constraint_equation_terms(df2, seen_date=date(2026, 7, 5))
 
         async with test_db._pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM constraint_equation_terms")
         assert len(rows) == 1
         assert rows[0]['version'] == 1
         assert rows[0]['factor'] == pytest.approx(0.5)
+        assert rows[0]['first_seen'] == date(2026, 7, 1)
+        assert rows[0]['last_seen'] == date(2026, 7, 5)
 
     @pytest.mark.asyncio
     async def test_reingest_null_tradetype_interconnector_row_is_idempotent(self, test_db):
@@ -979,6 +987,64 @@ class TestConstraintEquationTermsInsert:
         assert [r['version'] for r in rows] == [1, 2]
         assert rows[0]['factor'] == pytest.approx(1.0)
         assert rows[1]['factor'] == pytest.approx(0.5)
+
+
+class TestConstraintEquationTermsMigration:
+    """Regression test for the old-shape -> versioned-schema migration in initialize()."""
+
+    OLD_SHAPE_DDL = """
+        CREATE TABLE constraint_equation_terms (
+            id BIGSERIAL PRIMARY KEY,
+            constraintid TEXT NOT NULL,
+            version INTEGER,
+            term_type TEXT NOT NULL,
+            term_id TEXT NOT NULL,
+            factor REAL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(constraintid, term_type, term_id)
+        )
+    """
+
+    @pytest.mark.asyncio
+    async def test_initialize_migrates_old_shape_table_in_place(self, test_db):
+        # Rebuild the table exactly as the pre-versioning schema created it, with live rows.
+        async with test_db._pool.acquire() as conn:
+            await conn.execute("DROP TABLE constraint_equation_terms")
+            await conn.execute(self.OLD_SHAPE_DDL)
+            await conn.execute("""
+                INSERT INTO constraint_equation_terms (constraintid, version, term_type, term_id, factor)
+                VALUES ('C_OLD', 3, 'duid', 'BAYSW1', 1.0),
+                       ('C_OLD', 3, 'region', 'NSW1', 0.5),
+                       ('C_OLD', 3, 'interconnector', 'V-SA', -1.0)
+            """)
+
+        # Migration must not raise, and must be idempotent.
+        await test_db.initialize()
+        await test_db.initialize()
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM constraint_equation_terms WHERE constraintid = 'C_OLD' ORDER BY term_type")
+            constraints = await conn.fetch(
+                "SELECT conname FROM pg_constraint WHERE conrelid = 'constraint_equation_terms'::regclass")
+
+        # Rows intact, new columns exist, sentinel backfill applied.
+        assert len(rows) == 3
+        for row in rows:
+            assert row['version'] == SENTINEL_MMSDM_VERSION
+            assert row['effective_date'] is None
+            assert row['first_seen'] == date.today()
+            assert row['last_seen'] == date.today()
+        by_type = {r['term_type']: r for r in rows}
+        assert by_type['duid']['tradetype'] == SENTINEL_MMSDM_TRADETYPE
+        assert by_type['region']['tradetype'] == SENTINEL_MMSDM_TRADETYPE
+        assert by_type['interconnector']['tradetype'] is None
+
+        # Old latest-snapshot unique key replaced by the versioned NULLS NOT DISTINCT key.
+        names = {r['conname'] for r in constraints}
+        assert 'constraint_equation_terms_version_tt_key' in names
+        assert 'constraint_equation_terms_constraintid_term_type_term_id_key' not in names
+        assert 'constraint_equation_terms_version_key' not in names
 
 
 class TestInferredUnitGenerationMocked:

@@ -175,10 +175,22 @@ async def fetch_known_versions(db: NEMDatabase) -> set:
     return {(r["constraintid"], r["version"]) for r in rows}
 
 
+def latest_version_terms(terms: pd.DataFrame) -> pd.DataFrame:
+    """Per constraintid, only the rows of its latest (effective_date, version) -- what the
+    solver's date-aware selection would actually pick for a run on/after this day."""
+    if terms.empty:
+        return terms
+    keys = terms[["constraintid", "version", "effective_date"]].drop_duplicates(
+        subset=["constraintid", "version"]
+    ).sort_values(["constraintid", "effective_date", "version"])
+    winners = keys.groupby("constraintid", as_index=False).tail(1)[["constraintid", "version"]]
+    return terms.merge(winners, on=["constraintid", "version"])
+
+
 def _print_dry_run_report(terms: pd.DataFrame, known: Optional[set]) -> None:
-    energy_usable = drop_non_energy_constraints(terms)["constraintid"].nunique()
+    energy_usable = drop_non_energy_constraints(latest_version_terms(terms))["constraintid"].nunique()
     print(f"distinct constraints: {terms['constraintid'].nunique():,} "
-          f"({energy_usable:,} energy-usable, i.e. free of FCAS-tradetype terms)")
+          f"({energy_usable:,} energy-usable, i.e. latest version free of FCAS-tradetype terms)")
     for term_type, group in terms.groupby("term_type"):
         print(f"  {term_type}: {len(group):,} terms")
 
@@ -235,7 +247,7 @@ async def ingest(start_str: str, end_str: str, samples_per_day: int, dry_run: bo
                     _print_dry_run_report(terms, known)
                     return
 
-                inserted = await db.insert_constraint_equation_terms(terms)
+                inserted = await db.insert_constraint_equation_terms(terms, seen_date=day.date())
                 print(f"{day.date()}: sampled {len(terms):,} term rows -> inserted/updated {inserted:,}")
     finally:
         if db is not None:
