@@ -250,6 +250,94 @@ class TestGroupExtraction:
         assert out.empty
         assert list(out.columns) == GROUP_OUTPUT_COLUMNS
 
+    def test_two_independent_components_yield_two_exact_groups(self):
+        # A+B and C+D pinned by disjoint constraints: two components, one exact group each.
+        lhs = _lhs([
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C1", "lhs": 100.0},
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C2", "lhs": 50.0},
+        ])
+        terms = _terms([
+            _duid_term("C1", "A", 1.0), _duid_term("C1", "B", 1.0),
+            _duid_term("C2", "C", 1.0), _duid_term("C2", "D", 1.0),
+        ])
+        out = solve_unit_groups(lhs, terms, _ic([]), _region([]))
+
+        assert len(out) == 2
+        assert (out["quality"] == "exact").all()
+        by_duids = out.set_index("duids")
+        assert by_duids.loc["A|B", "mw_combined"] == pytest.approx(100.0, abs=1e-6)
+        assert by_duids.loc["C|D", "mw_combined"] == pytest.approx(50.0, abs=1e-6)
+        assert by_duids.loc["A|B", "group_id"] != by_duids.loc["C|D", "group_id"]
+
+    def test_close_determined_singular_values_become_entangled_complex(self):
+        # Rows [1,1,1] and c*[1,-1,0] with c=sqrt(1.5) give EQUAL determined singular values
+        # (relative gap ~0 < GROUP_SEPARATION_RTOL): directions are unstable, so no values emitted.
+        c = float(np.sqrt(1.5))
+        lhs = _lhs([
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C1", "lhs": 30.0},
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C2", "lhs": 6.0},
+        ])
+        terms = _terms([
+            _duid_term("C1", "A", 1.0), _duid_term("C1", "B", 1.0), _duid_term("C1", "C", 1.0),
+            _duid_term("C2", "A", c), _duid_term("C2", "B", -c),
+        ])
+        out = solve_unit_groups(lhs, terms, _ic([]), _region([]))
+
+        # Same k=1 / m=3 structure as the well-separated test above, which asserts both
+        # directions ARE emitted when the singular-value gap clears GROUP_SEPARATION_RTOL.
+        assert len(out) == 1
+        row = out.iloc[0]
+        assert row["quality"] == "entangled-complex"
+        assert row["n_units"] == 3
+        assert pd.isna(row["mw_combined"])
+
+    def test_duids_key_stable_when_weight_rounding_flips_group_id(self):
+        # Factors straddling a 6dp rounding boundary (0.5000002 vs 0.5000012) legitimately mint
+        # different group_ids; duids_key must keep tracking the same physical membership.
+        def solve_with_factor(w):
+            lhs = _lhs([
+                {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C1", "lhs": 100.0},
+            ])
+            terms = _terms([_duid_term("C1", "A", 1.0), _duid_term("C1", "B", w)])
+            return solve_unit_groups(lhs, terms, _ic([]), _region([])).iloc[0]
+
+        base, perturbed = solve_with_factor(0.5000002), solve_with_factor(0.5000012)
+        assert base["duids"] == perturbed["duids"] == "A|B"
+        assert base["weights"] != perturbed["weights"]
+        assert base["group_id"] != perturbed["group_id"]
+        assert base["duids_key"] == perturbed["duids_key"]
+
+    def test_spread_null_projection_unit_still_appears_as_singleton(self):
+        # E couples into two null directions with per-basis-vector entries ~0.9e-6 (< NULL_TOL)
+        # but aggregate projection ~1.3e-6 (> NULL_TOL): classified unidentifiable, so it must
+        # surface in the group output -- as an edge-less singleton 'entangled-complex' row.
+        eps = 6.5e-7
+        lhs = _lhs([
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C1", "lhs": 100.0},
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C2", "lhs": 50.0},
+            {"run_datetime": RUN, "interval_datetime": IVL, "constraintid": "C3", "lhs": 30.0},
+        ])
+        terms = _terms([
+            _duid_term("C1", "A", 1.0), _duid_term("C1", "B", 1.0),
+            _duid_term("C2", "C", 1.0), _duid_term("C2", "D", 1.0),
+            _duid_term("C3", "E", 1.0),
+            _duid_term("C3", "A", eps), _duid_term("C3", "B", -eps),
+            _duid_term("C3", "C", eps), _duid_term("C3", "D", -eps),
+        ])
+        units = solve_unit_generation(lhs, terms, _ic([]), _region([]))
+        assert units.set_index("duid").loc["E", "quality"] == "unidentifiable"
+
+        out = solve_unit_groups(lhs, terms, _ic([]), _region([]))
+        singleton = out[out["duids"] == "E"]
+        assert len(singleton) == 1
+        assert singleton.iloc[0]["quality"] == "entangled-complex"
+        assert singleton.iloc[0]["n_units"] == 1
+        # The sub-tolerance epsilon coupling must not leak bogus A-B / C-D difference groups.
+        exact = out[out["quality"] == "exact"].set_index("duids")
+        assert set(exact.index) == {"A|B", "C|D"}
+        assert exact.loc["A|B", "mw_combined"] == pytest.approx(100.0, abs=1e-4)
+        assert exact.loc["C|D", "mw_combined"] == pytest.approx(50.0, abs=1e-4)
+
 
 class TestKnownTermSubstitution:
     def test_interconnector_value_moved_to_rhs(self):

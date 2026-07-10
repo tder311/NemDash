@@ -27,7 +27,7 @@ OUTPUT_COLUMNS = [
     "mw_inferred", "quality", "n_equations", "system_residual",
 ]
 GROUP_OUTPUT_COLUMNS = [
-    "run_datetime", "interval_datetime", "group_id", "duids", "weights",
+    "run_datetime", "interval_datetime", "group_id", "duids_key", "duids", "weights",
     "mw_combined", "n_units", "quality", "n_equations",
 ]
 GROUP_KEYS = ["run_datetime", "interval_datetime"]
@@ -38,10 +38,8 @@ DEFAULT_MAX_MW = 100_000.0
 
 # Singular values below SINGULAR_RTOL * max span the null space of A.
 SINGULAR_RTOL = 1e-9
-# A unit whose unit vector projects more than NULL_TOL onto the null space is unidentifiable.
-# Reused as the per-entry support threshold when building the entanglement graph: an entry of a
-# unit-normalised null vector above NULL_TOL implies that unit's column null-projection exceeds
-# NULL_TOL too, so graph membership and the 'unidentifiable' flag are the same set by construction.
+# A unit projecting more than NULL_TOL onto the null space of A is unidentifiable; the
+# entanglement graph reuses this criterion for membership and for edge-coupling strength.
 NULL_TOL = 1e-6
 # Estimable units whose pseudoinverse row-norm (noise amplification) exceeds this are 'weak'.
 WEAK_SENSITIVITY = 10.0
@@ -295,7 +293,9 @@ def solve_unit_groups(
     m-k determined combinations -- directions in the row space of A whose factor-weighted unit sum
     is fixed regardless of how the null-space split is resolved. Each such combination is emitted as
     one row with a deterministic group_id, so downstream can track the same group across intervals.
-    Individually 'good'/'weak' units never enter a group (they have no null-space support).
+    Individually 'good'/'weak' units never enter a group (they have no null-space support), and
+    every 'unidentifiable' unit appears in exactly one component's rows -- grouped, or as an
+    'entangled-complex' marker when no trustworthy combination exists for its component.
 
     No bounds are applied: the combined value is the row-space projection of the unconstrained
     least-squares solution, which is unique regardless of null split (unlike a MAXAVAIL-clamped
@@ -327,47 +327,54 @@ def _extract_interval_groups(run, interval, grp) -> pd.DataFrame:
     duids, a_matrix, b_vector = _assemble_matrix(grp)
     g = np.linalg.lstsq(a_matrix, b_vector, rcond=None)[0]
 
-    _, singular, vt = np.linalg.svd(a_matrix, full_matrices=True)
+    null_basis = _null_space_basis(a_matrix)
     rows = []
-    for component in _entanglement_components(singular, vt):
-        rows.extend(_component_group_rows(run, interval, component, duids, a_matrix, g))
+    for component in _entanglement_components(null_basis):
+        rows.extend(_component_group_rows(run, interval, component, duids, a_matrix, null_basis, g))
     if not rows:
         return _empty_group_output()
     return pd.DataFrame(rows)
 
 
-def _entanglement_components(singular: np.ndarray, vt: np.ndarray) -> list:
-    """Connected components (>=2 units) of the graph linking units sharing a null-basis vector.
-
-    Two units are adjacent when some null-space basis vector (a right-singular vector of A with a
-    near-zero singular value) has support above NULL_TOL on both. Each null vector's support is a
-    clique, so it lies within one component; components with a single unit have no determined
-    combination and are dropped.
-    """
-    n_cols = vt.shape[0]
+def _null_space_basis(a_matrix: np.ndarray) -> np.ndarray:
+    """Orthonormal rows spanning the null space of A (right-singular vectors with near-zero sv)."""
+    n_cols = a_matrix.shape[1]
+    _, singular, vt = np.linalg.svd(a_matrix, full_matrices=True)
     smax = singular.max() if singular.size else 0.0
-    cutoff = smax * SINGULAR_RTOL
     singular_full = np.zeros(n_cols)
     singular_full[: singular.size] = singular
-    null_basis = vt[singular_full <= cutoff, :]
+    return vt[singular_full <= smax * SINGULAR_RTOL, :]
 
-    adjacency = np.zeros((n_cols, n_cols), dtype=bool)
-    for null_vector in null_basis:
-        support = np.abs(null_vector) > NULL_TOL
-        adjacency |= np.outer(support, support)
+
+def _entanglement_components(null_basis: np.ndarray) -> list:
+    """Connected components of unidentifiable units under null-space coupling (singletons kept).
+
+    Membership uses each column's aggregate null-projection norm > NULL_TOL -- the same criterion
+    _classify_units uses for 'unidentifiable', so every flagged unit lands in some component.
+    Edges use the basis-invariant null-projector coupling |(N^T N)[i, j]| > NULL_TOL; a member
+    coupled to no other (its projection spread thinly over the basis) stays a singleton component.
+    """
+    coupling = null_basis.T @ null_basis
+    members = np.diag(coupling) > NULL_TOL**2
+    adjacency = (np.abs(coupling) > NULL_TOL) & np.outer(members, members)
     np.fill_diagonal(adjacency, False)
 
     n_components, labels = connected_components(csr_matrix(adjacency), directed=False)
     components = []
     for label in range(n_components):
-        members = np.nonzero(labels == label)[0].tolist()
-        if len(members) >= 2:
-            components.append(members)
+        component = np.nonzero((labels == label) & members)[0].tolist()
+        if component:
+            components.append(component)
     return components
 
 
-def _component_group_rows(run, interval, component, duids, a_matrix, g) -> list:
-    """Rows for one component: one per determined direction, or a single entangled-complex marker."""
+def _component_group_rows(run, interval, component, duids, a_matrix, null_basis, g) -> list:
+    """Rows for one component: one per determined direction, or a single entangled-complex marker.
+
+    Determined directions come from the sub-matrix with the component-restricted null space
+    projected out, so each direction is orthogonal to the global null space by construction and
+    its value is invariant to sub-tolerance coupling with units outside the component.
+    """
     order = np.argsort([duids[i] for i in component])
     sorted_cols = [component[i] for i in order]
     sorted_duids = [duids[i] for i in sorted_cols]
@@ -376,13 +383,20 @@ def _component_group_rows(run, interval, component, duids, a_matrix, g) -> list:
     row_mask = np.any(sub != 0.0, axis=1)
     n_equations = int(row_mask.sum())
 
-    if len(sorted_cols) > MAX_GROUP_UNITS:
+    if len(sorted_cols) == 1 or len(sorted_cols) > MAX_GROUP_UNITS:
         return [_entangled_complex_row(run, interval, sorted_duids, n_equations)]
 
-    _, singular, vt = np.linalg.svd(sub[row_mask], full_matrices=True)
-    cutoff = singular.max() * SINGULAR_RTOL
+    null_restricted = null_basis[:, sorted_cols]
+    _, local_sv, local_vt = np.linalg.svd(null_restricted, full_matrices=False)
+    local_null = local_vt[local_sv > NULL_TOL]
+    sub_clean = sub[row_mask] - (sub[row_mask] @ local_null.T) @ local_null
+
+    _, singular, vt = np.linalg.svd(sub_clean, full_matrices=True)
+    cutoff = np.linalg.norm(sub[row_mask]) * SINGULAR_RTOL
     determined_sv = singular[singular > cutoff]
     n_determined = determined_sv.size
+    if n_determined == 0:
+        return [_entangled_complex_row(run, interval, sorted_duids, n_equations)]
 
     if n_determined > 1:
         gaps = (determined_sv[:-1] - determined_sv[1:]) / determined_sv[:-1]
@@ -409,6 +423,7 @@ def _build_group_row(run, interval, sorted_duids, direction, g_sub, n_equations)
     return {
         "run_datetime": run, "interval_datetime": interval,
         "group_id": _group_id(kept_duids, kept_weights),
+        "duids_key": _duids_key(kept_duids),
         "duids": "|".join(kept_duids), "weights": tuple(kept_weights),
         "mw_combined": mw_combined, "n_units": len(kept_duids),
         "quality": "exact", "n_equations": n_equations,
@@ -420,6 +435,7 @@ def _entangled_complex_row(run, interval, sorted_duids, n_equations) -> dict:
     return {
         "run_datetime": run, "interval_datetime": interval,
         "group_id": _group_id(sorted_duids, None),
+        "duids_key": _duids_key(sorted_duids),
         "duids": "|".join(sorted_duids), "weights": None,
         "mw_combined": np.nan, "n_units": len(sorted_duids),
         "quality": "entangled-complex", "n_equations": n_equations,
@@ -427,12 +443,18 @@ def _entangled_complex_row(run, interval, sorted_duids, n_equations) -> dict:
 
 
 def _group_id(duids, weights) -> str:
-    """Deterministic id from sorted duids and rounded weights; identical structure -> identical id."""
+    """Deterministic id from sorted duids and 6dp-rounded weights. A weight drifting across a
+    rounding boundary mints a new id -- track membership via duids_key where that matters."""
     if weights is None:
         payload = "entangled-complex:" + "|".join(duids)
     else:
         payload = "|".join(f"{d}:{w:.6f}" for d, w in zip(duids, weights))
     return hashlib.sha1(payload.encode()).hexdigest()[:12]
+
+
+def _duids_key(duids) -> str:
+    """Membership-only key: stable for the same sorted unit set even when weights (and id) churn."""
+    return hashlib.sha1("|".join(duids).encode()).hexdigest()[:12]
 
 
 def select_short_lead_latest_run(
