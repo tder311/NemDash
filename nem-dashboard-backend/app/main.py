@@ -42,8 +42,18 @@ from .models import (
     UnitInferenceSeriesResponse,
     UnitInferenceSeriesPoint,
     UnitInferenceStats,
+    GenerationForecastResponse,
+    GenerationForecastUnit,
+    GenerationForecastUnitPoint,
+    GenerationForecastFleet,
+    GenerationForecastFleetPoint,
 )
-from .joint_inference import aggregate_realised_30min, build_paired_series, compute_unit_tracking
+from .joint_inference import (
+    aggregate_realised_30min,
+    build_generation_forecast,
+    build_paired_series,
+    compute_unit_tracking,
+)
 from .forecaster import (
     REGIONS,
     HORIZON_INTERVALS,
@@ -52,6 +62,7 @@ from .forecaster import (
     default_model_path,
     forecast_price_series,
     load_forecast_accuracy,
+    nem_now,
     train_and_save,
 )
 from .optimiser import DispatchInputs, optimise_dispatch
@@ -1407,6 +1418,77 @@ async def get_unit_inference_series(
         raise
     except Exception as e:
         logger.error(f"Error getting unit inference series for {duid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/network/generation-forecast", response_model=GenerationForecastResponse)
+async def get_generation_forecast(
+    region: str = Query(..., description="NEM region, e.g. NSW1"),
+):
+    """Latest pre-dispatch cycle's forward-inferred generation for `region`: per-unit series for
+    Coal/Gas/Battery and fleet aggregates for Wind/Solar, with per-interval inferability coverage.
+    """
+    region = region.upper()
+    if region not in REGIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown region '{region}'. Expected one of {REGIONS}.",
+        )
+
+    try:
+        rows = await db.get_latest_generation_forecast_rows(nem_now())
+        if rows.empty:
+            return GenerationForecastResponse(
+                run_datetime=None, units=[], fleets=[], message="No stored unit-inference rows yet.",
+            )
+
+        shaped = build_generation_forecast(rows, region)
+        run_datetime = rows["run_datetime"].max()
+
+        units = [
+            GenerationForecastUnit(
+                duid=u["duid"],
+                station_name=u["station_name"],
+                fuel_source=u["fuel_source"],
+                technology_type=u["technology_type"],
+                capacity_mw=u["capacity_mw"],
+                series=[
+                    GenerationForecastUnitPoint(
+                        interval_datetime=p["interval_datetime"].isoformat(), mw=p["mw"], quality=p["quality"],
+                    )
+                    for p in u["series"]
+                ],
+            )
+            for u in shaped["units"]
+        ]
+        fleets = [
+            GenerationForecastFleet(
+                fuel_source=f["fuel_source"],
+                n_units_total=f["n_units_total"],
+                capacity_total=f["capacity_total"],
+                series=[
+                    GenerationForecastFleetPoint(
+                        interval_datetime=p["interval_datetime"].isoformat(),
+                        mw_sum=p["mw_sum"],
+                        n_units=p["n_units"],
+                        capacity_inferable=p["capacity_inferable"],
+                    )
+                    for p in f["series"]
+                ],
+            )
+            for f in shaped["fleets"]
+        ]
+
+        return GenerationForecastResponse(
+            run_datetime=to_aest_isoformat(run_datetime),
+            units=units,
+            fleets=fleets,
+            message=f"{len(units)} units, {len(fleets)} fleets for {region} from run {to_aest_isoformat(run_datetime)}",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting generation forecast for {region}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -329,4 +329,39 @@ class UnitInferenceSeriesResponse(BaseModel):
     days: int
     data: List[UnitInferenceSeriesPoint]
     stats: UnitInferenceStats
+
+
+class GenerationForecastUnitPoint(BaseModel):
+    interval_datetime: str
+    mw: float
+    quality: str
+
+
+class GenerationForecastUnit(BaseModel):
+    duid: str
+    station_name: Optional[str] = None
+    fuel_source: str
+    technology_type: Optional[str] = None
+    capacity_mw: Optional[float] = None
+    series: List[GenerationForecastUnitPoint]
+
+
+class GenerationForecastFleetPoint(BaseModel):
+    interval_datetime: str
+    mw_sum: float
+    n_units: int
+    capacity_inferable: float
+
+
+class GenerationForecastFleet(BaseModel):
+    fuel_source: str
+    series: List[GenerationForecastFleetPoint]
+    n_units_total: int
+    capacity_total: float
+
+
+class GenerationForecastResponse(BaseModel):
+    run_datetime: Optional[str] = None
+    units: List[GenerationForecastUnit]
+    fleets: List[GenerationForecastFleet]
     message: str

@@ -1924,6 +1924,32 @@ class NEMDatabase:
         out["settlementdate"] = pd.to_datetime(out["settlementdate"])
         return out
 
+    async def get_latest_generation_forecast_rows(self, now: datetime) -> pd.DataFrame:
+        """Latest run's inferred-generation rows (interval_datetime >= now) joined to generator_info.
+
+        All regions/fuel sources -- region and fuel filtering happens in build_generation_forecast.
+        """
+        columns = [
+            "run_datetime", "interval_datetime", "duid", "mw_inferred", "quality",
+            "station_name", "region", "fuel_source", "technology_type", "capacity_mw",
+        ]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(f"""
+                SELECT i.run_datetime, i.interval_datetime, i.duid, i.mw_inferred, i.quality,
+                       g.station_name, g.region, g.fuel_source, g.technology_type, g.capacity_mw
+                FROM inferred_unit_generation i
+                INNER JOIN generator_info g ON i.duid = g.duid
+                WHERE i.run_datetime = (SELECT MAX(run_datetime) FROM inferred_unit_generation)
+                AND i.interval_datetime >= $1
+                ORDER BY i.duid, i.interval_datetime
+            """, now)
+        if not rows:
+            return pd.DataFrame(columns=columns)
+        out = pd.DataFrame([dict(row) for row in rows])
+        out["run_datetime"] = pd.to_datetime(out["run_datetime"])
+        out["interval_datetime"] = pd.to_datetime(out["interval_datetime"])
+        return out
+
     async def insert_forecast_history(self, rows: List[Dict[str, Any]]) -> int:
         """Persist a served forecast so misses are diagnosable and models scorecardable."""
         if not rows:
