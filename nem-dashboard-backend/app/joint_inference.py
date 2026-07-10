@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import lsq_linear
 
-from .database import NEMDatabase
+from .database import NEMDatabase, SENTINEL_MMSDM_TRADETYPE, SENTINEL_MMSDM_VERSION
 
 OUTPUT_COLUMNS = [
     "run_datetime", "interval_datetime", "duid",
@@ -332,13 +332,91 @@ def aggregate_bounds_to_30min(bids: pd.DataFrame) -> pd.DataFrame:
     return out.groupby(["interval_datetime", "duid"], as_index=False)["maxavail"].max()
 
 
+TERMS_OUTPUT_COLUMNS = ["constraintid", "term_type", "term_id", "factor"]
+
+
+# TradeType codes whose trader/region factors are coefficients on energy MW (verified against
+# a real 2026-05-15 NEMDE day: ENOF=generator, LDOF=scheduled load, BDOF=bidirectional/BESS,
+# DROF=wholesale demand response; every R*/L* code is an FCAS variable). The MMSDM sentinel
+# marker counts as energy because that feed was ENERGY-bidtype filtered at source.
+ENERGY_TRADETYPES = frozenset({"ENOF", "LDOF", "BDOF", "DROF", SENTINEL_MMSDM_TRADETYPE})
+
+
+def drop_non_energy_constraints(terms: pd.DataFrame) -> pd.DataFrame:
+    """Drop every constraint that has >=1 trader/region term with a non-energy tradetype.
+
+    Such a factor multiplies the unit's FCAS variable, not its energy MW, so the constraint's
+    published LHS includes contributions the solver cannot substitute -- keeping any of its
+    terms would poison every system containing it (same logic as the region-demand exclusion).
+    Interconnector terms carry a NULL tradetype and never trigger the exclusion. Precondition:
+    the caller has narrowed terms to at most one version per constraintid (exclusion is
+    keyed on constraintid, so a stale FCAS version would otherwise veto a clean current one).
+    """
+    if terms.empty:
+        return terms
+    fcas = (
+        terms["term_type"].isin(["duid", "region"])
+        & terms["tradetype"].notna()
+        & ~terms["tradetype"].isin(ENERGY_TRADETYPES)
+    )
+    excluded = set(terms.loc[fcas, "constraintid"])
+    return terms[~terms["constraintid"].isin(excluded)]
+
+
+def select_terms_for_run_date(all_terms: pd.DataFrame, run_date) -> pd.DataFrame:
+    """Per constraintid, keep only the term rows for the version effective at run_date.
+
+    A version is a candidate if its effective_date <= run_date; the winner is the one with the
+    latest effective_date (ties broken by the highest version number, then by the latest
+    first_seen -- the version we actually knew about soonest). A constraintid with no dated
+    candidate falls back to its sentinel MMSDM row (version == SENTINEL_MMSDM_VERSION), which
+    carries no effective_date and is only ever a last resort. Selected versions containing any
+    FCAS-tradetype term are then excluded whole (see drop_non_energy_constraints).
+    """
+    if all_terms.empty:
+        return pd.DataFrame(columns=TERMS_OUTPUT_COLUMNS)
+    run_date = pd.Timestamp(run_date).normalize()
+
+    dated = all_terms[all_terms["effective_date"].notna()].copy()
+    dated["effective_date"] = pd.to_datetime(dated["effective_date"])
+    dated = dated[dated["effective_date"] <= run_date]
+
+    winners = pd.DataFrame(columns=["constraintid", "version"])
+    if not dated.empty:
+        version_keys = dated[["constraintid", "version", "effective_date", "first_seen"]].drop_duplicates(
+            subset=["constraintid", "version"]
+        )
+        version_keys["first_seen"] = pd.to_datetime(version_keys["first_seen"])
+        version_keys = version_keys.sort_values(["constraintid", "effective_date", "version", "first_seen"])
+        winners = version_keys.groupby("constraintid", as_index=False).tail(1)[["constraintid", "version"]]
+
+    dated_selected = dated.merge(winners, on=["constraintid", "version"], how="inner")
+
+    covered = set(winners["constraintid"])
+    sentinel = all_terms[
+        (all_terms["version"] == SENTINEL_MMSDM_VERSION) & (~all_terms["constraintid"].isin(covered))
+    ]
+
+    frames = [f for f in (dated_selected, sentinel) if not f.empty]
+    if not frames:
+        return pd.DataFrame(columns=TERMS_OUTPUT_COLUMNS)
+    selected = drop_non_energy_constraints(pd.concat(frames, ignore_index=True))
+    return selected[TERMS_OUTPUT_COLUMNS].reset_index(drop=True)
+
+
 # --- DB-aware input fetchers (async; everything above is pure and DataFrame-in/DataFrame-out) ---
 
-async def fetch_terms(db: NEMDatabase) -> pd.DataFrame:
-    """Full constraint equation terms table (latest snapshot)."""
+async def fetch_terms(db: NEMDatabase, run_date) -> pd.DataFrame:
+    """Constraint equation terms in force at run_date (see select_terms_for_run_date)."""
     async with db._pool.acquire() as conn:
-        rows = await conn.fetch("SELECT constraintid, term_type, term_id, factor FROM constraint_equation_terms")
-    return pd.DataFrame([dict(r) for r in rows])
+        rows = await conn.fetch(
+            "SELECT constraintid, version, effective_date, term_type, term_id, factor, first_seen, tradetype "
+            "FROM constraint_equation_terms"
+        )
+    all_terms = pd.DataFrame([dict(r) for r in rows])
+    if all_terms.empty:
+        return pd.DataFrame(columns=TERMS_OUTPUT_COLUMNS)
+    return select_terms_for_run_date(all_terms, run_date)
 
 
 async def fetch_bounds(db: NEMDatabase, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:

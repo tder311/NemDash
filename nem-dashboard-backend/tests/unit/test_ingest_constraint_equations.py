@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+from app.database import SENTINEL_MMSDM_TRADETYPE, SENTINEL_MMSDM_VERSION
 from scripts.ingest_constraint_equations import (
     archive_url,
     build_constraint_equation_terms,
@@ -164,19 +165,26 @@ class TestBuildConstraintEquationTerms:
 
         terms = build_constraint_equation_terms(cpc_df, icc_df, rc_df, dud_df)
 
-        assert list(terms.columns) == ["constraintid", "version", "term_type", "term_id", "factor"]
+        assert list(terms.columns) == ["constraintid", "version", "term_type", "term_id", "tradetype", "factor"]
         c_binding = terms[terms["constraintid"] == "C_BINDING"]
         # NUNMAPPED has no DUDETAILSUMMARY entry so is dropped; only the latest (v1) BAYSW1 term remains.
         assert set(c_binding["term_type"]) == {"duid", "interconnector"}
         duid_row = c_binding[c_binding["term_type"] == "duid"].iloc[0]
         assert duid_row["term_id"] == "BAYSW1"
         assert duid_row["factor"] == pytest.approx(1.0)
-        assert duid_row["version"] == 1
+        # This source has no effective_date, so output rows always take the sentinel version --
+        # v2 (factor 0.5) was already dropped by latest_version_only above.
+        assert duid_row["version"] == SENTINEL_MMSDM_VERSION
+        # ENERGY-filtered at source -> sentinel tradetype marker on duid/region, NULL on ic rows.
+        assert duid_row["tradetype"] == SENTINEL_MMSDM_TRADETYPE
+        ic_row = c_binding[c_binding["term_type"] == "interconnector"].iloc[0]
+        assert ic_row["tradetype"] is None
 
         c_region = terms[terms["constraintid"] == "C_REGION"]
         assert len(c_region) == 1
         assert c_region.iloc[0]["term_type"] == "region"
         assert c_region.iloc[0]["term_id"] == "NSW1"
+        assert c_region.iloc[0]["tradetype"] == SENTINEL_MMSDM_TRADETYPE
 
     def test_no_duplicate_constraint_term_type_term_id(self):
         cpc_df = parse_spd_connection_point_csv(SAMPLE_SPD_CPC_CSV)

@@ -4,15 +4,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.database import SENTINEL_MMSDM_VERSION
 from app.joint_inference import (
     OUTPUT_COLUMNS,
     SERIES_COLUMNS,
+    TERMS_OUTPUT_COLUMNS,
     TRACKING_COLUMNS,
     TRACKING_CORR_THRESHOLD,
     aggregate_realised_30min,
     build_paired_series,
     compute_unit_tracking,
     select_short_lead_latest_run,
+    select_terms_for_run_date,
     solve_unit_generation,
 )
 
@@ -377,3 +380,120 @@ class TestBuildPairedSeries:
         )
         assert out.empty
         assert list(out.columns) == SERIES_COLUMNS
+
+
+def _versioned_term(cid, version, effective_date, term_type, term_id, factor,
+                    first_seen=None, tradetype="ENOF"):
+    return {
+        "constraintid": cid, "version": version, "effective_date": effective_date,
+        "term_type": term_type, "term_id": term_id, "factor": factor,
+        "first_seen": first_seen or effective_date, "tradetype": tradetype,
+    }
+
+
+class TestSelectTermsForRunDate:
+    def test_two_versions_run_date_picks_the_effective_one(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C1", 1, pd.Timestamp("2024-01-01").date(), "duid", "A", 1.0),
+            _versioned_term("C1", 2, pd.Timestamp("2026-01-01").date(), "duid", "A", 0.5),
+        ])
+
+        before = select_terms_for_run_date(all_terms, pd.Timestamp("2025-06-01"))
+        assert before["factor"].iloc[0] == pytest.approx(1.0)
+
+        after = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert after["factor"].iloc[0] == pytest.approx(0.5)
+
+    def test_future_version_not_yet_effective_is_ignored(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C1", 1, pd.Timestamp("2024-01-01").date(), "duid", "A", 1.0),
+            _versioned_term("C1", 2, pd.Timestamp("2099-01-01").date(), "duid", "A", 0.5),
+        ])
+        out = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert out["factor"].iloc[0] == pytest.approx(1.0)
+
+    def test_sentinel_fallback_when_no_dated_version_exists(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C_LEGACY", SENTINEL_MMSDM_VERSION, None, "duid", "A", 1.0),
+        ])
+        out = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert list(out.columns) == TERMS_OUTPUT_COLUMNS
+        assert out.iloc[0]["constraintid"] == "C_LEGACY"
+        assert out.iloc[0]["factor"] == pytest.approx(1.0)
+
+    def test_sentinel_ignored_once_a_dated_version_exists(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C1", SENTINEL_MMSDM_VERSION, None, "duid", "A", 9.0),
+            _versioned_term("C1", 1, pd.Timestamp("2024-01-01").date(), "duid", "A", 1.0),
+        ])
+        out = select_terms_for_run_date(all_terms, pd.Timestamp("2026-06-01"))
+        assert len(out) == 1
+        assert out.iloc[0]["factor"] == pytest.approx(1.0)
+
+    def test_empty_input_returns_empty_with_columns(self):
+        out = select_terms_for_run_date(pd.DataFrame(columns=[
+            "constraintid", "version", "effective_date", "term_type", "term_id", "factor",
+            "first_seen", "tradetype",
+        ]), pd.Timestamp("2026-06-01"))
+        assert out.empty
+        assert list(out.columns) == TERMS_OUTPUT_COLUMNS
+
+
+class TestFcasTradetypeExclusion:
+    """A constraint version with any non-energy (FCAS) trader/region term is unusable: its
+    published LHS includes FCAS MW the solver cannot substitute, so it must be dropped whole."""
+
+    RUN_DATE = pd.Timestamp("2026-06-01")
+    EFF = pd.Timestamp("2024-01-01").date()
+
+    def test_pure_energy_constraint_passes(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("N>NIL_901", 1, self.EFF, "duid", "A", 1.0, tradetype="ENOF"),
+            _versioned_term("N>NIL_901", 1, self.EFF, "duid", "B", 1.0, tradetype="BDOF"),
+            _versioned_term("N>NIL_901", 1, self.EFF, "duid", "C", -1.0, tradetype="LDOF"),
+            _versioned_term("N>NIL_901", 1, self.EFF, "interconnector", "N-Q-MNSP1", -1.0, tradetype=None),
+        ])
+        out = select_terms_for_run_date(all_terms, self.RUN_DATE)
+        assert len(out) == 4
+
+    def test_mixed_energy_and_fcas_constraint_is_dropped_entirely(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("F_MAIN+GFT_TG_R6", 1, self.EFF, "duid", "A", 1.0, tradetype="ENOF"),
+            _versioned_term("F_MAIN+GFT_TG_R6", 1, self.EFF, "duid", "A", 1.0, tradetype="R6SE"),
+            _versioned_term("N>NIL_901", 1, self.EFF, "duid", "B", 1.0, tradetype="ENOF"),
+        ])
+        out = select_terms_for_run_date(all_terms, self.RUN_DATE)
+        # Not just the FCAS term: the whole mixed constraint goes; the pure one survives.
+        assert set(out["constraintid"]) == {"N>NIL_901"}
+
+    def test_pure_fcas_constraint_is_dropped(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("F_I+LREG_0210", 1, self.EFF, "region", "NSW1", 1.0, tradetype="L5RE"),
+            _versioned_term("F_I+LREG_0210", 1, self.EFF, "region", "VIC1", 1.0, tradetype="L5RE"),
+        ])
+        out = select_terms_for_run_date(all_terms, self.RUN_DATE)
+        assert out.empty
+
+    def test_fcas_region_term_drops_constraint_even_with_energy_duid_terms(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("D_T+NIL_MG_R1", 1, self.EFF, "duid", "A", 1.0, tradetype="ENOF"),
+            _versioned_term("D_T+NIL_MG_R1", 1, self.EFF, "region", "TAS1", 1.0, tradetype="R1SE"),
+        ])
+        out = select_terms_for_run_date(all_terms, self.RUN_DATE)
+        assert out.empty
+
+    def test_sentinel_mmsdm_marker_counts_as_energy(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("C_LEGACY", SENTINEL_MMSDM_VERSION, None, "duid", "A", 1.0,
+                            tradetype="ENERGY"),
+        ])
+        out = select_terms_for_run_date(all_terms, self.RUN_DATE)
+        assert len(out) == 1
+
+    def test_interconnector_null_tradetype_is_not_treated_as_fcas(self):
+        all_terms = pd.DataFrame([
+            _versioned_term("DATASNAP_DFS_LS", 1, self.EFF, "interconnector", "N-Q-MNSP1", 1.0,
+                            tradetype=None),
+        ])
+        out = select_terms_for_run_date(all_terms, self.RUN_DATE)
+        assert len(out) == 1

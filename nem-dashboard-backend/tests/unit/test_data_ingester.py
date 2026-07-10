@@ -614,8 +614,9 @@ class TestInferUnitGeneration:
         ingester = self._ingester()
         ingester.db = MagicMock()
         ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=1)
+        mock_fetch_terms = AsyncMock(return_value=self._terms())
 
-        with patch("app.data_ingester.fetch_terms", AsyncMock(return_value=self._terms())), \
+        with patch("app.data_ingester.fetch_terms", mock_fetch_terms), \
              patch("app.data_ingester.fetch_bounds", AsyncMock(return_value=pd.DataFrame(columns=["duid", "maxavail"]))):
             await ingester._infer_unit_generation(self._con_df(), None)
 
@@ -623,6 +624,10 @@ class TestInferUnitGeneration:
         solved = ingester.db.insert_inferred_unit_generation.call_args[0][0]
         assert solved.iloc[0]["duid"] == "A"
         assert solved.iloc[0]["mw_inferred"] == pytest.approx(30.0)
+
+        # fetch_terms must be run-date aware: called with this run's run_datetime.
+        mock_fetch_terms.assert_called_once()
+        assert mock_fetch_terms.call_args[0][1] == pd.Timestamp("2026-07-09 10:00:00")
 
     @pytest.mark.asyncio
     async def test_empty_or_missing_constraint_frame_is_a_noop(self):

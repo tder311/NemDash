@@ -208,7 +208,9 @@ async def validate(start_str: str, end_str: str, persist: bool = False) -> None:
     db = NEMDatabase(db_url)
     await db.initialize()
     try:
-        terms = await fetch_terms(db)
+        # One date-aware term selection for the whole window (its `end` date) -- constraint
+        # equations rarely change within a validation window of a few weeks.
+        terms = await fetch_terms(db, end)
         bounds = await fetch_bounds(db, start, end)
         print(f"Loaded {len(terms)} terms, {len(bounds)} (interval, duid) MAXAVAIL bounds")
 

@@ -430,7 +430,8 @@ class DataIngester:
             lhs_frame = con_df[["run_datetime", "interval_datetime", "constraintid", "lhs"]]
             bounds_start = con_df["interval_datetime"].min() - BOUNDS_LOOKBACK
             bounds_end = con_df["interval_datetime"].max()
-            terms = await fetch_terms(self.db)
+            run_date = con_df["run_datetime"].max()
+            terms = await fetch_terms(self.db, run_date)
             bounds = await fetch_bounds(self.db, bounds_start, bounds_end)
 
             solved = solve_unit_generation(
