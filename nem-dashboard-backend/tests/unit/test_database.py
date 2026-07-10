@@ -871,20 +871,22 @@ class TestConstraintEquationTermsInsert:
     async def test_insert_constraint_equation_terms(self, test_db):
         df = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
-             'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+             'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 1.0},
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
-             'term_type': 'interconnector', 'term_id': 'NSW1-QLD1', 'factor': -1.0},
+             'term_type': 'interconnector', 'term_id': 'NSW1-QLD1', 'tradetype': None, 'factor': -1.0},
         ])
         count = await test_db.insert_constraint_equation_terms(df)
         assert count == 2
 
         async with test_db._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT term_type, term_id, factor, effective_date, first_seen, last_seen "
+            rows = await conn.fetch("SELECT term_type, term_id, factor, effective_date, first_seen, last_seen, tradetype "
                                      "FROM constraint_equation_terms ORDER BY term_type")
         assert [r['term_type'] for r in rows] == ['duid', 'interconnector']
         assert rows[0]['effective_date'] == date(2024, 1, 1)
         assert rows[0]['first_seen'] == date.today()
         assert rows[0]['last_seen'] == date.today()
+        assert rows[0]['tradetype'] == 'ENOF'
+        assert rows[1]['tradetype'] is None
 
     @pytest.mark.asyncio
     async def test_insert_constraint_equation_terms_empty_df(self, test_db):
@@ -909,13 +911,13 @@ class TestConstraintEquationTermsInsert:
         """A version is immutable once seen -- re-seeing it just refreshes factor/last_seen."""
         df1 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
-             'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+             'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 1.0},
         ])
         await test_db.insert_constraint_equation_terms(df1)
 
         df2 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
-             'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 0.5},
+             'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 0.5},
         ])
         await test_db.insert_constraint_equation_terms(df2)
 
@@ -926,17 +928,49 @@ class TestConstraintEquationTermsInsert:
         assert rows[0]['factor'] == pytest.approx(0.5)
 
     @pytest.mark.asyncio
+    async def test_reingest_null_tradetype_interconnector_row_is_idempotent(self, test_db):
+        """NULLS NOT DISTINCT on the unique key: re-seeing an interconnector term (NULL
+        tradetype) must update in place, not accumulate duplicate rows."""
+        df = pd.DataFrame([
+            {'constraintid': 'C_IC', 'version': 1, 'effective_date': date(2024, 1, 1),
+             'term_type': 'interconnector', 'term_id': 'V-SA', 'tradetype': None, 'factor': 1.0},
+        ])
+        await test_db.insert_constraint_equation_terms(df)
+        await test_db.insert_constraint_equation_terms(df)
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM constraint_equation_terms WHERE constraintid = 'C_IC'")
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_same_term_id_under_two_tradetypes_stores_two_rows(self, test_db):
+        """One version can list the same region under two FCAS TradeTypes (e.g. L5MI + L5RE)."""
+        df = pd.DataFrame([
+            {'constraintid': 'F_I+BIP_ML_L5', 'version': 1, 'effective_date': date(2024, 1, 1),
+             'term_type': 'region', 'term_id': 'NSW1', 'tradetype': 'L5MI', 'factor': 1.0},
+            {'constraintid': 'F_I+BIP_ML_L5', 'version': 1, 'effective_date': date(2024, 1, 1),
+             'term_type': 'region', 'term_id': 'NSW1', 'tradetype': 'L5RE', 'factor': 1.0},
+        ])
+        count = await test_db.insert_constraint_equation_terms(df)
+        assert count == 2
+
+        async with test_db._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT tradetype FROM constraint_equation_terms WHERE constraintid = 'F_I+BIP_ML_L5' ORDER BY tradetype")
+        assert [r['tradetype'] for r in rows] == ['L5MI', 'L5RE']
+
+    @pytest.mark.asyncio
     async def test_new_version_of_same_constraint_is_kept_alongside_the_old_one(self, test_db):
         """Versions are never purged -- a later version of a constraint adds a new row."""
         df1 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 1, 'effective_date': date(2024, 1, 1),
-             'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 1.0},
+             'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 1.0},
         ])
         await test_db.insert_constraint_equation_terms(df1)
 
         df2 = pd.DataFrame([
             {'constraintid': 'C_BINDING', 'version': 2, 'effective_date': date(2026, 1, 1),
-             'term_type': 'duid', 'term_id': 'BAYSW1', 'factor': 0.5},
+             'term_type': 'duid', 'term_id': 'BAYSW1', 'tradetype': 'ENOF', 'factor': 0.5},
         ])
         await test_db.insert_constraint_equation_terms(df2)
 

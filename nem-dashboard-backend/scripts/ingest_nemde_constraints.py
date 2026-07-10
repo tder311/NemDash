@@ -11,11 +11,11 @@ Source: one ~170MB zip per day of 288 five-minute ``.loaded`` XML case files,
 VersionNo EffectiveDate ...>`` per constraint, with a nested ``LHSFactorCollection``
 of ``<TraderFactor Factor TradeType TraderID>`` (TraderID IS the DUID),
 ``<InterconnectorFactor Factor InterconnectorID>``, and ``<RegionFactor Factor
-TradeType RegionID>``. All three are stored regardless of TradeType -- unlike the
-legacy MMSDM ingest's ENERGY-bidtype filter, this keeps FCAS-only terms too;
-region terms are already excluded downstream by the solver whenever no
-region_demand is supplied, so this is a deliberate (documented) scope widening
-for duid/interconnector terms that may warrant revisiting.
+TradeType RegionID>``. All factors are stored WITH their TradeType (NULL for
+interconnectors); an FCAS TradeType (R6SE/L5RE/...) means the factor multiplies
+the unit's FCAS variable, not its energy MW, so term selection for the solver
+excludes any constraint version carrying one (see
+``app.joint_inference.drop_non_energy_constraints`` and ENERGY_TRADETYPES).
 
 A day's constraint set turns over intraday (verified: ~5-10% of constraints
 differ between consecutive 2-hour samples on 2026-05-15), but a constraint
@@ -31,8 +31,9 @@ as its end tag is seen so the trader/case/region solutions that make up most of
 each 12MB file are never retained.
 
 ``--dry-run`` downloads+parses one day only and prints per-type term counts,
-distinct constraints, and (if DATABASE_URL is set) new-vs-already-known
-(constraintid, version) pairs; it never writes.
+distinct constraints (total and energy-usable, i.e. free of FCAS-tradetype
+terms -- the count that matters for solver coverage), and (if DATABASE_URL is
+set) new-vs-already-known (constraintid, version) pairs; it never writes.
 """
 
 import argparse
@@ -48,11 +49,12 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from app.database import NEMDatabase, SENTINEL_MMSDM_VERSION
+from app.joint_inference import drop_non_energy_constraints
 
 BASE_URL = "https://www.nemweb.com.au"
 ARCHIVE_DIR = "Data_Archive/Wholesale_Electricity/NEMDE"
 DEFAULT_SAMPLES_PER_DAY = 12
-TERM_COLUMNS = ["constraintid", "version", "effective_date", "term_type", "term_id", "factor"]
+TERM_COLUMNS = ["constraintid", "version", "effective_date", "term_type", "term_id", "tradetype", "factor"]
 FACTOR_TAGS = {
     "TraderFactor": ("duid", "TraderID"),
     "InterconnectorFactor": ("interconnector", "InterconnectorID"),
@@ -101,6 +103,8 @@ def parse_generic_constraint(elem) -> List[dict]:
             "effective_date": effective_date,
             "term_type": term_type,
             "term_id": child.get(id_attr),
+            # Interconnector factors carry no TradeType attribute -> stored as NULL.
+            "tradetype": child.get("TradeType"),
             "factor": float(child.get("Factor")),
         })
     return rows
@@ -130,12 +134,13 @@ def parse_member_xml(fileobj) -> pd.DataFrame:
 
 
 def dedupe_versions(terms: pd.DataFrame) -> pd.DataFrame:
-    """One row per (constraintid, version, term_type, term_id) -- collapses repeat sightings
-    of an already-seen version across the day's samples."""
+    """One row per (constraintid, version, term_type, term_id, tradetype) -- collapses repeat
+    sightings of an already-seen version across the day's samples. tradetype is in the key
+    because one version can carry the same trader/region under several TradeTypes."""
     if terms.empty:
         return terms
     return terms.drop_duplicates(
-        subset=["constraintid", "version", "term_type", "term_id"]
+        subset=["constraintid", "version", "term_type", "term_id", "tradetype"]
     ).reset_index(drop=True)
 
 
@@ -171,7 +176,9 @@ async def fetch_known_versions(db: NEMDatabase) -> set:
 
 
 def _print_dry_run_report(terms: pd.DataFrame, known: Optional[set]) -> None:
-    print(f"distinct constraints: {terms['constraintid'].nunique():,}")
+    energy_usable = drop_non_energy_constraints(terms)["constraintid"].nunique()
+    print(f"distinct constraints: {terms['constraintid'].nunique():,} "
+          f"({energy_usable:,} energy-usable, i.e. free of FCAS-tradetype terms)")
     for term_type, group in terms.groupby("term_type"):
         print(f"  {term_type}: {len(group):,} terms")
 

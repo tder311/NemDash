@@ -25,6 +25,10 @@ AEST = timezone(timedelta(hours=10))
 # so this can never collide and these rows are only ever a fallback (see fetch_terms).
 SENTINEL_MMSDM_VERSION = -1
 
+# tradetype marker for MMSDM-sourced duid/region rows: that feed was ENERGY-bidtype
+# filtered at source but carries no NEMDE TradeType code, so this stands in for one.
+SENTINEL_MMSDM_TRADETYPE = 'ENERGY'
+
 
 def to_aest_isoformat(dt):
     """Convert naive datetime (assumed AEST) to ISO string with timezone offset.
@@ -270,11 +274,13 @@ class NEMDatabase:
 
             # Versioning columns added by the NEMDE ingest (scripts/ingest_nemde_constraints.py).
             # effective_date is NULL for rows from the old MMSDM ingest (no per-version dates);
-            # first_seen/last_seen track the observation window of a given (constraintid, version).
+            # first_seen/last_seen track the observation window of a given (constraintid, version);
+            # tradetype is NEMDE's per-factor TradeType (NULL for interconnector terms).
             for col, col_type in [
                 ('effective_date', 'DATE'),
                 ('first_seen', 'DATE'),
                 ('last_seen', 'DATE'),
+                ('tradetype', 'TEXT'),
             ]:
                 await conn.execute(f"""
                     DO $$ BEGIN
@@ -285,6 +291,7 @@ class NEMDatabase:
 
             # One-time migration: rows with no effective_date predate the NEMDE ingest and get the
             # sentinel version, so they only ever serve as a fallback once real versions exist.
+            # Their duid/region rows were ENERGY-filtered at source, hence the tradetype marker.
             await conn.execute(f"""
                 UPDATE constraint_equation_terms
                 SET version = {SENTINEL_MMSDM_VERSION},
@@ -292,28 +299,37 @@ class NEMDatabase:
                     last_seen = COALESCE(last_seen, CURRENT_DATE)
                 WHERE effective_date IS NULL AND version IS DISTINCT FROM {SENTINEL_MMSDM_VERSION}
             """)
-
-            # Versions are immutable once observed, so the unique key extends to (..., version)
-            # instead of the old latest-snapshot (constraintid, term_type, term_id) key.
-            await conn.execute("""
-                DO $$ BEGIN
-                    IF EXISTS (
-                        SELECT 1 FROM pg_constraint
-                        WHERE conname = 'constraint_equation_terms_constraintid_term_type_term_id_key'
-                    ) THEN
-                        ALTER TABLE constraint_equation_terms
-                            DROP CONSTRAINT constraint_equation_terms_constraintid_term_type_term_id_key;
-                    END IF;
-                END $$
+            await conn.execute(f"""
+                UPDATE constraint_equation_terms
+                SET tradetype = '{SENTINEL_MMSDM_TRADETYPE}'
+                WHERE version = {SENTINEL_MMSDM_VERSION} AND tradetype IS NULL
+                  AND term_type IN ('duid', 'region')
             """)
+
+            # Versions are immutable once observed, so the unique key extends to
+            # (..., version, tradetype) instead of the old latest-snapshot key. tradetype is in the
+            # key because one constraint version can carry the same trader/region under several
+            # TradeTypes (e.g. L5MI + L5RE); NULLS NOT DISTINCT (PG15+) makes the interconnector
+            # rows' NULL tradetype conflict-detectable so re-ingests stay idempotent.
+            for stale in (
+                'constraint_equation_terms_constraintid_term_type_term_id_key',
+                'constraint_equation_terms_version_key',
+            ):
+                await conn.execute(f"""
+                    DO $$ BEGIN
+                        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '{stale}') THEN
+                            ALTER TABLE constraint_equation_terms DROP CONSTRAINT {stale};
+                        END IF;
+                    END $$
+                """)
             await conn.execute("""
                 DO $$ BEGIN
                     IF NOT EXISTS (
-                        SELECT 1 FROM pg_constraint WHERE conname = 'constraint_equation_terms_version_key'
+                        SELECT 1 FROM pg_constraint WHERE conname = 'constraint_equation_terms_version_tt_key'
                     ) THEN
                         ALTER TABLE constraint_equation_terms
-                            ADD CONSTRAINT constraint_equation_terms_version_key
-                            UNIQUE (constraintid, version, term_type, term_id);
+                            ADD CONSTRAINT constraint_equation_terms_version_tt_key
+                            UNIQUE NULLS NOT DISTINCT (constraintid, version, term_type, term_id, tradetype);
                     END IF;
                 END $$
             """)
@@ -1792,14 +1808,15 @@ class NEMDatabase:
 
     async def insert_constraint_equation_terms(self, df: pd.DataFrame) -> int:
         """Upsert constraint equation term rows onto the versioned (constraintid, version,
-        term_type, term_id) key.
+        term_type, term_id, tradetype) key.
 
         Once a version is seen it is immutable (AEMO never reuses or edits a VersionNo), so a
         repeat sighting only extends last_seen; factor/effective_date are refreshed too in case
         of a correction. This replaces the old table's transactional delete + insert -- there is
         no more "current snapshot" to truncate, since old versions are kept for date-aware lookup
-        (see fetch_terms) rather than purged. An 'effective_date' column is optional in df (NULL
-        for the legacy MMSDM ingest); first_seen/last_seen default to today for new rows.
+        (see fetch_terms) rather than purged. 'effective_date' and 'tradetype' columns are
+        optional in df (NULL for the legacy MMSDM ingest / interconnector terms respectively);
+        first_seen/last_seen default to today for new rows.
         """
         if df.empty:
             return 0
@@ -1810,14 +1827,14 @@ class NEMDatabase:
             eff = eff.date() if hasattr(eff, 'date') else eff
             records.append((
                 row['constraintid'], int(row['version']), eff, row['term_type'], row['term_id'],
-                row.get('factor'), today, today,
+                row.get('tradetype'), row.get('factor'), today, today,
             ))
         async with self._pool.acquire() as conn:
             await conn.executemany("""
                 INSERT INTO constraint_equation_terms
-                (constraintid, version, effective_date, term_type, term_id, factor, first_seen, last_seen)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (constraintid, version, term_type, term_id) DO UPDATE SET
+                (constraintid, version, effective_date, term_type, term_id, tradetype, factor, first_seen, last_seen)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ON CONFLICT (constraintid, version, term_type, term_id, tradetype) DO UPDATE SET
                     effective_date = COALESCE(EXCLUDED.effective_date, constraint_equation_terms.effective_date),
                     factor = EXCLUDED.factor,
                     last_seen = EXCLUDED.last_seen,

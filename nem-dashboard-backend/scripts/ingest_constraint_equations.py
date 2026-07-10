@@ -49,7 +49,7 @@ import httpx
 import pandas as pd
 from dotenv import load_dotenv
 
-from app.database import NEMDatabase, SENTINEL_MMSDM_VERSION
+from app.database import NEMDatabase, SENTINEL_MMSDM_TRADETYPE, SENTINEL_MMSDM_VERSION
 
 BASE_URL = "https://www.nemweb.com.au"
 ARCHIVE_DIR = "Data_Archive/Wholesale_Electricity/MMSDM"
@@ -207,11 +207,12 @@ def build_constraint_equation_terms(
     region_terms = rc_df.rename(columns={"regionid": "term_id"})
     region_terms["term_type"] = "region"
 
+    out_columns = ["constraintid", "version", "term_type", "term_id", "tradetype", "factor"]
     frames = [
         df[term_columns] for df in (duid_terms, ic_terms, region_terms) if not df.empty
     ]
     if not frames:
-        return pd.DataFrame(columns=["constraintid", "version", "term_type", "term_id", "factor"])
+        return pd.DataFrame(columns=out_columns)
     combined = pd.concat(frames, ignore_index=True)
     combined = latest_version_only(combined)
     # Distinct connection points can map to the same DUID, so duplicates survive the version filter.
@@ -219,9 +220,12 @@ def build_constraint_equation_terms(
     # This source carries no effective_date, so its rows always take the sentinel version --
     # real VERSIONNO is only used above to pick the single latest-known term per constraint.
     combined["version"] = SENTINEL_MMSDM_VERSION
-    return combined[
-        ["constraintid", "version", "term_type", "term_id", "factor"]
-    ].reset_index(drop=True)
+    # ENERGY-bidtype filtered at source but with no NEMDE TradeType code -> sentinel marker on
+    # duid/region rows; interconnector rows have no tradetype (matching the NEMDE ingest).
+    combined["tradetype"] = None
+    is_typed = combined["term_type"].isin(["duid", "region"])
+    combined.loc[is_typed, "tradetype"] = SENTINEL_MMSDM_TRADETYPE
+    return combined[out_columns].reset_index(drop=True)
 
 
 async def find_latest_month(client: httpx.AsyncClient, today: Optional[date] = None) -> Tuple[int, int]:

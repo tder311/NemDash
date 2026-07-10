@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import lsq_linear
 
-from .database import NEMDatabase, SENTINEL_MMSDM_VERSION
+from .database import NEMDatabase, SENTINEL_MMSDM_TRADETYPE, SENTINEL_MMSDM_VERSION
 
 OUTPUT_COLUMNS = [
     "run_datetime", "interval_datetime", "duid",
@@ -335,6 +335,32 @@ def aggregate_bounds_to_30min(bids: pd.DataFrame) -> pd.DataFrame:
 TERMS_OUTPUT_COLUMNS = ["constraintid", "term_type", "term_id", "factor"]
 
 
+# TradeType codes whose trader/region factors are coefficients on energy MW (verified against
+# a real 2026-05-15 NEMDE day: ENOF=generator, LDOF=scheduled load, BDOF=bidirectional/BESS,
+# DROF=wholesale demand response; every R*/L* code is an FCAS variable). The MMSDM sentinel
+# marker counts as energy because that feed was ENERGY-bidtype filtered at source.
+ENERGY_TRADETYPES = frozenset({"ENOF", "LDOF", "BDOF", "DROF", SENTINEL_MMSDM_TRADETYPE})
+
+
+def drop_non_energy_constraints(terms: pd.DataFrame) -> pd.DataFrame:
+    """Drop every constraint that has >=1 trader/region term with a non-energy tradetype.
+
+    Such a factor multiplies the unit's FCAS variable, not its energy MW, so the constraint's
+    published LHS includes contributions the solver cannot substitute -- keeping any of its
+    terms would poison every system containing it (same logic as the region-demand exclusion).
+    Interconnector terms carry a NULL tradetype and never trigger the exclusion.
+    """
+    if terms.empty:
+        return terms
+    fcas = (
+        terms["term_type"].isin(["duid", "region"])
+        & terms["tradetype"].notna()
+        & ~terms["tradetype"].isin(ENERGY_TRADETYPES)
+    )
+    excluded = set(terms.loc[fcas, "constraintid"])
+    return terms[~terms["constraintid"].isin(excluded)]
+
+
 def select_terms_for_run_date(all_terms: pd.DataFrame, run_date) -> pd.DataFrame:
     """Per constraintid, keep only the term rows for the version effective at run_date.
 
@@ -342,7 +368,8 @@ def select_terms_for_run_date(all_terms: pd.DataFrame, run_date) -> pd.DataFrame
     latest effective_date (ties broken by the highest version number, then by the latest
     first_seen -- the version we actually knew about soonest). A constraintid with no dated
     candidate falls back to its sentinel MMSDM row (version == SENTINEL_MMSDM_VERSION), which
-    carries no effective_date and is only ever a last resort.
+    carries no effective_date and is only ever a last resort. Selected versions containing any
+    FCAS-tradetype term are then excluded whole (see drop_non_energy_constraints).
     """
     if all_terms.empty:
         return pd.DataFrame(columns=TERMS_OUTPUT_COLUMNS)
@@ -371,7 +398,7 @@ def select_terms_for_run_date(all_terms: pd.DataFrame, run_date) -> pd.DataFrame
     frames = [f for f in (dated_selected, sentinel) if not f.empty]
     if not frames:
         return pd.DataFrame(columns=TERMS_OUTPUT_COLUMNS)
-    selected = pd.concat(frames, ignore_index=True)
+    selected = drop_non_energy_constraints(pd.concat(frames, ignore_index=True))
     return selected[TERMS_OUTPUT_COLUMNS].reset_index(drop=True)
 
 
@@ -381,7 +408,7 @@ async def fetch_terms(db: NEMDatabase, run_date) -> pd.DataFrame:
     """Constraint equation terms in force at run_date (see select_terms_for_run_date)."""
     async with db._pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT constraintid, version, effective_date, term_type, term_id, factor, first_seen "
+            "SELECT constraintid, version, effective_date, term_type, term_id, factor, first_seen, tradetype "
             "FROM constraint_equation_terms"
         )
     all_terms = pd.DataFrame([dict(r) for r in rows])

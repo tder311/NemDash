@@ -77,14 +77,14 @@ class TestParseGenericConstraint:
         assert duid_rows == [{
             "constraintid": "#BBATTERY1_E1", "version": 1,
             "effective_date": pd.Timestamp("2024-10-04").date(),
-            "term_type": "duid", "term_id": "BBATTERY1", "factor": 1.0,
+            "term_type": "duid", "term_id": "BBATTERY1", "tradetype": "BDOF", "factor": 1.0,
         }]
 
         ic_rows = parse_generic_constraint(constraints[1])
         assert ic_rows == [{
             "constraintid": "DATASNAP_DFS_LS", "version": 1,
             "effective_date": pd.Timestamp("2018-04-13").date(),
-            "term_type": "interconnector", "term_id": "N-Q-MNSP1", "factor": 1.0,
+            "term_type": "interconnector", "term_id": "N-Q-MNSP1", "tradetype": None, "factor": 1.0,
         }]
 
         region_rows = parse_generic_constraint(constraints[2])
@@ -92,6 +92,7 @@ class TestParseGenericConstraint:
         assert {r["term_id"] for r in region_rows} == {"NSW1", "QLD1"}
         assert all(r["term_type"] == "region" for r in region_rows)
         assert all(r["version"] == 1 for r in region_rows)
+        assert all(r["tradetype"] == "L1SE" for r in region_rows)
 
     def test_no_lhs_factor_collection_returns_empty(self):
         import xml.etree.ElementTree as ET
@@ -112,31 +113,34 @@ class TestParseMemberXml:
         assert set(df["constraintid"]) == {"#BBATTERY1_E1", "DATASNAP_DFS_LS", "D_I+BIP_ML2_L1"}
         assert set(df["term_type"]) == {"duid", "interconnector", "region"}
         assert list(df.columns) == [
-            "constraintid", "version", "effective_date", "term_type", "term_id", "factor",
+            "constraintid", "version", "effective_date", "term_type", "term_id", "tradetype", "factor",
         ]
 
 
 class TestDedupeVersions:
+    def _row(self, version, factor, tradetype="ENOF"):
+        return {"constraintid": "C1", "version": version,
+                "effective_date": pd.Timestamp("2024-01-01").date(),
+                "term_type": "duid", "term_id": "A", "tradetype": tradetype, "factor": factor}
+
     def test_collapses_repeat_sightings_of_the_same_version(self):
-        rows = pd.DataFrame([
-            {"constraintid": "C1", "version": 1, "effective_date": pd.Timestamp("2024-01-01").date(),
-             "term_type": "duid", "term_id": "A", "factor": 1.0},
-            {"constraintid": "C1", "version": 1, "effective_date": pd.Timestamp("2024-01-01").date(),
-             "term_type": "duid", "term_id": "A", "factor": 1.0},
-        ])
+        rows = pd.DataFrame([self._row(1, 1.0), self._row(1, 1.0)])
         out = dedupe_versions(rows)
         assert len(out) == 1
 
     def test_keeps_different_versions_of_the_same_constraint(self):
-        rows = pd.DataFrame([
-            {"constraintid": "C1", "version": 1, "effective_date": pd.Timestamp("2024-01-01").date(),
-             "term_type": "duid", "term_id": "A", "factor": 1.0},
-            {"constraintid": "C1", "version": 2, "effective_date": pd.Timestamp("2025-01-01").date(),
-             "term_type": "duid", "term_id": "A", "factor": 0.5},
-        ])
+        rows = pd.DataFrame([self._row(1, 1.0), self._row(2, 0.5)])
+        out = dedupe_versions(rows)
+        assert len(out) == 2
+
+    def test_same_term_id_under_two_tradetypes_is_kept_as_two_rows(self):
+        # e.g. F_* joint-capacity constraints list the same region under L5MI and L5RE.
+        rows = pd.DataFrame([self._row(1, 1.0, "L5MI"), self._row(1, 1.0, "L5RE")])
         out = dedupe_versions(rows)
         assert len(out) == 2
 
     def test_empty_input_returns_empty(self):
-        empty = pd.DataFrame(columns=["constraintid", "version", "effective_date", "term_type", "term_id", "factor"])
+        empty = pd.DataFrame(columns=[
+            "constraintid", "version", "effective_date", "term_type", "term_id", "tradetype", "factor",
+        ])
         assert dedupe_versions(empty).empty
