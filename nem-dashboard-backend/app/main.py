@@ -114,6 +114,20 @@ def _get_forecaster() -> Optional[PriceForecaster]:
     return _forecaster
 
 
+def _json_safe(value):
+    """Replace non-finite floats (NaN/inf) with None, recursively.
+
+    Training metrics can contain NaN (e.g. an empty validation fold) and
+    FastAPI's JSON encoder rejects non-finite floats."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 # In-process state for the retrain-on-demand flow (fire-and-poll).
 _training_state: dict = {
     "status": "idle",  # idle | running | done | error
@@ -134,7 +148,7 @@ async def _run_retrain(days: int):
         result = await train_and_save(db, days=days)
         _forecaster = result["model"]  # hot-reload — no restart needed
         _training_state.update(status="done", finished_at=datetime.now().isoformat(),
-                               metrics=result["metrics"], n_rows=result["n_rows"], error=None)
+                               metrics=_json_safe(result["metrics"]), n_rows=result["n_rows"], error=None)
         logger.info(f"Retrain complete: {result['n_rows']} rows, metrics={result['metrics']}")
     except Exception as e:
         logger.error(f"Retrain failed: {e}")

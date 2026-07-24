@@ -2302,3 +2302,35 @@ class TestGenerationForecastEndpoint:
                 assert "boom" in response.json()["detail"]
         finally:
             main_module.db = original_db
+
+
+class TestForecastStatusNaNMetrics:
+    """/api/forecast/status must serialize even when training metrics contain
+    NaN (e.g. an empty validation fold) — NaN is not JSON compliant."""
+
+    @pytest.mark.asyncio
+    async def test_status_serializes_nan_metrics(self):
+        import app.main as main_module
+
+        original = dict(main_module._training_state)
+        main_module._training_state.update(
+            status="done",
+            metrics=main_module._json_safe(
+                {"mae": float("nan"), "rmse": 12.5,
+                 "folds": [{"mae": float("inf"), "n": 0}]}),
+            n_rows=100, error=None)
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test"
+            ) as client:
+                response = await client.get("/api/forecast/status")
+
+            assert response.status_code == 200
+            metrics = response.json()["metrics"]
+            assert metrics["mae"] is None
+            assert metrics["rmse"] == 12.5
+            assert metrics["folds"][0]["mae"] is None
+        finally:
+            main_module._training_state.clear()
+            main_module._training_state.update(original)
