@@ -525,7 +525,47 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bidperoffer_duid_date ON bid_per_offer(duid, settlementdate)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_bidperoffer_settlement ON bid_per_offer(settlementdate)")
 
+            # Hourly rollup of dispatch_data. Stores sum+count (not avg) so
+            # coarser aggregations compose exactly; serves all >=60min display bands.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dispatch_data_hourly (
+                    hour TIMESTAMP NOT NULL,
+                    duid TEXT NOT NULL,
+                    sum_scada DOUBLE PRECISION,
+                    sample_count INTEGER NOT NULL,
+                    PRIMARY KEY (hour, duid)
+                )
+            """)
+
+        # One-off rebuild after deploy: raw history exists but rollup is empty
+        rollup_rows = await self.backfill_dispatch_hourly(only_if_empty=True)
+        if rollup_rows:
+            logger.info(f"Backfilled dispatch_data_hourly with {rollup_rows} rows from raw data")
+
         logger.info("PostgreSQL database initialized")
+
+    _HOURLY_ROLLUP_UPSERT = """
+        INSERT INTO dispatch_data_hourly (hour, duid, sum_scada, sample_count)
+        SELECT date_trunc('hour', settlementdate), duid, SUM(scadavalue), COUNT(scadavalue)
+        FROM dispatch_data
+        {where}
+        GROUP BY 1, 2
+        ON CONFLICT (hour, duid) DO UPDATE SET
+            sum_scada = EXCLUDED.sum_scada,
+            sample_count = EXCLUDED.sample_count
+    """
+
+    async def backfill_dispatch_hourly(self, only_if_empty: bool = False) -> int:
+        """Recompute the hourly rollup from all raw dispatch_data rows.
+
+        Returns the number of rollup rows written (0 when skipped)."""
+        async with self._pool.acquire() as conn:
+            if only_if_empty:
+                has_rollup = await conn.fetchval("SELECT EXISTS (SELECT 1 FROM dispatch_data_hourly)")
+                if has_rollup:
+                    return 0
+            result = await conn.execute(self._HOURLY_ROLLUP_UPSERT.format(where=""))
+        return int(result.split()[-1])
 
     async def close(self):
         """Close database connection pool."""
@@ -540,18 +580,18 @@ class NEMDatabase:
         if df.empty:
             return 0
 
+        # pandas represents missing floats as NaN; store SQL NULL instead so
+        # aggregates (SUM/AVG and the hourly rollup) skip them rather than poison.
+        numeric = df[['scadavalue', 'uigf', 'totalcleared', 'ramprate',
+                      'availability', 'raise1sec', 'lower1sec']].astype(object)
+        numeric = numeric.where(pd.notna(numeric), None)
+
         records = []
-        for _, row in df.iterrows():
+        for (_, row), values in zip(df.iterrows(), numeric.itertuples(index=False)):
             records.append((
                 row['settlementdate'].to_pydatetime() if hasattr(row['settlementdate'], 'to_pydatetime') else row['settlementdate'],
                 row['duid'],
-                row['scadavalue'],
-                row['uigf'],
-                row['totalcleared'],
-                row['ramprate'],
-                row['availability'],
-                row['raise1sec'],
-                row['lower1sec']
+                *values
             ))
 
         async with self._pool.acquire() as conn:
@@ -568,6 +608,15 @@ class NEMDatabase:
                     raise1sec = EXCLUDED.raise1sec,
                     lower1sec = EXCLUDED.lower1sec
             """, records)
+
+            # Keep the hourly rollup consistent by recomputing every hour this
+            # batch touched from raw rows (idempotent under re-ingestion).
+            timestamps = [r[0] for r in records]
+            await conn.execute(
+                self._HOURLY_ROLLUP_UPSERT.format(
+                    where="WHERE settlementdate >= date_trunc('hour', $1::timestamp) "
+                          "AND settlementdate < date_trunc('hour', $2::timestamp) + INTERVAL '1 hour'"),
+                min(timestamps), max(timestamps))
 
         return len(records)
 
@@ -1047,10 +1096,47 @@ class NEMDatabase:
         df['percentage'] = (df['generation_mw'] / total * 100).round(1) if total > 0 else 0
         return df
 
+    # Serves >=60min bands from the hourly rollup: per (hour, fuel) total is the
+    # sum of per-duid hourly averages, then averaged into the requested period.
+    _GENERATION_HISTORY_HOURLY_SQL = """
+        WITH hourly_totals AS (
+            SELECT
+                h.hour,
+                COALESCE(g.fuel_source, 'Unknown') as fuel_source,
+                SUM(h.sum_scada / NULLIF(h.sample_count, 0)) as total_mw
+            FROM dispatch_data_hourly h
+            INNER JOIN generator_info g ON h.duid = g.duid
+            WHERE g.region = $1
+            AND h.hour >= {start_bound}
+            AND h.hour <= {end_bound}
+            GROUP BY h.hour, g.fuel_source
+        )
+        SELECT
+            hour - (
+                (EXTRACT(EPOCH FROM hour)::BIGINT % ({agg_param} * 60)) * INTERVAL '1 second'
+            ) as period,
+            fuel_source,
+            AVG(total_mw) as generation_mw,
+            COUNT(*) as sample_count
+        FROM hourly_totals
+        GROUP BY 1, 2
+        ORDER BY period ASC, fuel_source
+    """
+
     async def get_region_generation_history(self, region: str, hours: int = 24, aggregation_minutes: Optional[int] = None) -> pd.DataFrame:
         """Get historical generation by fuel source for a specific region."""
         if aggregation_minutes is None:
             aggregation_minutes = calculate_aggregation_minutes(hours)
+
+        if aggregation_minutes >= 60:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    self._GENERATION_HISTORY_HOURLY_SQL.format(
+                        start_bound="(SELECT MAX(hour) FROM dispatch_data_hourly) + ($2 || ' hours')::INTERVAL",
+                        end_bound="(SELECT MAX(hour) FROM dispatch_data_hourly)",
+                        agg_param="$3"),
+                    region, f'-{hours}', aggregation_minutes)
+            return self._generation_rows_to_df(rows)
 
         async with self._pool.acquire() as conn:
             # Use interval arithmetic instead of TO_TIMESTAMP to preserve naive timestamp type
@@ -1081,9 +1167,12 @@ class NEMDatabase:
                 ORDER BY period ASC, fuel_source
             """, region, f'-{hours}', aggregation_minutes)
 
+        return self._generation_rows_to_df(rows)
+
+    @staticmethod
+    def _generation_rows_to_df(rows) -> pd.DataFrame:
         if not rows:
             return pd.DataFrame()
-
         df = pd.DataFrame([dict(row) for row in rows])
         df['period'] = pd.to_datetime(df['period'])
         return df
@@ -1290,6 +1379,14 @@ class NEMDatabase:
 
     async def get_region_generation_history_by_dates(self, region: str, start_date: datetime, end_date: datetime, aggregation_minutes: int) -> pd.DataFrame:
         """Get historical generation by fuel source for a specific date range."""
+        if aggregation_minutes >= 60:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    self._GENERATION_HISTORY_HOURLY_SQL.format(
+                        start_bound="$2", end_bound="$3", agg_param="$4"),
+                    region, start_date, end_date, aggregation_minutes)
+            return self._generation_rows_to_df(rows)
+
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("""
                 WITH timestamp_totals AS (
@@ -1316,12 +1413,7 @@ class NEMDatabase:
                 ORDER BY period ASC, fuel_source
             """, region, start_date, end_date, aggregation_minutes)
 
-        if not rows:
-            return pd.DataFrame()
-
-        df = pd.DataFrame([dict(row) for row in rows])
-        df['period'] = pd.to_datetime(df['period'])
-        return df
+        return self._generation_rows_to_df(rows)
 
     async def get_region_summary(self, region: str) -> Dict[str, Any]:
         """Get summary statistics for a specific region."""
