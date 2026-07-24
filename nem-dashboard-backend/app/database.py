@@ -567,6 +567,38 @@ class NEMDatabase:
             result = await conn.execute(self._HOURLY_ROLLUP_UPSERT.format(where=""))
         return int(result.split()[-1])
 
+    @staticmethod
+    async def _delete_older_than(conn, table: str, cutoff) -> int:
+        """Delete rows before cutoff in day-sized batches to bound txn/WAL size."""
+        total = 0
+        oldest = await conn.fetchval(f"SELECT MIN(settlementdate) FROM {table}")
+        while oldest is not None and oldest < cutoff:
+            batch_end = min(oldest + timedelta(days=1), cutoff)
+            result = await conn.execute(
+                f"DELETE FROM {table} WHERE settlementdate < $1", batch_end)
+            total += int(result.split()[-1])
+            oldest = await conn.fetchval(f"SELECT MIN(settlementdate) FROM {table}")
+        return total
+
+    async def apply_raw_retention(self, days: int) -> Dict[str, int]:
+        """Trim raw dispatch and bid rows older than `days` days.
+
+        Dispatch deletion is refused unless the hourly rollup reaches back at
+        least as far as the raw data, so no display band can lose history."""
+        cutoff = datetime.now() - timedelta(days=days)
+        deleted = {'dispatch_data': 0, 'bid_per_offer': 0, 'bid_day_offer': 0}
+        async with self._pool.acquire() as conn:
+            oldest_raw = await conn.fetchval("SELECT MIN(settlementdate) FROM dispatch_data")
+            oldest_rollup = await conn.fetchval("SELECT MIN(hour) FROM dispatch_data_hourly")
+            if oldest_raw is not None and (oldest_rollup is None or oldest_rollup > oldest_raw):
+                logger.warning("Skipping dispatch_data retention: hourly rollup does not cover oldest raw rows")
+            else:
+                deleted['dispatch_data'] = await self._delete_older_than(conn, 'dispatch_data', cutoff)
+            deleted['bid_per_offer'] = await self._delete_older_than(conn, 'bid_per_offer', cutoff)
+            # bid_day_offer.settlementdate is a DATE column
+            deleted['bid_day_offer'] = await self._delete_older_than(conn, 'bid_day_offer', cutoff.date())
+        return deleted
+
     async def close(self):
         """Close database connection pool."""
         if self._pool:

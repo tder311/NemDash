@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 from pathlib import Path
 
@@ -24,6 +24,28 @@ BOUNDS_LOOKBACK = timedelta(hours=1)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def resolve_backfill_start(now: datetime) -> datetime:
+    """Resolve the historical-backfill start date.
+
+    BACKFILL_START_DATE (YYYY-MM-DD) or 365 days ago by default, then capped
+    at the raw-retention window: backfilling past it would re-download data
+    the daily retention sweep immediately deletes."""
+    start_str = os.getenv('BACKFILL_START_DATE')
+    start = None
+    if start_str:
+        try:
+            start = datetime.strptime(start_str, '%Y-%m-%d')
+        except ValueError:
+            logger.warning(f"Invalid BACKFILL_START_DATE '{start_str}', using 365 days ago")
+    if start is None:
+        start = now - timedelta(days=365)
+
+    retention_days = int(os.getenv('RAW_RETENTION_DAYS', '30'))
+    if retention_days > 0:
+        start = max(start, now - timedelta(days=retention_days))
+    return start
 
 
 def thin_pasa_for_multilead_backfill(df: pd.DataFrame) -> pd.DataFrame:
@@ -52,6 +74,7 @@ class DataIngester:
         self.price_setter_client = NEMPriceSetterClient(nem_base_url)
         self.bid_client = NEMBidClient(nem_base_url)
         self.is_running = False
+        self._last_retention_day: Optional[date] = None
 
         # Track last fetched timestamps to avoid gaps
         # These are initialized from DB on startup in run_continuous_ingestion()
@@ -774,18 +797,7 @@ class DataIngester:
         self.is_running = True
         logger.info(f"Starting continuous ingestion with {interval_minutes} minute intervals")
 
-        # Parse backfill start date from environment
-        # Default: go back 365 days from today so we pick up a full year of history
-        backfill_start_str = os.getenv('BACKFILL_START_DATE')
-        if backfill_start_str:
-            try:
-                backfill_start_date = datetime.strptime(backfill_start_str, '%Y-%m-%d')
-            except ValueError:
-                logger.warning(f"Invalid BACKFILL_START_DATE '{backfill_start_str}', using 365 days ago")
-                backfill_start_date = datetime.now() - timedelta(days=365)
-        else:
-            backfill_start_date = datetime.now() - timedelta(days=365)
-
+        backfill_start_date = resolve_backfill_start(datetime.now())
         logger.info(f"Backfill start date: {backfill_start_date.strftime('%Y-%m-%d')}")
 
         # FIRST: Initialize timestamps from database to avoid re-fetching existing data
@@ -870,10 +882,24 @@ class DataIngester:
                         await self.ingest_pasa_data()
                         await self.ingest_predispatch_data()
                         self.pasa_ingestion_counter = 0
+
+                    await self._maybe_apply_retention()
             except Exception as e:
                 logger.error(f"Error in continuous ingestion: {e}")
                 await asyncio.sleep(60)  # Wait 1 minute before retrying
     
+    async def _maybe_apply_retention(self):
+        """Trim raw dispatch/bid rows to RAW_RETENTION_DAYS, once per calendar day.
+
+        Set RAW_RETENTION_DAYS=0 to disable."""
+        days = int(os.getenv('RAW_RETENTION_DAYS', '30'))
+        if days <= 0 or self._last_retention_day == date.today():
+            return
+        deleted = await self.db.apply_raw_retention(days=days)
+        self._last_retention_day = date.today()
+        if any(deleted.values()):
+            logger.info(f"Raw retention ({days}d): deleted {deleted}")
+
     def stop_continuous_ingestion(self):
         """Stop continuous data ingestion"""
         self.is_running = False
