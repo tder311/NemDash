@@ -16,6 +16,16 @@ const mockSvgContent = `
 </svg>
 `;
 
+// The component attaches its event listeners in an effect that also sets
+// cursor:pointer on NEM paths. Waiting on that cursor guarantees the
+// listeners are attached before firing events, avoiding a render-vs-effect race.
+const waitForMapReady = (container) =>
+  waitFor(() => {
+    const nsw = container.querySelector('#state-NSW');
+    expect(nsw).toBeInTheDocument();
+    expect(nsw.style.cursor).toBe('pointer');
+  });
+
 describe('AustraliaMap', () => {
   const mockOnRegionClick = jest.fn();
 
@@ -314,9 +324,7 @@ describe('AustraliaMap hover events', () => {
       />
     );
 
-    await waitFor(() => {
-      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
-    });
+    await waitForMapReady(container);
 
     const nswPath = container.querySelector('#state-NSW');
     fireEvent.mouseOver(nswPath);
@@ -334,9 +342,7 @@ describe('AustraliaMap hover events', () => {
       />
     );
 
-    await waitFor(() => {
-      expect(container.querySelector('#state-NSW')).toBeInTheDocument();
-    });
+    await waitForMapReady(container);
 
     const nswPath = container.querySelector('#state-NSW');
     fireEvent.mouseOut(nswPath);
