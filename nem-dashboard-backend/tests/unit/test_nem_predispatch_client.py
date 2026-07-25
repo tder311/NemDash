@@ -205,3 +205,45 @@ class TestGetLatestPredispatch:
         assert df is not None
         assert len(df) == 2
         assert "rrp" in df.columns
+
+
+class TestArchiveFallbackToCurrent:
+    """NEMWEB has no PD7Day archive directory (404); the client must fall back
+    to the Current directory, which retains ~2 months of per-run files."""
+
+    @pytest.fixture
+    def client(self):
+        return NEMPredispatchClient("https://test.nemweb.com.au")
+
+    @pytest.mark.asyncio
+    async def test_list_falls_back_to_current_on_404(self, client, httpx_mock):
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Archive/PD7Day/",
+            status_code=404,
+        )
+        httpx_mock.add_response(
+            url="https://test.nemweb.com.au/Reports/Current/PD7Day/",
+            html='<A HREF="PUBLIC_PD7DAY_20260601070000_0000000526000001.zip">x</A>'
+                 '<A HREF="PUBLIC_PD7DAY_20260601124000_0000000526000002.zip">x</A>',
+        )
+
+        files = await client.list_archive_files()
+
+        assert len(files) == 2
+        names, dates = zip(*files)
+        assert all(n.startswith("PUBLIC_PD7DAY_202606") for n in names)
+        assert dates[0].date().isoformat() == "2026-06-01"
+
+    @pytest.mark.asyncio
+    async def test_get_file_routes_current_style_names(self, client, httpx_mock):
+        name = "PUBLIC_PD7DAY_20260709174003_0000000526620246.zip"
+        httpx_mock.add_response(
+            url=f"https://test.nemweb.com.au/Reports/Current/PD7Day/{name}",
+            content=make_pd7day_zip(SAMPLE_PD7DAY_CSV),
+        )
+
+        df = await client.get_archive_predispatch_file(name)
+
+        assert df is not None
+        assert len(df) == 2
+        assert "rrp" in df.columns
