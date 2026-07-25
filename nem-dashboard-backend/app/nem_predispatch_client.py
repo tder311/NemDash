@@ -82,21 +82,43 @@ class NEMPredispatchClient:
         }
 
     async def list_archive_files(self) -> List[Tuple[str, datetime]]:
-        """List (filename, file_date) in the pre-dispatch archive directory."""
-        url = f"{self.base_url}/{ARCHIVE_PATH}"
+        """List (filename, file_date) of historical PD7Day files.
+
+        NEMWEB publishes no PD7Day archive directory (404), so on failure fall
+        back to the Current directory, which retains ~2 months of per-run files."""
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-        names = sorted(set(re.findall(ARCHIVE_FILE_RE, resp.text)))
+            try:
+                resp = await client.get(f"{self.base_url}/{ARCHIVE_PATH}")
+                resp.raise_for_status()
+                names = sorted(set(re.findall(ARCHIVE_FILE_RE, resp.text)))
+                stamp_re, stamp_fmt = r"(\d{8})", "%Y%m%d"
+            except httpx.HTTPStatusError:
+                logger.info("PD7Day archive unavailable; listing Current directory instead")
+                resp = await client.get(f"{self.base_url}/{CURRENT_PATH}")
+                resp.raise_for_status()
+                names = sorted(set(re.findall(CURRENT_FILE_RE, resp.text)))
+                stamp_re, stamp_fmt = r"(\d{14})", "%Y%m%d%H%M%S"
         out: List[Tuple[str, datetime]] = []
         for name in names:
-            m = re.search(r"(\d{8})", name)
+            m = re.search(stamp_re, name)
             if m:
-                out.append((name, datetime.strptime(m.group(1), "%Y%m%d")))
+                out.append((name, datetime.strptime(m.group(1), stamp_fmt)))
         return out
 
     async def get_archive_predispatch_file(self, filename: str) -> Optional[pd.DataFrame]:
-        """Download one archive file (zip of per-run zips) and parse every run."""
+        """Download one historical file and parse every run in it.
+
+        Archive-style names (8-digit stamp) are zip-of-zips under ARCHIVE_PATH;
+        current-style names (14-digit stamp) are single-run zips under CURRENT_PATH."""
+        if not re.fullmatch(ARCHIVE_FILE_RE, filename):
+            try:
+                async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+                    resp = await client.get(f"{self.base_url}/{CURRENT_PATH}{filename}")
+                    resp.raise_for_status()
+                return self._parse_zip(resp.content)
+            except Exception as e:
+                logger.error(f"Error downloading current file {filename}: {e}")
+                return None
         url = f"{self.base_url}/{ARCHIVE_PATH}{filename}"
         try:
             async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
