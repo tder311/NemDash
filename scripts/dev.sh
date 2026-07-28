@@ -91,8 +91,9 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-echo "Starting backend + frontend in this terminal (Ctrl+C stops both)..."
+echo "Starting backend + worker + frontend in this terminal (Ctrl+C stops all)..."
 echo "  Backend:  http://localhost:8000 (health check: /health)"
+echo "  Worker:   continuous NEMWEB ingestion (no port; writes to Postgres)"
 echo "  Frontend: http://localhost:3000"
 echo ""
 
@@ -106,6 +107,10 @@ prefix() { while IFS= read -r line; do printf '%s%s\n' "$1" "$line"; done; }
 
 # Give the backend a moment before the frontend starts hitting it.
 sleep 2
+
+# Ingestion worker (run_worker.py). Same 'exec' pattern; it's the sole
+# writer, so without it locally the dashboard never gets live data.
+( cd "$BACKEND_DIR" && exec python3 run_worker.py ) 2>&1 | prefix "[worker]   " &
 
 # Frontend (CRA). BROWSER=none stops it auto-opening a browser tab.
 ( cd "$FRONTEND_DIR" && BROWSER=none exec npm start ) 2>&1 | prefix "[frontend] " &

@@ -12,7 +12,7 @@ NPM := npm
 
 # Phony targets (not files)
 .PHONY: help install install-backend install-frontend \
-        run-backend run-frontend dev \
+        run-backend run-worker run-frontend dev \
         check check-python check-node check-deps \
         setup-env build clean test test-backend test-frontend test-e2e test-all \
         test-coverage health import-generators install-test-deps install-playwright \
@@ -49,6 +49,10 @@ setup-env: ## Create .env from .env.example if it doesn't exist
 run-backend: setup-env ## Start the backend server (blocking)
 	@echo "Starting backend server..."
 	cd $(BACKEND_DIR) && $(PYTHON) run.py
+
+run-worker: setup-env ## Start the continuous ingestion worker (blocking)
+	@echo "Starting ingestion worker..."
+	cd $(BACKEND_DIR) && $(PYTHON) run_worker.py
 
 run-frontend: ## Start the frontend development server (blocking)
 	@echo "Starting frontend server..."

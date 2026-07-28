@@ -36,8 +36,8 @@ serving. In production these are three deployables sharing one Postgres:
 ```
 ┌───────────────────────────────┐        ┌──────────────────────────────┐
 │      Ingestion Worker          │        │        NemDash API           │
-│    (run_worker.py, own         │───────▶│  (app/main.py, FastAPI)      │
-│     process/service)           │ writes │  http://localhost:8000       │
+│    (run_worker.py, own         │        │  (app/main.py, FastAPI)      │
+│     process/service)           │        │  http://localhost:8000       │
 │  • NEMDispatchClient/          │        │  • REST API (market-watching │
 │    NEMPriceClient/... (poll)   │        │    endpoints)                │
 │  • DataIngester                │        │  • Manual /api/ingest/*      │
@@ -112,7 +112,9 @@ Frontend (React, http://localhost:3000) talks to the NemDash API above.
 ```bash
 make dev
 ```
-This opens two Terminal windows - one for backend (localhost:8000) and one for frontend (localhost:3000).
+This runs the backend (localhost:8000), the ingestion worker, and the
+frontend (localhost:3000) together in one terminal. The worker is the sole
+writer to Postgres — without it running, the dashboard has no live data.
 
 **Manual Start (any platform):**
 
@@ -122,7 +124,13 @@ make run-backend
 # Or: cd nem-dashboard-backend && python run.py
 ```
 
-Terminal 2 - Frontend:
+Terminal 2 - Ingestion worker (required for live data):
+```bash
+make run-worker
+# Or: cd nem-dashboard-backend && python run_worker.py
+```
+
+Terminal 3 - Frontend:
 ```bash
 make run-frontend
 # Or: cd nem-dashboard-frontend && npm start
@@ -145,7 +153,7 @@ Run `make help` to see all available commands:
 
 ```
 Setup:       make install, make install-backend, make install-frontend
-Development: make dev, make run-backend, make run-frontend
+Development: make dev, make run-backend, make run-worker, make run-frontend
 Database:    make db, make db-stop
 Verification: make check, make check-deps, make health
 Build:       make build, make test, make clean
