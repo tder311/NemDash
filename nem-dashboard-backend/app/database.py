@@ -6,7 +6,7 @@ Configuration:
 """
 
 import pandas as pd
-from datetime import date, datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 import logging
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
@@ -19,15 +19,6 @@ logger = logging.getLogger(__name__)
 # NEM operates on Australian Eastern Standard Time (AEST, UTC+10) year-round
 # It does NOT observe daylight saving time to avoid market complexity
 AEST = timezone(timedelta(hours=10))
-
-# constraint_equation_terms.version sentinel for rows migrated from the old MMSDM
-# latest-snapshot table (no effective_date). Real NEMDE VersionNo values start at 1,
-# so this can never collide and these rows are only ever a fallback (see fetch_terms).
-SENTINEL_MMSDM_VERSION = -1
-
-# tradetype marker for MMSDM-sourced duid/region rows: that feed was ENERGY-bidtype
-# filtered at source but carries no NEMDE TradeType code, so this stands in for one.
-SENTINEL_MMSDM_TRADETYPE = 'ENERGY'
 
 
 def to_aest_isoformat(dt):
@@ -256,121 +247,6 @@ class NEMDatabase:
                 END $$
             """)
 
-            # Constraint equation terms (LHS = sum(factor*term)). Versioned: a constraintid can
-            # carry many (version, effective_date) equations over time, see fetch_terms for
-            # date-aware selection and insert_constraint_equation_terms for upsert semantics.
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS constraint_equation_terms (
-                    id BIGSERIAL PRIMARY KEY,
-                    constraintid TEXT NOT NULL,
-                    version INTEGER,
-                    term_type TEXT NOT NULL,
-                    term_id TEXT NOT NULL,
-                    factor REAL,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(constraintid, term_type, term_id)
-                )
-            """)
-
-            # Versioning columns added by the NEMDE ingest (scripts/ingest_nemde_constraints.py).
-            # effective_date is NULL for rows from the old MMSDM ingest (no per-version dates);
-            # first_seen/last_seen track the observation window of a given (constraintid, version);
-            # tradetype is NEMDE's per-factor TradeType (NULL for interconnector terms).
-            for col, col_type in [
-                ('effective_date', 'DATE'),
-                ('first_seen', 'DATE'),
-                ('last_seen', 'DATE'),
-                ('tradetype', 'TEXT'),
-            ]:
-                await conn.execute(f"""
-                    DO $$ BEGIN
-                        ALTER TABLE constraint_equation_terms ADD COLUMN {col} {col_type};
-                    EXCEPTION WHEN duplicate_column THEN NULL;
-                    END $$
-                """)
-
-            # One-time migration: rows with no effective_date predate the NEMDE ingest and get the
-            # sentinel version, so they only ever serve as a fallback once real versions exist.
-            # Their duid/region rows were ENERGY-filtered at source, hence the tradetype marker.
-            await conn.execute(f"""
-                UPDATE constraint_equation_terms
-                SET version = {SENTINEL_MMSDM_VERSION},
-                    first_seen = COALESCE(first_seen, CURRENT_DATE),
-                    last_seen = COALESCE(last_seen, CURRENT_DATE)
-                WHERE effective_date IS NULL AND version IS DISTINCT FROM {SENTINEL_MMSDM_VERSION}
-            """)
-            await conn.execute(f"""
-                UPDATE constraint_equation_terms
-                SET tradetype = '{SENTINEL_MMSDM_TRADETYPE}'
-                WHERE version = {SENTINEL_MMSDM_VERSION} AND tradetype IS NULL
-                  AND term_type IN ('duid', 'region')
-            """)
-
-            # Versions are immutable once observed, so the unique key extends to
-            # (..., version, tradetype) instead of the old latest-snapshot key. tradetype is in the
-            # key because one constraint version can carry the same trader/region under several
-            # TradeTypes (e.g. L5MI + L5RE); NULLS NOT DISTINCT (PG15+) makes the interconnector
-            # rows' NULL tradetype conflict-detectable so re-ingests stay idempotent.
-            for stale in (
-                'constraint_equation_terms_constraintid_term_type_term_id_key',
-                'constraint_equation_terms_version_key',
-            ):
-                await conn.execute(f"""
-                    DO $$ BEGIN
-                        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '{stale}') THEN
-                            ALTER TABLE constraint_equation_terms DROP CONSTRAINT {stale};
-                        END IF;
-                    END $$
-                """)
-            await conn.execute("""
-                DO $$ BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 FROM pg_constraint WHERE conname = 'constraint_equation_terms_version_tt_key'
-                    ) THEN
-                        ALTER TABLE constraint_equation_terms
-                            ADD CONSTRAINT constraint_equation_terms_version_tt_key
-                            UNIQUE NULLS NOT DISTINCT (constraintid, version, term_type, term_id, tradetype);
-                    END IF;
-                END $$
-            """)
-
-            # Joint-inference backsolved unit MW, good+weak quality only (see insert_inferred_unit_generation)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS inferred_unit_generation (
-                    id BIGSERIAL PRIMARY KEY,
-                    run_datetime TIMESTAMP NOT NULL,
-                    interval_datetime TIMESTAMP NOT NULL,
-                    duid TEXT NOT NULL,
-                    mw_inferred REAL,
-                    quality TEXT NOT NULL,
-                    n_equations INTEGER,
-                    residual REAL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(run_datetime, interval_datetime, duid)
-                )
-            """)
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_inferred_unit_gen_duid_interval "
-                "ON inferred_unit_generation(duid, interval_datetime)"
-            )
-
-            # Served price-forecaster output, one row per serve x interval x region
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS forecast_history (
-                    id BIGSERIAL PRIMARY KEY,
-                    run_at TIMESTAMP NOT NULL,
-                    interval_datetime TIMESTAMP NOT NULL,
-                    region TEXT NOT NULL,
-                    p50 REAL NOT NULL,
-                    p10 REAL,
-                    p90 REAL,
-                    model_trained_at TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (run_at, interval_datetime, region)
-                )
-            """)
-
-
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_metrics (
                     id BIGSERIAL PRIMARY KEY,
@@ -474,8 +350,6 @@ class NEMDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_ic_id_run ON predispatch_interconnector(interconnectorid, run_datetime)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id ON predispatch_constraint(constraintid)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_predispatch_constraint_id_run ON predispatch_constraint(constraintid, run_datetime)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_forecast_history_region_interval ON forecast_history(region, interval_datetime)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_constraint_terms_constraintid ON constraint_equation_terms(constraintid)")
 
             # Daily metrics indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_metrics_date ON daily_metrics(metric_date)")
@@ -1929,172 +1803,6 @@ class NEMDatabase:
                     lhs = EXCLUDED.lhs
             """, records)
         return len(records)
-
-    async def insert_constraint_equation_terms(self, df: pd.DataFrame, seen_date: Optional[date] = None) -> int:
-        """Upsert constraint equation term rows onto the versioned (constraintid, version,
-        term_type, term_id, tradetype) key.
-
-        Once a version is seen it is immutable (AEMO never reuses or edits a VersionNo), so a
-        repeat sighting only extends last_seen; factor/effective_date are refreshed too in case
-        of a correction. This replaces the old table's transactional delete + insert -- there is
-        no more "current snapshot" to truncate, since old versions are kept for date-aware lookup
-        (see fetch_terms) rather than purged. 'effective_date' and 'tradetype' columns are
-        optional in df (NULL for the legacy MMSDM ingest / interconnector terms respectively).
-        seen_date stamps first_seen (new rows) and last_seen, defaulting to today; a historical
-        backfill passes the data day so the observation window reflects the data, not the clock.
-        """
-        if df.empty:
-            return 0
-        seen = seen_date or date.today()
-        records = []
-        for _, row in df.iterrows():
-            eff = row.get('effective_date')
-            eff = None if pd.isna(eff) else (eff.date() if hasattr(eff, 'date') else eff)
-            # pandas 3 str-dtype columns surface missing values as NaN, which asyncpg rejects
-            tradetype = row.get('tradetype')
-            factor = row.get('factor')
-            records.append((
-                row['constraintid'], int(row['version']), eff, row['term_type'], row['term_id'],
-                None if pd.isna(tradetype) else tradetype,
-                None if pd.isna(factor) else float(factor),
-                seen, seen,
-            ))
-        async with self._pool.acquire() as conn:
-            await conn.executemany("""
-                INSERT INTO constraint_equation_terms
-                (constraintid, version, effective_date, term_type, term_id, tradetype, factor, first_seen, last_seen)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (constraintid, version, term_type, term_id, tradetype) DO UPDATE SET
-                    effective_date = COALESCE(EXCLUDED.effective_date, constraint_equation_terms.effective_date),
-                    factor = EXCLUDED.factor,
-                    first_seen = LEAST(constraint_equation_terms.first_seen, EXCLUDED.first_seen),
-                    last_seen = GREATEST(constraint_equation_terms.last_seen, EXCLUDED.last_seen),
-                    updated_at = CURRENT_TIMESTAMP
-            """, records)
-        return len(records)
-
-    async def insert_inferred_unit_generation(self, df: pd.DataFrame) -> int:
-        """Upsert joint-inference backsolved unit MW, keeping only 'good'/'weak' quality rows.
-
-        'unidentifiable' rows are ~80% of solve volume and carry no usable MW estimate
-        (structurally inseparable from other units), so they are dropped here rather than stored.
-        """
-        if df.empty:
-            return 0
-        df = df[df["quality"].isin(["good", "weak"])]
-        if df.empty:
-            return 0
-        records = []
-        for _, row in df.iterrows():
-            run = row["run_datetime"]
-            interval = row["interval_datetime"]
-            records.append((
-                run.to_pydatetime() if hasattr(run, "to_pydatetime") else run,
-                interval.to_pydatetime() if hasattr(interval, "to_pydatetime") else interval,
-                row["duid"],
-                row.get("mw_inferred"),
-                row["quality"],
-                int(row["n_equations"]) if pd.notna(row.get("n_equations")) else None,
-                row["system_residual"],
-            ))
-
-        async with self._pool.acquire() as conn:
-            await conn.executemany("""
-                INSERT INTO inferred_unit_generation
-                (run_datetime, interval_datetime, duid, mw_inferred, quality, n_equations, residual)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (run_datetime, interval_datetime, duid) DO UPDATE SET
-                    mw_inferred = EXCLUDED.mw_inferred,
-                    quality = EXCLUDED.quality,
-                    n_equations = EXCLUDED.n_equations,
-                    residual = EXCLUDED.residual
-            """, records)
-        return len(records)
-
-    async def get_inferred_unit_generation(self, start: datetime, duid: Optional[str] = None) -> pd.DataFrame:
-        """Stored joint-inference rows (good/weak only, by construction) with interval_datetime >= start."""
-        columns = ["run_datetime", "interval_datetime", "duid", "mw_inferred", "quality", "n_equations", "residual"]
-        async with self._pool.acquire() as conn:
-            if duid:
-                rows = await conn.fetch(f"""
-                    SELECT {", ".join(columns)} FROM inferred_unit_generation
-                    WHERE interval_datetime >= $1 AND duid = $2
-                    ORDER BY interval_datetime
-                """, start, duid)
-            else:
-                rows = await conn.fetch(f"""
-                    SELECT {", ".join(columns)} FROM inferred_unit_generation
-                    WHERE interval_datetime >= $1
-                    ORDER BY interval_datetime
-                """, start)
-        if not rows:
-            return pd.DataFrame(columns=columns)
-        out = pd.DataFrame([dict(row) for row in rows])
-        out["run_datetime"] = pd.to_datetime(out["run_datetime"])
-        out["interval_datetime"] = pd.to_datetime(out["interval_datetime"])
-        return out
-
-    async def get_dispatch_data_for_duids(
-        self, duids: List[str], start_date: datetime, end_date: datetime
-    ) -> pd.DataFrame:
-        """5-min realised scadavalue rows for a set of DUIDs, for comparison against inferred MW."""
-        columns = ["settlementdate", "duid", "scadavalue"]
-        if not duids:
-            return pd.DataFrame(columns=columns)
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT settlementdate, duid, scadavalue FROM dispatch_data
-                WHERE duid = ANY($1::text[]) AND settlementdate >= $2 AND settlementdate <= $3
-                ORDER BY settlementdate
-            """, duids, start_date, end_date)
-        if not rows:
-            return pd.DataFrame(columns=columns)
-        out = pd.DataFrame([dict(row) for row in rows])
-        out["settlementdate"] = pd.to_datetime(out["settlementdate"])
-        return out
-
-    async def get_latest_generation_forecast_rows(self, now: datetime) -> pd.DataFrame:
-        """Latest run's inferred-generation rows (interval_datetime >= now) joined to generator_info.
-
-        All regions/fuel sources -- region and fuel filtering happens in build_generation_forecast.
-        """
-        columns = [
-            "run_datetime", "interval_datetime", "duid", "mw_inferred", "quality",
-            "station_name", "region", "fuel_source", "technology_type", "capacity_mw",
-        ]
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(f"""
-                SELECT i.run_datetime, i.interval_datetime, i.duid, i.mw_inferred, i.quality,
-                       g.station_name, g.region, g.fuel_source, g.technology_type, g.capacity_mw
-                FROM inferred_unit_generation i
-                INNER JOIN generator_info g ON i.duid = g.duid
-                WHERE i.run_datetime = (SELECT MAX(run_datetime) FROM inferred_unit_generation)
-                AND i.interval_datetime >= $1
-                ORDER BY i.duid, i.interval_datetime
-            """, now)
-        if not rows:
-            return pd.DataFrame(columns=columns)
-        out = pd.DataFrame([dict(row) for row in rows])
-        out["run_datetime"] = pd.to_datetime(out["run_datetime"])
-        out["interval_datetime"] = pd.to_datetime(out["interval_datetime"])
-        return out
-
-    async def insert_forecast_history(self, rows: List[Dict[str, Any]]) -> int:
-        """Persist a served forecast so misses are diagnosable and models scorecardable."""
-        if not rows:
-            return 0
-        async with self._pool.acquire() as conn:
-            await conn.executemany("""
-                INSERT INTO forecast_history
-                    (run_at, interval_datetime, region, p50, p10, p90, model_trained_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (run_at, interval_datetime, region) DO NOTHING
-            """, [
-                (r["run_at"], r["interval_datetime"], r["region"], r["p50"],
-                 r["p10"], r["p90"], r["model_trained_at"])
-                for r in rows
-            ])
-        return len(rows)
 
     async def get_latest_predispatch_price(self, region: str) -> List[Dict[str, Any]]:
         """Get the latest pre-dispatch run's RRP forecast for a region."""
