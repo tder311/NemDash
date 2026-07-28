@@ -5,8 +5,8 @@ import './ChatPage.css';
 
 const SUGGESTIONS = [
   'What are prices across the NEM right now?',
-  "What's the price forecast for NSW1 this week?",
-  'I have a 100MW 2hr battery in NSW1 — what should my bid bands be?',
+  "What's the current price in NSW1?",
+  'How tight is the PASA outlook for SA1 this week?',
   'How should I dispatch a 100MW 2hr battery in SA1 and how much could it earn?',
 ];
 
@@ -161,7 +161,7 @@ function ChatPage({ darkMode }) {
       <div className="chat-log">
         {messages.length === 0 && (
           <div className="chat-empty">
-            <p>Ask the NemDash analyst about live prices, forecasts, battery dispatch, and bid bands.</p>
+            <p>Ask the NemDash analyst about live prices, generation mix, and the PASA outlook.</p>
             <div className="chat-suggestions">
               {SUGGESTIONS.map((s) => (
                 <button key={s} className="chat-suggestion" onClick={() => send(s)}>{s}</button>
@@ -192,7 +192,7 @@ function ChatPage({ darkMode }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Ask about prices, forecasts, dispatch, or bid bands…"
+          placeholder="Ask about prices, generation, or PASA…"
           rows={2}
           disabled={streaming}
         />

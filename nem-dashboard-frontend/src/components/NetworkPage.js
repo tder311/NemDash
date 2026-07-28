@@ -9,7 +9,6 @@ const IC_COLORS = [
   REGION_COLORS.SA, REGION_COLORS.TAS, '#a0715c',
 ];
 const NEAR_LIMIT_MW = 1; // flow within this many MW of a limit gets an alert marker
-const UNIT_INFERENCE_DAYS = 14; // lookback window for the unit-inference validation section
 
 const fillFor = (hex, alpha) => {
   const n = parseInt(hex.slice(1), 16);
@@ -145,40 +144,6 @@ function buildHeatmapMatrix(constraints) {
   return { x: allTimes.map((t) => new Date(t)), z, customdata };
 }
 
-// Builds the dual-line (realised solid, inferred dashed) figure for one DUID's paired series.
-function buildUnitInferenceFigure(seriesData, darkMode) {
-  const x = seriesData.map((d) => new Date(d.interval_datetime));
-  const base = baseLayout(darkMode);
-  const c = chartColors(darkMode);
-
-  return {
-    data: [
-      {
-        x, y: seriesData.map((d) => d.mw_realised),
-        type: 'scatter', mode: 'lines',
-        line: { color: c.accent, width: 2 },
-        name: 'Realised (SCADA)',
-        hovertemplate: '%{x|%a %d %b %H:%M}<br>Realised: %{y:.0f} MW<extra></extra>',
-      },
-      {
-        x, y: seriesData.map((d) => d.mw_inferred),
-        type: 'scatter', mode: 'lines',
-        line: { color: '#ff7f0e', width: 2, dash: 'dash' },
-        name: 'Inferred (backsolved)',
-        hovertemplate: '%{x|%a %d %b %H:%M}<br>Inferred: %{y:.0f} MW<extra></extra>',
-      },
-    ],
-    layout: {
-      ...base,
-      margin: { l: 60, r: 20, t: 20, b: 40 },
-      height: 320,
-      legend: { orientation: 'h', y: -0.2 },
-      xaxis: { ...base.xaxis, tickformat: '%a %H:%M' },
-      yaxis: { ...base.yaxis, title: 'MW' },
-    },
-  };
-}
-
 function NetworkPage({ darkMode }) {
   const [interconnectors, setInterconnectors] = useState({ run_datetime: null, data: {} });
   const [icLoading, setIcLoading] = useState(true);
@@ -188,15 +153,6 @@ function NetworkPage({ darkMode }) {
   const [constraints, setConstraints] = useState({ run_datetime: null, constraints: [] });
   const [constraintsLoading, setConstraintsLoading] = useState(true);
   const [constraintsError, setConstraintsError] = useState(null);
-
-  const [units, setUnits] = useState({ units: [] });
-  const [unitsLoading, setUnitsLoading] = useState(true);
-  const [unitsError, setUnitsError] = useState(null);
-
-  const [selectedDuid, setSelectedDuid] = useState(null);
-  const [series, setSeries] = useState(null);
-  const [seriesLoading, setSeriesLoading] = useState(false);
-  const [seriesError, setSeriesError] = useState(null);
 
   const fetchInterconnectors = useCallback(async () => {
     setIcLoading(true);
@@ -224,34 +180,6 @@ function NetworkPage({ darkMode }) {
     setConstraintsLoading(false);
   }, [category]);
 
-  const fetchUnits = useCallback(async () => {
-    setUnitsLoading(true);
-    setUnitsError(null);
-    try {
-      const { data } = await api.get('/api/network/unit-inference/units', { params: { days: UNIT_INFERENCE_DAYS } });
-      setUnits(data);
-    } catch (err) {
-      setUnitsError(err.response?.data?.detail || 'Failed to load unit-inference DUIDs.');
-      setUnits({ units: [] });
-    }
-    setUnitsLoading(false);
-  }, []);
-
-  const fetchSeries = useCallback(async (duid) => {
-    setSeriesLoading(true);
-    setSeriesError(null);
-    try {
-      const { data } = await api.get('/api/network/unit-inference/series', {
-        params: { duid, days: UNIT_INFERENCE_DAYS },
-      });
-      setSeries(data);
-    } catch (err) {
-      setSeriesError(err.response?.data?.detail || `Failed to load unit-inference series for ${duid}.`);
-      setSeries(null);
-    }
-    setSeriesLoading(false);
-  }, []);
-
   useEffect(() => {
     fetchInterconnectors();
   }, [fetchInterconnectors]);
@@ -259,22 +187,6 @@ function NetworkPage({ darkMode }) {
   useEffect(() => {
     fetchConstraints();
   }, [fetchConstraints]);
-
-  useEffect(() => {
-    fetchUnits();
-  }, [fetchUnits]);
-
-  useEffect(() => {
-    if (units.units.length && !selectedDuid) {
-      setSelectedDuid(units.units[0].duid);
-    }
-  }, [units, selectedDuid]);
-
-  useEffect(() => {
-    if (selectedDuid) {
-      fetchSeries(selectedDuid);
-    }
-  }, [selectedDuid, fetchSeries]);
 
   const icIds = Object.keys(interconnectors.data);
   const ribbonFigure = icIds.length ? buildRibbonFigure(icIds, interconnectors.data, darkMode) : null;
@@ -284,8 +196,6 @@ function NetworkPage({ darkMode }) {
   const yLabels = constraints.constraints.map(
     (c) => (c.label === c.constraintid ? c.constraintid : `${c.constraintid} (${c.label})`)
   );
-
-  const unitInferenceFigure = series && series.data.length ? buildUnitInferenceFigure(series.data, darkMode) : null;
 
   return (
     <div className={`network-container ${darkMode ? 'dark' : 'light'}`}>
@@ -378,84 +288,6 @@ function NetworkPage({ darkMode }) {
               style={{ width: '100%' }}
               config={{ displayModeBar: true, displaylogo: false }}
             />
-          </div>
-        )}
-      </div>
-
-      <div className="network-section">
-        <h2 className="network-section-title">Unit inference (validation)</h2>
-
-        {unitsLoading && (
-          <div className="loading">
-            <div className="spinner"></div>
-            <p>Loading unit-inference DUIDs…</p>
-          </div>
-        )}
-
-        {!unitsLoading && unitsError && <div className="network-error">{unitsError}</div>}
-
-        {!unitsLoading && !unitsError && units.units.length === 0 && (
-          <div className="network-empty">No stored unit-inference rows yet.</div>
-        )}
-
-        {!unitsLoading && !unitsError && units.units.length > 0 && (
-          <div className="unit-inference-layout">
-            <div className="unit-inference-picker">
-              {units.units.map((u) => (
-                <button
-                  key={u.duid}
-                  className={
-                    `unit-picker-btn ${u.tracking ? 'tracking' : 'non-tracking'} ` +
-                    (selectedDuid === u.duid ? 'active' : '')
-                  }
-                  onClick={() => setSelectedDuid(u.duid)}
-                >
-                  {u.duid} · corr {u.observed_corr != null ? u.observed_corr.toFixed(2) : 'n/a'} · n={u.n}
-                </button>
-              ))}
-              {units.message && <div className="network-meta">{units.message}</div>}
-            </div>
-
-            <div className="unit-inference-detail">
-              {seriesLoading && (
-                <div className="loading">
-                  <div className="spinner"></div>
-                  <p>Loading series for {selectedDuid}…</p>
-                </div>
-              )}
-
-              {!seriesLoading && seriesError && <div className="network-error">{seriesError}</div>}
-
-              {!seriesLoading && !seriesError && series && series.data.length === 0 && (
-                <div className="network-empty">No paired inferred/realised data for {selectedDuid} yet.</div>
-              )}
-
-              {!seriesLoading && !seriesError && unitInferenceFigure && (
-                <>
-                  <div className="unit-stats-chip">
-                    <span>corr {series.stats.corr != null ? series.stats.corr.toFixed(2) : 'n/a'}</span>
-                    <span>MAE {series.stats.mae != null ? series.stats.mae.toFixed(1) : 'n/a'} MW</span>
-                    <span>n={series.stats.n}</span>
-                    <span>{series.stats.quality || 'n/a'}</span>
-                  </div>
-                  {series.message && <div className="network-meta">{series.message}</div>}
-                  <div className="chart-container">
-                    <Plot
-                      data={unitInferenceFigure.data}
-                      layout={unitInferenceFigure.layout}
-                      useResizeHandler
-                      style={{ width: '100%' }}
-                      config={{ displayModeBar: true, displaylogo: false }}
-                    />
-                  </div>
-                  {series.stats.median_n_equations != null && (
-                    <div className="network-meta">
-                      Median equations per solve: {series.stats.median_n_equations.toFixed(0)}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
           </div>
         )}
       </div>
