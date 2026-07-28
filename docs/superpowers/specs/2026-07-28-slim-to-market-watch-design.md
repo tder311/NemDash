@@ -90,12 +90,15 @@ replica.
 - Pages: Live Prices, State Detail, Market Metrics, PASA, Bid Bands
   viewer, Downloads, DB Health, Chat (trimmed) — Network moved to
   Removals (Task 8)
-- Constraint ingestion (`ingest_constraint_equations`,
-  `ingest_nemde_constraints`) and interconnector-flow ingestion:
-  continues regardless of the Task 8 display removal — Postgres
-  remains the shared data asset for the future forecasting app;
-  anything existing solely for the inference backsolve goes. Verified
-  per-script during implementation.
+- Interconnector-flow and predispatch-constraint ingestion continues
+  via the predispatch path: `data_ingester.py`'s
+  `ingest_predispatch_data` and `scripts/backfill_predispatch.py` feed
+  `insert_predispatch_interconnector` / `insert_predispatch_constraint`
+  regardless of the Task 8 display removal — Postgres remains the
+  shared data asset for the future forecasting app. The
+  `ingest_constraint_equations` / `ingest_nemde_constraints` scripts
+  that existed solely for the inference backsolve were already removed
+  in Task 6, alongside the inference solver.
 
 ## Boundary rules
 
