@@ -31,7 +31,7 @@ The National Electricity Market (NEM) Dashboard provides real-time monitoring an
 │ • State Detail Page         │   - NEMDispatchClient (SCADA data)     │
 │ • Price History Page        │   - NEMPriceClient (prices/flows)      │
 │ • Australia Map SVG         │   - DataIngester (orchestration)       │
-│ • Interconnector Flows      │ • REST API (14+ endpoints)             │
+│ • Interconnector Flows      │ • REST API (40+ endpoints)             │
 │ • Plotly Charts             │ • PostgreSQL Database (async)          │
 └─────────────────────────────┴───────────────────────────────────────┘
                                         │
