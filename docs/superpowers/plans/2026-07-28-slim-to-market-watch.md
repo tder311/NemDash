@@ -196,6 +196,43 @@ Line 195 placeholder → `"Ask about prices, generation, or PASA…"`
 
 ---
 
+### Task 8: Remove the Network tab end-to-end (scope addition, 2026-07-28)
+
+Approved addition: the Network page goes too. Ingestion of interconnector
+flows and predispatch constraints STAYS (sole-writer discipline — data keeps
+landing in Postgres for future apps); only serving/display code goes.
+
+**Files:**
+- Delete: `nem-dashboard-frontend/src/components/NetworkPage.js` + `.css`, `nem-dashboard-frontend/src/__tests__/components/NetworkPage.test.js`
+- Modify: `nem-dashboard-frontend/src/App.js` (remove NetworkPage import + `network` TAB — final tabs: dashboard, metrics, chat, bids, downloads)
+- Modify: `nem-dashboard-backend/app/main.py` — delete `/api/network/interconnectors` and `/api/network/constraints` endpoints and the `parse_constraint_id` import
+- Delete: `nem-dashboard-backend/app/constraint_ids.py` + its unit tests (verify no other importer first)
+- Modify: `nem-dashboard-backend/app/models.py` — delete `NetworkInterconnectorsResponse`, `NetworkConstraintsResponse` + nested models only they use
+- Modify: `nem-dashboard-backend/app/database.py` — delete read methods whose only callers were those endpoints (e.g. `get_latest_predispatch_constraints`, `filter_binding_constraints`, and the interconnector-flow read the endpoint used — grep each for other callers first). KEEP all inserts and the `predispatch_constraint`/interconnector table DDL.
+- Modify: `nem-dashboard-backend/tests/unit/test_main.py` / `test_database.py` — delete tests of removed endpoints/methods only
+- Modify: `docs/superpowers/specs/2026-07-28-slim-to-market-watch-design.md` — move Network serving from Stays to Removals (note: ingestion still stays); update README if it lists the Network feature
+
+**Steps:** delete → grep sweep (`NetworkPage`, `network/interconnectors`, `network/constraints`, `constraint_ids`, `parse_constraint_id` → zero hits outside docs/git history) → backend `python -m pytest tests/unit -x -q` + frontend `CI=true npm test -- --watchAll=false` green → commit `chore(app): remove network tab and its serving endpoints`.
+
+### Task 9: Ingestion worker split (scope addition, 2026-07-28)
+
+Approved addition: continuous ingestion moves out of the API process into a
+separate worker so ingestion never competes with request serving. Same repo,
+same image — a second Railway service with a different start command.
+
+**Files:**
+- Create: `nem-dashboard-backend/run_worker.py` — standalone asyncio entry point: build `DataIngester` from the same env vars the API uses (reuse the existing construction/config logic — extract a tiny shared helper if needed rather than duplicating), `await initialize()`, then `run_continuous_ingestion(update_interval)` forever; clean shutdown on SIGTERM/SIGINT (`stop_continuous_ingestion` + `cleanup`).
+- Modify: `nem-dashboard-backend/app/main.py` lifespan — stop launching `run_continuous_ingestion`; the API keeps constructing `DataIngester` so manual `/api/ingest/*` endpoints still work (known ceiling: manual backfills still burn API resources — note in code comment `# ponytail: manual backfills run in-process; move to worker if they ever bog down serving`).
+- Modify: `nem-dashboard-backend/tests/unit/` — update any lifespan/ingestion-startup tests; add one unit test that `run_worker`'s loop wiring calls `run_continuous_ingestion` (mocked — no network/DB).
+- Modify: `README.md` — architecture note: three deployables (ingestion worker = sole writer, NemDash API = reader, future forecasting API = reader), one Postgres.
+- Modify: `docs/superpowers/specs/2026-07-28-slim-to-market-watch-design.md` — architecture section gains the worker.
+
+**Steps:** implement → `python -m pytest tests/unit -x -q` green → sanity: `python -c "import run_worker"` and API boot without ingestion task → commit `feat(backend): split continuous ingestion into standalone worker process`.
+
+**Deploy note (manual, post-merge):** create a second Railway service off the same repo/image with start command `python run_worker.py`; scheduler env vars move to it. Railway CLI config edits no-op — use the dashboard.
+
+---
+
 ## Self-Review Notes
 
 - Spec coverage: every Removals/Stays bullet maps to a task (pages→1-2, agent→3, endpoints→4, ingester→5, modules/scripts/db/deps→6, docs/verify→7). Constraint-ingestion iff-rule resolved: scripts go, `predispatch_constraint` stays.
