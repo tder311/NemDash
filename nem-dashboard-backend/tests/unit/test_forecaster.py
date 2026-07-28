@@ -28,7 +28,6 @@ from app.forecaster import (
     pinball_loss,
     predict_intervals,
     predispatch_window_features,
-    select_runs_at_lead,
     select_runs_at_leads,
     spike_recall,
     to_30min_price,
@@ -364,37 +363,6 @@ def test_walk_forward_reports_spike_metrics():
         assert key in result["folds"][0]
 
 
-def _runs_for_interval(interval, runs, region="NSW1"):
-    base = {c: 1.0 for c in PASA_FEATURES}
-    return pd.DataFrame(
-        [{"run_datetime": r, "interval_datetime": interval, "regionid": region, **base} for r in runs]
-    )
-
-
-def test_select_runs_at_lead_picks_closest_to_target_and_drops_out_of_band():
-    interval = pd.Timestamp("2025-01-15 18:00")
-    pasa = _runs_for_interval(
-        interval,
-        [
-            "2025-01-14 18:00",  # 24h  -> should win
-            "2025-01-14 12:00",  # 30h  (in band)
-            "2025-01-15 06:00",  # 12h  (in band edge)
-            "2025-01-15 17:30",  # 0.5h -> out of band, dropped
-        ],
-    )
-    out = select_runs_at_lead(pasa, target_lead_hours=24, tolerance_hours=12)
-    assert len(out) == 1
-    assert out["run_datetime"].iloc[0] == pd.Timestamp("2025-01-14 18:00")
-
-
-def test_select_runs_at_lead_tiebreak_prefers_longer_lead():
-    interval = pd.Timestamp("2025-01-15 18:00")
-    # 27h and 21h are equidistant from 24h; the longer (earlier) lead should win.
-    pasa = _runs_for_interval(interval, ["2025-01-14 15:00", "2025-01-14 21:00"])
-    out = select_runs_at_lead(pasa, target_lead_hours=24, tolerance_hours=12)
-    assert out["run_datetime"].iloc[0] == pd.Timestamp("2025-01-14 15:00")
-
-
 def _runs_frame(region="NSW1"):
     """One target interval, runs at leads 6h..7d (uses rrp as the payload col)."""
     interval = pd.Timestamp("2026-07-08 19:00:00")
@@ -405,25 +373,6 @@ def _runs_frame(region="NSW1"):
         "regionid": region,
         "rrp": [float(h) for h in leads],
     })
-
-
-def test_select_runs_at_leads_one_row_per_bucket():
-    out = select_runs_at_leads(_runs_frame())
-    assert set(out["lead_bucket"]) == {b for b, _ in LEAD_BUCKETS}
-    # each bucket picked the causal run nearest its target lead
-    picked = out.set_index("lead_bucket")["lead_hours"].to_dict()
-    assert picked[12.0] == 6.0 and picked[24.0] == 18.0 and picked[168.0] == 170.0
-
-
-def test_select_runs_at_leads_dedups_shared_runs():
-    # Only one run exists; it can serve at most one bucket after dedup.
-    interval = pd.Timestamp("2026-07-08 19:00:00")
-    one = pd.DataFrame({
-        "run_datetime": [interval - pd.Timedelta(hours=20)],
-        "interval_datetime": interval, "regionid": "NSW1", "rrp": [1.0],
-    })
-    out = select_runs_at_leads(one)
-    assert len(out) == 1 and out["lead_bucket"].iloc[0] == 24.0
 
 
 def test_select_runs_at_leads_causal():

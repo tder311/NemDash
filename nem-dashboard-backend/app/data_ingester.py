@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import List, Optional, Tuple
 from pathlib import Path
 
 import pandas as pd
@@ -14,13 +14,6 @@ from .nem_predispatch_client import NEMPredispatchClient
 from .nem_price_setter_client import NEMPriceSetterClient
 from .nem_bid_client import NEMBidClient
 from .database import NEMDatabase
-from .forecaster import select_runs_at_leads
-from .joint_inference import SHORT_LEAD_HOURS, fetch_bounds, fetch_terms, solve_unit_generation
-
-NO_IC_FLOWS = pd.DataFrame(columns=["run_datetime", "interval_datetime", "interconnectorid", "mwflow"])
-NO_REGION_DEMAND = pd.DataFrame(columns=["run_datetime", "interval_datetime", "regionid", "demand"])
-# Buffer before the run's earliest interval, so bid bounds cover the run itself.
-BOUNDS_LOOKBACK = timedelta(hours=1)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,6 +39,68 @@ def resolve_backfill_start(now: datetime) -> datetime:
     if retention_days > 0:
         start = max(start, now - timedelta(days=retention_days))
     return start
+
+
+def _causal_band_select(
+    df: pd.DataFrame,
+    target_lead_hours: float,
+    tolerance_hours: float,
+    prefer_longer: bool,
+) -> pd.DataFrame:
+    """Keep causal, in-band runs and the one closest to the target lead per (interval, region).
+
+    ``df`` must already carry a numeric ``lead_hours`` column. Ties are broken
+    by the longer lead if ``prefer_longer`` else the shorter lead. Adds a
+    ``lead_dist`` column callers can use or drop.
+    """
+    band = df[(df["lead_hours"] >= 0) & ((df["lead_hours"] - target_lead_hours).abs() <= tolerance_hours)].copy()
+    band["lead_dist"] = (band["lead_hours"] - target_lead_hours).abs()
+    band = band.sort_values(["lead_dist", "lead_hours"], ascending=[True, not prefer_longer])
+    return band.drop_duplicates(subset=["interval_datetime", "regionid"], keep="first")
+
+
+# (target_lead_hours, tolerance_hours) buckets spanning intraday to 7-day leads.
+# Tolerances roughly half the gap to the neighbouring bucket so bands don't overlap much.
+LEAD_BUCKETS: List[Tuple[float, float]] = [
+    (12.0, 6.0),
+    (24.0, 12.0),
+    (48.0, 24.0),
+    (96.0, 36.0),
+    (168.0, 36.0),
+]
+
+
+def select_runs_at_leads(
+    pasa: pd.DataFrame,
+    buckets: List[Tuple[float, float]] = LEAD_BUCKETS,
+) -> pd.DataFrame:
+    """One row per (interval, region, lead bucket): the run nearest each target lead.
+
+    Training across leads (with lead_hours as a feature) teaches the model how much to
+    trust far-lead inputs, e.g. phantom VOLL a week out vs. real tightness at 12h.
+
+    Ties within a bucket favour the shorter lead (unlike ``select_runs_at_lead``'s
+    longer-lead tie-break); this only resolves exact ties, not general bucket contention.
+    """
+    df = pasa.copy()
+    df["run_datetime"] = pd.to_datetime(df["run_datetime"])
+    df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
+    df["lead_hours"] = (df["interval_datetime"] - df["run_datetime"]).dt.total_seconds() / 3600
+
+    frames = []
+    for target, tolerance in buckets:
+        bucket_df = _causal_band_select(df, target, tolerance, prefer_longer=False)
+        bucket_df["lead_bucket"] = target
+        frames.append(bucket_df)
+
+    out = pd.concat(frames, ignore_index=True)
+    # A run selected by several buckets keeps only its nearest bucket.
+    out = out.sort_values("lead_dist").drop_duplicates(
+        subset=["interval_datetime", "regionid", "run_datetime"], keep="first"
+    )
+    return out.drop(columns=["lead_dist"]).sort_values(
+        ["regionid", "interval_datetime", "lead_bucket"]
+    ).reset_index(drop=True)
 
 
 def thin_pasa_for_multilead_backfill(df: pd.DataFrame) -> pd.DataFrame:
@@ -432,47 +487,12 @@ class DataIngester:
                     f"Ingested {inserted} price, {ic_inserted} interconnector, "
                     f"{con_inserted} constraint rows, run: {current_run}"
                 )
-                await self._infer_unit_generation(con_df, ic_df)
             else:
                 logger.debug(f"Pre-dispatch already ingested for run: {current_run}")
             return True
         except Exception as e:
             logger.error(f"Error ingesting pre-dispatch data: {e}")
             return False
-
-    async def _infer_unit_generation(self, con_df: Optional[pd.DataFrame], ic_df: Optional[pd.DataFrame]) -> None:
-        """Backsolve unit MW from this run's UNFILTERED constraint frame and upsert good/weak rows.
-
-        Uses con_df/ic_df straight from the parser, not the binding-only predispatch_constraint
-        table, since the solver needs every constraint's lhs. Never raises -- a solve failure
-        here must not break price/network ingestion, which is why it's called after that commits.
-        """
-        if con_df is None or con_df.empty:
-            return
-        try:
-            lhs_frame = con_df[["run_datetime", "interval_datetime", "constraintid", "lhs"]]
-            bounds_start = con_df["interval_datetime"].min() - BOUNDS_LOOKBACK
-            bounds_end = con_df["interval_datetime"].max()
-            run_date = con_df["run_datetime"].max()
-            terms = await fetch_terms(self.db, run_date)
-            bounds = await fetch_bounds(self.db, bounds_start, bounds_end)
-
-            solved = solve_unit_generation(
-                lhs_frame, terms, ic_df if ic_df is not None else NO_IC_FLOWS, NO_REGION_DEMAND, bounds=bounds,
-            )
-            if solved.empty:
-                logger.info("Joint unit inference: no solvable (run, interval) systems in this run")
-                return
-            persisted = await self.db.insert_inferred_unit_generation(solved)
-            lead = solved["interval_datetime"] - solved["run_datetime"]
-            n_short_lead = int((lead <= pd.Timedelta(hours=SHORT_LEAD_HOURS)).sum())
-            logger.info(
-                f"Joint unit inference: solved {len(solved)} rows across "
-                f"{solved['duid'].nunique()} DUIDs ({n_short_lead} within {SHORT_LEAD_HOURS:.0f}h lead), "
-                f"persisted {persisted} good/weak rows"
-            )
-        except Exception as e:
-            logger.error(f"Error running joint unit inference: {e}")
 
     async def backfill_predispatch_data(self, start_date, end_date=None) -> int:
         """Backfill historical pre-dispatch price (RRP) from the NEMWEB archive."""

@@ -6,7 +6,7 @@ Requires DATABASE_URL environment variable for tests that need a real database.
 import pytest
 import os
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock
 import pandas as pd
 import tempfile
 from pathlib import Path
@@ -17,8 +17,9 @@ from app.data_ingester import (
     import_generator_info_from_csv,
     thin_pasa_for_multilead_backfill,
     SAMPLE_GENERATOR_INFO,
+    LEAD_BUCKETS,
+    select_runs_at_leads,
 )
-from app.forecaster import LEAD_BUCKETS
 
 
 def get_test_db_url():
@@ -277,6 +278,37 @@ class TestThinPasaForMultileadBackfill:
         out = thin_pasa_for_multilead_backfill(one_run)
 
         assert len(out) == 1
+
+
+def _runs_frame(region="NSW1"):
+    """One target interval, runs at leads 6h..7d (uses rrp as the payload col)."""
+    interval = pd.Timestamp("2026-07-08 19:00:00")
+    leads = [6, 18, 30, 90, 170]
+    return pd.DataFrame({
+        "run_datetime": [interval - pd.Timedelta(hours=h) for h in leads],
+        "interval_datetime": interval,
+        "regionid": region,
+        "rrp": [float(h) for h in leads],
+    })
+
+
+def test_select_runs_at_leads_one_row_per_bucket():
+    out = select_runs_at_leads(_runs_frame())
+    assert set(out["lead_bucket"]) == {b for b, _ in LEAD_BUCKETS}
+    # each bucket picked the causal run nearest its target lead
+    picked = out.set_index("lead_bucket")["lead_hours"].to_dict()
+    assert picked[12.0] == 6.0 and picked[24.0] == 18.0 and picked[168.0] == 170.0
+
+
+def test_select_runs_at_leads_dedups_shared_runs():
+    # Only one run exists; it can serve at most one bucket after dedup.
+    interval = pd.Timestamp("2026-07-08 19:00:00")
+    one = pd.DataFrame({
+        "run_datetime": [interval - pd.Timedelta(hours=20)],
+        "interval_datetime": interval, "regionid": "NSW1", "rrp": [1.0],
+    })
+    out = select_runs_at_leads(one)
+    assert len(out) == 1 and out["lead_bucket"].iloc[0] == 24.0
 
 
 class TestGetDataSummary:
@@ -589,114 +621,3 @@ class TestRunContinuousIngestionFast:
         # Verify timestamps were fetched
         mock_db.get_latest_dispatch_timestamp.assert_called_once()
         assert mock_db.get_latest_price_timestamp.call_count == 2
-
-
-class TestInferUnitGeneration:
-    """Tests for DataIngester._infer_unit_generation (joint unit-inference live hook)."""
-
-    def _ingester(self):
-        return DataIngester("postgresql://mock:mock@localhost/test")
-
-    def _con_df(self):
-        run = pd.Timestamp("2026-07-09 10:00:00")
-        ivl = pd.Timestamp("2026-07-09 10:30:00")
-        return pd.DataFrame([
-            {"run_datetime": run, "interval_datetime": ivl, "constraintid": "C1", "lhs": 30.0},
-        ])
-
-    def _terms(self):
-        return pd.DataFrame([
-            {"constraintid": "C1", "term_type": "duid", "term_id": "A", "factor": 1.0},
-        ])
-
-    @pytest.mark.asyncio
-    async def test_solves_and_persists_good_weak_rows(self):
-        ingester = self._ingester()
-        ingester.db = MagicMock()
-        ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=1)
-        mock_fetch_terms = AsyncMock(return_value=self._terms())
-
-        with patch("app.data_ingester.fetch_terms", mock_fetch_terms), \
-             patch("app.data_ingester.fetch_bounds", AsyncMock(return_value=pd.DataFrame(columns=["duid", "maxavail"]))):
-            await ingester._infer_unit_generation(self._con_df(), None)
-
-        ingester.db.insert_inferred_unit_generation.assert_called_once()
-        solved = ingester.db.insert_inferred_unit_generation.call_args[0][0]
-        assert solved.iloc[0]["duid"] == "A"
-        assert solved.iloc[0]["mw_inferred"] == pytest.approx(30.0)
-
-        # fetch_terms must be run-date aware: called with this run's run_datetime.
-        mock_fetch_terms.assert_called_once()
-        assert mock_fetch_terms.call_args[0][1] == pd.Timestamp("2026-07-09 10:00:00")
-
-    @pytest.mark.asyncio
-    async def test_empty_or_missing_constraint_frame_is_a_noop(self):
-        ingester = self._ingester()
-        ingester.db = MagicMock()
-        ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=0)
-
-        await ingester._infer_unit_generation(pd.DataFrame(), None)
-        await ingester._infer_unit_generation(None, None)
-
-        ingester.db.insert_inferred_unit_generation.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_solve_failure_is_caught_and_does_not_raise(self):
-        ingester = self._ingester()
-        ingester.db = MagicMock()
-        ingester.db.insert_inferred_unit_generation = AsyncMock(return_value=0)
-
-        with patch("app.data_ingester.fetch_terms", AsyncMock(side_effect=Exception("db down"))):
-            await ingester._infer_unit_generation(self._con_df(), None)  # must not raise
-
-        ingester.db.insert_inferred_unit_generation.assert_not_called()
-
-
-class TestIngestPredispatchDataTriggersInference:
-    """Tests that the PD7Day ingest cycle hooks into joint unit inference after the existing insert."""
-
-    @pytest.mark.asyncio
-    async def test_new_run_triggers_unit_inference_with_unfiltered_frames(self):
-        ingester = DataIngester("postgresql://mock:mock@localhost/test")
-        ingester.db = MagicMock()
-        ingester.db.insert_predispatch_price = AsyncMock(return_value=5)
-        ingester.db.insert_predispatch_interconnector = AsyncMock(return_value=2)
-        ingester.db.insert_predispatch_constraint = AsyncMock(return_value=1)
-        ingester.last_predispatch_run = None
-
-        run = pd.Timestamp("2026-07-09 10:00:00")
-        prices = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "regionid": "NSW1", "rrp": 80.0}])
-        con_df = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "constraintid": "C1", "lhs": 1.0}])
-        ic_df = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "interconnectorid": "IC1", "mwflow": 1.0}])
-        ingester.predispatch_client = MagicMock()
-        ingester.predispatch_client.get_latest_predispatch_all = AsyncMock(return_value={
-            "prices": prices, "interconnector": ic_df, "constraint": con_df,
-        })
-        ingester._infer_unit_generation = AsyncMock()
-
-        result = await ingester.ingest_predispatch_data()
-
-        assert result is True
-        ingester._infer_unit_generation.assert_called_once()
-        called_con_df, called_ic_df = ingester._infer_unit_generation.call_args[0]
-        assert called_con_df is con_df
-        assert called_ic_df is ic_df
-
-    @pytest.mark.asyncio
-    async def test_already_ingested_run_skips_inference(self):
-        ingester = DataIngester("postgresql://mock:mock@localhost/test")
-        ingester.db = MagicMock()
-        run = pd.Timestamp("2026-07-09 10:00:00")
-        ingester.last_predispatch_run = run
-
-        prices = pd.DataFrame([{"run_datetime": run, "interval_datetime": run, "regionid": "NSW1", "rrp": 80.0}])
-        ingester.predispatch_client = MagicMock()
-        ingester.predispatch_client.get_latest_predispatch_all = AsyncMock(return_value={
-            "prices": prices, "interconnector": pd.DataFrame(), "constraint": pd.DataFrame(),
-        })
-        ingester._infer_unit_generation = AsyncMock()
-
-        result = await ingester.ingest_predispatch_data()
-
-        assert result is True
-        ingester._infer_unit_generation.assert_not_called()

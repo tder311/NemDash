@@ -33,6 +33,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from .data_ingester import LEAD_BUCKETS, _causal_band_select, select_runs_at_leads
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
@@ -306,24 +308,6 @@ def to_regionid(region: pd.Series) -> pd.Series:
     return s.where(s.str.endswith("1"), s + "1")
 
 
-def _causal_band_select(
-    df: pd.DataFrame,
-    target_lead_hours: float,
-    tolerance_hours: float,
-    prefer_longer: bool,
-) -> pd.DataFrame:
-    """Keep causal, in-band runs and the one closest to the target lead per (interval, region).
-
-    ``df`` must already carry a numeric ``lead_hours`` column. Ties are broken
-    by the longer lead if ``prefer_longer`` else the shorter lead. Adds a
-    ``lead_dist`` column callers can use or drop.
-    """
-    band = df[(df["lead_hours"] >= 0) & ((df["lead_hours"] - target_lead_hours).abs() <= tolerance_hours)].copy()
-    band["lead_dist"] = (band["lead_hours"] - target_lead_hours).abs()
-    band = band.sort_values(["lead_dist", "lead_hours"], ascending=[True, not prefer_longer])
-    return band.drop_duplicates(subset=["interval_datetime", "regionid"], keep="first")
-
-
 def select_runs_at_lead(
     pasa: pd.DataFrame,
     target_lead_hours: float = 24.0,
@@ -350,17 +334,6 @@ def select_runs_at_lead(
     return df.reset_index(drop=True)
 
 
-# (target_lead_hours, tolerance_hours) buckets spanning intraday to 7-day leads.
-# Tolerances roughly half the gap to the neighbouring bucket so bands don't overlap much.
-LEAD_BUCKETS: List[Tuple[float, float]] = [
-    (12.0, 6.0),
-    (24.0, 12.0),
-    (48.0, 24.0),
-    (96.0, 36.0),
-    (168.0, 36.0),
-]
-
-
 def lead_envelope_hours(buckets: List[Tuple[float, float]] = LEAD_BUCKETS) -> Tuple[float, float]:
     """Union envelope (min, max lead hours) any bucket in ``buckets`` could select from.
 
@@ -369,39 +342,6 @@ def lead_envelope_hours(buckets: List[Tuple[float, float]] = LEAD_BUCKETS) -> Tu
     lows = [target - tolerance for target, tolerance in buckets]
     highs = [target + tolerance for target, tolerance in buckets]
     return min(lows), max(highs)
-
-
-def select_runs_at_leads(
-    pasa: pd.DataFrame,
-    buckets: List[Tuple[float, float]] = LEAD_BUCKETS,
-) -> pd.DataFrame:
-    """One row per (interval, region, lead bucket): the run nearest each target lead.
-
-    Training across leads (with lead_hours as a feature) teaches the model how much to
-    trust far-lead inputs, e.g. phantom VOLL a week out vs. real tightness at 12h.
-
-    Ties within a bucket favour the shorter lead (unlike ``select_runs_at_lead``'s
-    longer-lead tie-break); this only resolves exact ties, not general bucket contention.
-    """
-    df = pasa.copy()
-    df["run_datetime"] = pd.to_datetime(df["run_datetime"])
-    df["interval_datetime"] = pd.to_datetime(df["interval_datetime"])
-    df["lead_hours"] = (df["interval_datetime"] - df["run_datetime"]).dt.total_seconds() / 3600
-
-    frames = []
-    for target, tolerance in buckets:
-        bucket_df = _causal_band_select(df, target, tolerance, prefer_longer=False)
-        bucket_df["lead_bucket"] = target
-        frames.append(bucket_df)
-
-    out = pd.concat(frames, ignore_index=True)
-    # A run selected by several buckets keeps only its nearest bucket.
-    out = out.sort_values("lead_dist").drop_duplicates(
-        subset=["interval_datetime", "regionid", "run_datetime"], keep="first"
-    )
-    return out.drop(columns=["lead_dist"]).sort_values(
-        ["regionid", "interval_datetime", "lead_bucket"]
-    ).reset_index(drop=True)
 
 
 def to_30min_price(price: pd.DataFrame) -> pd.DataFrame:
