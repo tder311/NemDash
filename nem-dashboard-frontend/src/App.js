@@ -4,22 +4,14 @@ import LivePricesPage from './components/LivePricesPage';
 import DownloadsPage from './components/DownloadsPage';
 import MarketMetricsPage from './components/MarketMetricsPage';
 import BidBandPage from './components/BidBandPage';
-import ForecastPage from './components/ForecastPage';
-import DispatchPage from './components/DispatchPage';
-import BidBandsPage from './components/BidBandsPage';
 import ChatPage from './components/ChatPage';
 import NetworkPage from './components/NetworkPage';
-import GenerationForecastPage from './components/GenerationForecastPage';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', Page: LivePricesPage },
   { id: 'metrics', label: 'Market Metrics', Page: MarketMetricsPage },
-  { id: 'forecast', label: 'Price Forecast', Page: ForecastPage },
-  { id: 'dispatch', label: 'Dispatch', Page: DispatchPage },
-  { id: 'bidbands', label: 'Bid Bands', Page: BidBandsPage },
   { id: 'chat', label: 'Ask NemDash', Page: ChatPage },
   { id: 'network', label: 'Network', Page: NetworkPage },
-  { id: 'generation', label: 'Generation', Page: GenerationForecastPage },
   { id: 'bids', label: 'Bid Analysis', Page: BidBandPage },
   { id: 'downloads', label: 'Downloads', Page: DownloadsPage },
 ];
