@@ -311,6 +311,12 @@ def test_select_runs_at_leads_dedups_shared_runs():
     assert len(out) == 1 and out["lead_bucket"].iloc[0] == 24.0
 
 
+def test_select_runs_at_leads_causal():
+    out = select_runs_at_leads(_runs_frame())
+    assert (out["lead_hours"] >= 0).all()
+    assert "lead_dist" not in out.columns
+
+
 class TestGetDataSummary:
     """Tests for get_data_summary method"""
 

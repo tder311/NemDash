@@ -1430,7 +1430,7 @@ class TestBidBandEndpoints:
     """Tests for bid band related endpoints."""
 
     @pytest.mark.asyncio
-    async def test_get_bid_bands_success(self):
+    async def test_get_actual_bids_success(self):
         """Test successful bid bands retrieval."""
         import app.main as main_module
 
@@ -1468,7 +1468,7 @@ class TestBidBandEndpoints:
             main_module.db = original_db
 
     @pytest.mark.asyncio
-    async def test_get_bid_bands_empty(self):
+    async def test_get_actual_bids_empty(self):
         """Test bid bands with no data."""
         import app.main as main_module
 
@@ -1491,7 +1491,7 @@ class TestBidBandEndpoints:
             main_module.db = original_db
 
     @pytest.mark.asyncio
-    async def test_get_bid_bands_invalid_date(self):
+    async def test_get_actual_bids_invalid_date(self):
         """Test bid bands with invalid date format."""
         import app.main as main_module
 
@@ -1511,7 +1511,7 @@ class TestBidBandEndpoints:
             main_module.db = original_db
 
     @pytest.mark.asyncio
-    async def test_get_bid_bands_exception(self):
+    async def test_get_actual_bids_exception(self):
         """Test bid bands error handling."""
         import app.main as main_module
 
