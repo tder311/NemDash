@@ -340,44 +340,46 @@ class TestLifespanContextManager:
 
     @pytest.mark.asyncio
     async def test_lifespan_full_startup_shutdown(self):
-        """Test full lifespan startup and shutdown sequence."""
+        """Test full lifespan startup and shutdown sequence.
+
+        Continuous ingestion no longer starts here (it runs in run_worker.py) —
+        the API only builds DataIngester so manual /api/ingest/* endpoints work.
+        """
         from app.main import lifespan
         import app.main as main_module
 
         # Ensure db is None to trigger full initialization
         original_db = main_module.db
         original_ingester = main_module.data_ingester
-        original_task = main_module.background_task
         main_module.db = None
         main_module.data_ingester = None
-        main_module.background_task = None
 
-        with patch.dict(os.environ, {'DATABASE_URL': 'postgresql://test:test@localhost/test'}):
-            with patch('app.main.DataIngester') as MockIngester:
-                mock_ingester = MagicMock()
-                mock_ingester.initialize = AsyncMock()
-                mock_ingester.db = MagicMock()
-                mock_ingester.run_continuous_ingestion = AsyncMock()
-                mock_ingester.stop_continuous_ingestion = MagicMock()
-                mock_ingester.cleanup = AsyncMock()
-                mock_ingester.db.close = AsyncMock()
-                MockIngester.return_value = mock_ingester
+        mock_ingester = MagicMock()
+        mock_ingester.initialize = AsyncMock()
+        mock_ingester.db = MagicMock()
+        mock_ingester.run_continuous_ingestion = AsyncMock()
+        mock_ingester.stop_continuous_ingestion = MagicMock()
+        mock_ingester.cleanup = AsyncMock()
+        mock_ingester.db.close = AsyncMock()
 
-                with patch('app.main.import_generator_info_from_csv', new_callable=AsyncMock) as mock_import:
-                    try:
-                        async with lifespan(app):
-                            # During lifespan, db should be set
-                            assert main_module.db is not None
-                            mock_ingester.initialize.assert_called_once()
-                            mock_import.assert_called_once()
+        with patch('app.main.build_data_ingester_from_env', return_value=mock_ingester) as mock_build:
+            with patch('app.main.import_generator_info_from_csv', new_callable=AsyncMock) as mock_import:
+                try:
+                    async with lifespan(app):
+                        # During lifespan, db should be set
+                        assert main_module.db is not None
+                        mock_build.assert_called_once()
+                        mock_ingester.initialize.assert_called_once()
+                        mock_import.assert_called_once()
 
-                        # After exiting lifespan, cleanup should have been called
-                        mock_ingester.stop_continuous_ingestion.assert_called_once()
-                        mock_ingester.cleanup.assert_called_once()
-                    finally:
-                        main_module.db = original_db
-                        main_module.data_ingester = original_ingester
-                        main_module.background_task = original_task
+                    # After exiting lifespan, cleanup should have been called but
+                    # continuous ingestion should never have been started/stopped here
+                    mock_ingester.run_continuous_ingestion.assert_not_called()
+                    mock_ingester.stop_continuous_ingestion.assert_not_called()
+                    mock_ingester.cleanup.assert_called_once()
+                finally:
+                    main_module.db = original_db
+                    main_module.data_ingester = original_ingester
 
 
 class TestEndpointErrorHandling:

@@ -7,10 +7,9 @@ from datetime import datetime
 from typing import Optional
 import os
 import logging
-import asyncio
 
 from .database import NEMDatabase, calculate_aggregation_minutes, to_aest_isoformat
-from .data_ingester import DataIngester, import_generator_info_from_csv
+from .data_ingester import DataIngester, build_data_ingester_from_env, import_generator_info_from_csv
 from .models import (
     DispatchDataResponse,
     GenerationByFuelResponse,
@@ -45,7 +44,6 @@ logger = logging.getLogger(__name__)
 # Global variables
 db: NEMDatabase = None
 data_ingester: DataIngester = None
-background_task: Optional[asyncio.Task] = None
 _openai_client = None
 
 
@@ -70,7 +68,7 @@ class ChatRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
-    global db, data_ingester, background_task
+    global db, data_ingester
 
     # Skip initialization if database is already set (e.g., in tests)
     if db is not None:
@@ -79,16 +77,9 @@ async def lifespan(app: FastAPI):
         return
 
     # Startup
-    db_url = os.getenv('DATABASE_URL')
-    if not db_url:
-        raise RuntimeError(
-            "DATABASE_URL environment variable is required. "
-            "Example: postgresql://postgres:localdev@localhost:5432/nem_dashboard"
-        )
-    nem_base_url = os.getenv('NEM_API_BASE_URL', 'https://www.nemweb.com.au')
-    update_interval = int(os.getenv('UPDATE_INTERVAL_MINUTES', '5'))
-
-    data_ingester = DataIngester(db_url, nem_base_url)
+    # Continuous ingestion runs in run_worker.py, a separate process — see that file.
+    # ponytail: manual backfills run in-process; move to worker if they ever bog down serving
+    data_ingester = build_data_ingester_from_env()
 
     # Initialize database
     await data_ingester.initialize()
@@ -99,24 +90,11 @@ async def lifespan(app: FastAPI):
     # Import generator info from CSV (falls back to sample data if not found)
     await import_generator_info_from_csv(db)
 
-    # Start background data ingestion
-    background_task = asyncio.create_task(
-        data_ingester.run_continuous_ingestion(update_interval)
-    )
-
     logger.info("NEM Dashboard API started")
 
     yield
 
     # Shutdown
-    if background_task:
-        data_ingester.stop_continuous_ingestion()
-        background_task.cancel()
-        try:
-            await background_task
-        except asyncio.CancelledError:
-            pass
-
     if data_ingester:
         await data_ingester.cleanup()
 

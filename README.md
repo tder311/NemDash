@@ -20,30 +20,47 @@ The National Electricity Market (NEM) Dashboard provides real-time monitoring an
 
 **Stack**: FastAPI backend + React frontend + PostgreSQL database
 
+Continuous NEMWEB ingestion runs as its own process (`run_worker.py`), separate
+from the API that serves requests, so ingestion never competes with request
+serving. In production these are three deployables sharing one Postgres:
+
+- **Ingestion worker** (`run_worker.py`) — the sole continuous writer:
+  polls NEMWEB on a loop and applies raw-data retention.
+- **NemDash API** (this repo's `app/main.py`) — reads Postgres for the
+  dashboard SPA; also still constructs a `DataIngester` for manual
+  `/api/ingest/*` backfill endpoints (a known exception to single-writer,
+  documented in code).
+- **Forecasting API** (future, separate repo) — reads Postgres for
+  forecast/optimiser/bidding endpoints; never writes.
+
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         NEM Dashboard                                │
-├─────────────────────────────┬───────────────────────────────────────┤
-│     Frontend (React)        │           Backend (FastAPI)            │
-│   http://localhost:3000     │         http://localhost:8000          │
-├─────────────────────────────┼───────────────────────────────────────┤
-│ • Live Prices Page          │ • Data Ingestion Pipeline              │
-│ • State Detail Page         │   - NEMDispatchClient (SCADA data)     │
-│ • Price History Page        │   - NEMPriceClient (prices/flows)      │
-│ • Australia Map SVG         │   - DataIngester (orchestration)       │
-│ • Market Metrics Page       │ • REST API (40+ endpoints)             │
-│ • Plotly Charts             │ • PostgreSQL Database (async)          │
-└─────────────────────────────┴───────────────────────────────────────┘
-                                        │
-                                        ▼
-                        ┌───────────────────────────────┐
-                        │         AEMO NEMWEB           │
-                        │  https://www.nemweb.com.au    │
-                        │  • Dispatch SCADA (5-min)     │
-                        │  • Trading Prices (30-min)    │
-                        │  • Interconnector Flows       │
-                        │  • Public Price Archives      │
-                        └───────────────────────────────┘
+┌───────────────────────────────┐        ┌──────────────────────────────┐
+│      Ingestion Worker          │        │        NemDash API           │
+│    (run_worker.py, own         │───────▶│  (app/main.py, FastAPI)      │
+│     process/service)           │ writes │  http://localhost:8000       │
+│  • NEMDispatchClient/          │        │  • REST API (market-watching │
+│    NEMPriceClient/... (poll)   │        │    endpoints)                │
+│  • DataIngester                │        │  • Manual /api/ingest/*      │
+│    .run_continuous_ingestion() │        │    backfills (also writes)   │
+└───────────────┬────────────────┘        └───────────────┬──────────────┘
+                │ writes                                   │ reads
+                ▼                                          ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│                          PostgreSQL Database                          │
+└───────────────────────────────────────────────────────────────────────┘
+                ▲                                          ▲
+                │ writes                                   │ reads only
+                │                                          │
+┌───────────────┴────────────────┐        ┌───────────────┴──────────────┐
+│         AEMO NEMWEB             │        │   Forecasting API (future,   │
+│   https://www.nemweb.com.au     │        │   separate repo)             │
+│  • Dispatch SCADA (5-min)       │        │  • Own SPA + own FastAPI     │
+│  • Trading Prices (30-min)      │        │  • Never writes, never       │
+│  • Interconnector Flows         │        │    imports NemDash code      │
+│  • Public Price Archives        │        └───────────────────────────────┘
+└───────────────────────────────────┘
+
+Frontend (React, http://localhost:3000) talks to the NemDash API above.
 ```
 
 ## Quick Start
@@ -155,7 +172,8 @@ curitiba/
 │   ├── scripts/
 │   │   ├── migrate_to_postgres.py # SQLite migration tool
 │   │   └── setup_postgres.sh      # PostgreSQL setup script
-│   ├── run.py                    # Application entry point
+│   ├── run.py                    # API entry point
+│   ├── run_worker.py             # Ingestion worker entry point (own process)
 │   ├── import_geninfo_csv.py     # Generator data import
 │   ├── requirements.txt          # Python dependencies
 │   └── data/                     # Reference data (GenInfo.csv)
@@ -454,6 +472,8 @@ npm test
 - NEMWEB may rate-limit requests - respect 5-minute intervals
 - Add reverse proxy (nginx) for production frontend serving
 - Configure proper CORS origins in main.py for production domains
+- Continuous ingestion runs as its own deployed process (`python run_worker.py`),
+  separate from the API service (`app/main.py`) — see Architecture above
 
 ---
 

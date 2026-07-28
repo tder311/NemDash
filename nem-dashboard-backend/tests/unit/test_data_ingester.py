@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app.data_ingester import (
     DataIngester,
+    build_data_ingester_from_env,
     update_sample_generator_info,
     import_generator_info_from_csv,
     thin_pasa_for_multilead_backfill,
@@ -53,6 +54,37 @@ class TestDataIngesterInit:
 
         assert ingester.db._pool is not None
         await ingester.db.close()
+
+
+class TestBuildDataIngesterFromEnv:
+    """Tests for build_data_ingester_from_env — shared by the API lifespan and the worker."""
+
+    def test_raises_without_database_url(self, monkeypatch):
+        """Missing DATABASE_URL raises RuntimeError with a clear message."""
+        monkeypatch.delenv('DATABASE_URL', raising=False)
+
+        with pytest.raises(RuntimeError, match="DATABASE_URL"):
+            build_data_ingester_from_env()
+
+    def test_builds_ingester_from_database_url(self, monkeypatch):
+        """DATABASE_URL alone builds a DataIngester against the default NEM base URL."""
+        monkeypatch.setenv('DATABASE_URL', 'postgresql://test:test@localhost/test')
+        monkeypatch.delenv('NEM_API_BASE_URL', raising=False)
+
+        ingester = build_data_ingester_from_env()
+
+        assert isinstance(ingester, DataIngester)
+        assert ingester.db.config.url == 'postgresql://test:test@localhost/test'
+        assert ingester.nem_client.base_url == 'https://www.nemweb.com.au'
+
+    def test_uses_custom_nem_base_url(self, monkeypatch):
+        """NEM_API_BASE_URL overrides the default NEMWEB base URL."""
+        monkeypatch.setenv('DATABASE_URL', 'postgresql://test:test@localhost/test')
+        monkeypatch.setenv('NEM_API_BASE_URL', 'https://example-nemweb.test')
+
+        ingester = build_data_ingester_from_env()
+
+        assert ingester.nem_client.base_url == 'https://example-nemweb.test'
 
 
 class TestStopContinuousIngestion:

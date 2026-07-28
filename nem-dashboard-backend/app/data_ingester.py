@@ -113,6 +113,22 @@ def thin_pasa_for_multilead_backfill(df: pd.DataFrame) -> pd.DataFrame:
     return selected.drop(columns=["lead_hours", "lead_bucket"])
 
 
+def build_data_ingester_from_env() -> "DataIngester":
+    """Construct a DataIngester from the standard ingestion env vars.
+
+    Shared by the API lifespan and the standalone worker so both processes
+    build ingestion identically.
+    """
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is required. "
+            "Example: postgresql://postgres:localdev@localhost:5432/nem_dashboard"
+        )
+    nem_base_url = os.getenv('NEM_API_BASE_URL', 'https://www.nemweb.com.au')
+    return DataIngester(db_url, nem_base_url)
+
+
 class DataIngester:
     def __init__(self, db_url: str, nem_base_url: str = "https://www.nemweb.com.au"):
         """Initialize the data ingester.

@@ -13,10 +13,19 @@ generation, and unit-generation inference — moves to a separate app
 
 ## Target architecture (option 1)
 
-Two frontends, two backends, one Postgres:
+Two frontends, three backend processes, one Postgres:
 
-- **NemDash** (this repo): ingestion + market-watching API + SPA.
-  Remains the **sole Postgres writer** (all NEMWEB ingestion).
+- **NemDash ingestion worker** (`nem-dashboard-backend/run_worker.py`,
+  this repo): standalone process running continuous NEMWEB ingestion
+  (`DataIngester.run_continuous_ingestion`) forever, with graceful
+  SIGTERM/SIGINT shutdown. The sole continuous Postgres writer, deployed
+  as its own Railway service off the same repo/image as the API.
+- **NemDash API** (`nem-dashboard-backend/app/main.py`, this repo):
+  market-watching REST API + SPA. Still constructs a `DataIngester` so
+  the manual `/api/ingest/*` backfill endpoints keep working — a known
+  exception to single-writer, called out in code
+  (`# ponytail: manual backfills run in-process; move to worker if they
+  ever bog down serving`).
 - **Forecasting app** (future, separate repo): own SPA + own FastAPI
   for forecast/optimiser/bidding endpoints. Reads the same Postgres
   directly; never writes; never imports NemDash code.
@@ -24,8 +33,9 @@ Two frontends, two backends, one Postgres:
 Rationale: the shared asset is the data, not the API. Direct SQL beats
 paginated JSON for bulk training pulls, and CPU-heavy work (XGBoost
 training, CBC LP solves) leaves the service that serves the 30-second
-live-price loop. Upgrade path if reads ever contend: Postgres read
-replica.
+live-price loop. Splitting ingestion into its own worker process means
+NEMWEB polling never competes with request serving either. Upgrade path
+if reads ever contend: Postgres read replica.
 
 ## Removals (delete only — git history is the archive)
 
