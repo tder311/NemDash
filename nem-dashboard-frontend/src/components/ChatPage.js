@@ -7,7 +7,7 @@ const SUGGESTIONS = [
   'What are prices across the NEM right now?',
   "What's the current price in NSW1?",
   'How tight is the PASA outlook for SA1 this week?',
-  'How should I dispatch a 100MW 2hr battery in SA1 and how much could it earn?',
+  "Show me today's generation mix in VIC1.",
 ];
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
