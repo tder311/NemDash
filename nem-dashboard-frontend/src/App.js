@@ -5,13 +5,11 @@ import DownloadsPage from './components/DownloadsPage';
 import MarketMetricsPage from './components/MarketMetricsPage';
 import BidBandPage from './components/BidBandPage';
 import ChatPage from './components/ChatPage';
-import NetworkPage from './components/NetworkPage';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', Page: LivePricesPage },
   { id: 'metrics', label: 'Market Metrics', Page: MarketMetricsPage },
   { id: 'chat', label: 'Ask NemDash', Page: ChatPage },
-  { id: 'network', label: 'Network', Page: NetworkPage },
   { id: 'bids', label: 'Bid Analysis', Page: BidBandPage },
   { id: 'downloads', label: 'Downloads', Page: DownloadsPage },
 ];

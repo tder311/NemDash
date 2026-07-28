@@ -6,7 +6,6 @@ Requires DATABASE_URL environment variable set to a PostgreSQL database.
 import pytest
 import pandas as pd
 from datetime import datetime, date, timedelta
-from unittest.mock import AsyncMock, MagicMock
 
 from app.database import (
     NEMDatabase,
@@ -1606,42 +1605,3 @@ class TestSearchDuids:
         results = await test_db.search_duids('TEST', limit=2)
         assert len(results) == 2
 
-
-class TestLatestPredispatchAccessorsMocked:
-    """Tests for the latest-predispatch network accessors.
-
-    Mocked at the pool level since the assertions are about the query
-    contract, not what a real database returns.
-    """
-
-    def _mocked_db(self):
-        mock_conn = AsyncMock()
-        mock_conn.fetch.return_value = []
-        mock_pool = MagicMock()
-        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
-        mock_pool.acquire.return_value.__aexit__.return_value = None
-        db = NEMDatabase("postgresql://unused")
-        db._pool = mock_pool
-        return db, mock_conn
-
-    @pytest.mark.asyncio
-    async def test_constraints_query_is_forward_bounded_to_latest_run(self):
-        db, mock_conn = self._mocked_db()
-
-        rows = await db.get_latest_predispatch_constraints()
-
-        assert rows == []
-        (sql,) = mock_conn.fetch.call_args.args
-        assert "interval_datetime >= NOW()" in sql
-        assert "SELECT MAX(run_datetime) FROM predispatch_constraint" in sql
-
-    @pytest.mark.asyncio
-    async def test_interconnectors_query_is_forward_bounded_to_latest_run(self):
-        db, mock_conn = self._mocked_db()
-
-        rows = await db.get_latest_predispatch_interconnectors()
-
-        assert rows == []
-        (sql,) = mock_conn.fetch.call_args.args
-        assert "interval_datetime >= NOW()" in sql
-        assert "SELECT MAX(run_datetime) FROM predispatch_interconnector" in sql

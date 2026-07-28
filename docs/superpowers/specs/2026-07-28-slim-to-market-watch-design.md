@@ -43,6 +43,19 @@ replica.
   `forecaster` parameter to `stream_chat`; live-data tools stay
 - `app/database.py` / `app/models.py`: query helpers and models used
   only by removed features
+- (Task 8) `app/main.py`: `/api/network/interconnectors` and
+  `/api/network/constraints` endpoints and the `parse_constraint_id`
+  import; `app/constraint_ids.py` deleted (sole importer was
+  `main.py`); `app/database.py` read-only accessors
+  `get_latest_predispatch_interconnectors` and
+  `get_latest_predispatch_constraints` (sole callers were those
+  endpoints); `app/models.py` `NetworkInterconnectorsResponse` /
+  `NetworkConstraintsResponse` + their nested models. Ingestion stays:
+  `insert_predispatch_interconnector`, `insert_predispatch_constraint`,
+  `filter_binding_constraints` (still used by
+  `scripts/backfill_predispatch.py`), and the
+  `predispatch_interconnector`/`predispatch_constraint` table DDL —
+  data keeps landing in Postgres for the future forecasting app.
 - Scripts: `scripts/train_forecaster.py`,
   `scripts/validate_joint_inference.py`,
   `scripts/validate_unit_inference.py`; trained model artifacts under
@@ -56,8 +69,11 @@ replica.
 
 - Pages (+ CSS, tests, nav entries in `App.js`): `ForecastPage`,
   `DispatchPage`, `BidBandsPage`, `GenerationForecastPage`
-- `NetworkPage`: unit-inference section only; interconnectors and
-  binding constraints stay
+- (Task 8) `NetworkPage` (+ CSS, tests, `network` nav entry in
+  `App.js`): removed entirely — supersedes the earlier plan to trim it
+  to unit-inference only. Interconnector-flow and predispatch-
+  constraint ingestion continues unaffected; only the tab and its
+  serving endpoints go.
 - `ChatPage`: prune forecast-flavoured suggested prompts
 - Prune related mocks in `src/mocks` and `api.js` helpers
 
@@ -71,12 +87,15 @@ replica.
 - All NEMWEB ingestion: dispatch SCADA, trading prices, PASA,
   predispatch, actual bids (`nem_bid_client`), price setter
 - `/api/bid-bands` viewer endpoint (actual DUID bids → `BidBandPage`)
-- Pages: Live Prices, State Detail, Market Metrics, Network (trimmed),
-  PASA, Bid Bands viewer, Downloads, DB Health, Chat (trimmed)
+- Pages: Live Prices, State Detail, Market Metrics, PASA, Bid Bands
+  viewer, Downloads, DB Health, Chat (trimmed) — Network moved to
+  Removals (Task 8)
 - Constraint ingestion (`ingest_constraint_equations`,
-  `ingest_nemde_constraints`) **iff** it feeds the binding-constraints
-  display; anything existing solely for the inference backsolve goes.
-  Verified per-script during implementation.
+  `ingest_nemde_constraints`) and interconnector-flow ingestion:
+  continues regardless of the Task 8 display removal — Postgres
+  remains the shared data asset for the future forecasting app;
+  anything existing solely for the inference backsolve goes. Verified
+  per-script during implementation.
 
 ## Boundary rules
 

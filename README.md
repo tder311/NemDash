@@ -12,7 +12,7 @@ The National Electricity Market (NEM) Dashboard provides real-time monitoring an
 - **State Drilldown**: Click any region for detailed price history, fuel mix, and generation data
 - **Extended Time Ranges**: View data from 6 hours to 365 days with automatic aggregation
 - **Price History**: Historical price charts with multi-region comparison
-- **Interconnector Flows**: Power flow visualization between states
+- **Market Metrics**: TB spreads, capture prices, and price-setter frequency by region
 - **Generator Data**: SCADA dispatch data with fuel source classification
 - **Dark Mode**: Full dark/light theme support
 
@@ -31,7 +31,7 @@ The National Electricity Market (NEM) Dashboard provides real-time monitoring an
 │ • State Detail Page         │   - NEMDispatchClient (SCADA data)     │
 │ • Price History Page        │   - NEMPriceClient (prices/flows)      │
 │ • Australia Map SVG         │   - DataIngester (orchestration)       │
-│ • Interconnector Flows      │ • REST API (40+ endpoints)             │
+│ • Market Metrics Page       │ • REST API (40+ endpoints)             │
 │ • Plotly Charts             │ • PostgreSQL Database (async)          │
 └─────────────────────────────┴───────────────────────────────────────┘
                                         │
